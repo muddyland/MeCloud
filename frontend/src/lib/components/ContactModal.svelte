@@ -1,5 +1,5 @@
 <script>
-  import { contactModalOpen, editingContact, contacts } from '$lib/stores/contacts.js';
+  import { contactModalOpen, editingContact, contacts, selectedAddressBook, addressBooks } from '$lib/stores/contacts.js';
   import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
   import { createContact, updateContact, deleteContact } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
@@ -146,7 +146,8 @@
         contacts.update(list => list.map(c => c.id === $editingContact.id ? { ...c, ...card } : c));
         toast('Contact updated', 'success');
       } else {
-        const created = await createContact($jmapAccountId, $jmapSession, card);
+        const abId = $selectedAddressBook ?? $addressBooks[0]?.id;
+        const created = await createContact($jmapAccountId, $jmapSession, card, abId);
         if (created) contacts.update(list => [...list, { ...card, id: created.id }]);
         toast('Contact created', 'success');
       }
