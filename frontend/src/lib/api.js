@@ -205,6 +205,51 @@ export async function markEmailSeen(accountId, emailId, seen) {
   }
 }
 
+function appPasswordUsing(session) {
+  // Use every capability the server advertises — avoids guessing the exact URI
+  // for Stalwart's x:AppPassword extension.
+  const caps = Object.keys(session?.capabilities ?? {});
+  return caps.length ? caps : ['urn:ietf:params:jmap:core'];
+}
+
+export async function getAppPasswords(accountId, session) {
+  const using = appPasswordUsing(session);
+  const data = await post([
+    ['x:AppPassword/query', { accountId }, '0'],
+    ['x:AppPassword/get', {
+      accountId,
+      '#ids': { resultOf: '0', name: 'x:AppPassword/query', path: '/ids' },
+    }, '1'],
+  ], using);
+  return data?.methodResponses?.[1]?.[1]?.list ?? [];
+}
+
+export async function createAppPassword(accountId, description, session) {
+  const using = appPasswordUsing(session);
+  const data = await post([
+    ['x:AppPassword/set', {
+      accountId,
+      create: { new: { description, expiresAt: null } },
+    }, '0'],
+  ], using);
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notCreated?.new) {
+    throw new Error(resp.notCreated.new.description || 'Failed to create app password');
+  }
+  return resp?.created?.new ?? null; // { id, secret, ... }
+}
+
+export async function deleteAppPassword(accountId, id, session) {
+  const using = appPasswordUsing(session);
+  const data = await post([
+    ['x:AppPassword/set', { accountId, destroy: [id] }, '0'],
+  ], using);
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notDestroyed?.[id]) {
+    throw new Error(resp.notDestroyed[id].description || 'Failed to delete app password');
+  }
+}
+
 export async function getSieveScript() {
   const res = await apiFetch('/api/sieve');
   if (!res) return null;

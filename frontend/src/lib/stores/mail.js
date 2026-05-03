@@ -58,8 +58,9 @@ export const contextMenu      = writable(null); // { x, y, emailId } | null
 export const movePickerOpen   = writable(null); // emailId to move, or null
 
 // Modal visibility
-export const sieveOpen        = writable(false);
-export const newFolderOpen    = writable(false);
+export const sieveOpen           = writable(false);
+export const newFolderOpen       = writable(false);
+export const appPasswordsOpen    = writable(false);
 
 // Panel widths — persisted to localStorage, clamped to sane ranges
 export const sidebarWidth     = persisted('sidebarWidth',     240, { min: 180, max: 380 });

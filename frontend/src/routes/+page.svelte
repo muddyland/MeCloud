@@ -8,6 +8,7 @@
   import ContextMenu from '$lib/components/ContextMenu.svelte';
   import NewFolderModal from '$lib/components/NewFolderModal.svelte';
   import SieveEditor from '$lib/components/SieveEditor.svelte';
+  import AppPasswordsModal from '$lib/components/AppPasswordsModal.svelte';
   import MailboxPicker from '$lib/components/MailboxPicker.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
   import {
@@ -164,4 +165,5 @@
 <MailboxPicker />
 <NewFolderModal />
 <SieveEditor />
+<AppPasswordsModal />
 <Toasts />

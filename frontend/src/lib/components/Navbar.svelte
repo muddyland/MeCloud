@@ -1,5 +1,5 @@
 <script>
-  import { appName, currentUser, darkMode, sieveOpen } from '$lib/stores/mail.js';
+  import { appName, currentUser, darkMode, sieveOpen, appPasswordsOpen } from '$lib/stores/mail.js';
   import { logout } from '$lib/api.js';
   import Avatar from './Avatar.svelte';
 
@@ -50,22 +50,10 @@
   <div class="relative">
     <button
       on:click={toggle}
-      class="flex items-center gap-2 px-2 py-1 rounded-lg
-             hover:bg-gray-100 dark:hover:bg-gray-800
-             transition-colors duration-150"
+      class="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
+      title={$currentUser || 'Account'}
     >
       <Avatar name={$currentUser} email={$currentUser} size="sm" />
-      <span class="text-sm text-gray-700 dark:text-gray-300 max-w-[160px] truncate">
-        {$currentUser || '…'}
-      </span>
-      <!-- chevron -->
-      <svg class="w-3.5 h-3.5 text-gray-400 transition-transform duration-150
-                  {open ? 'rotate-180' : ''}"
-           viewBox="0 0 20 20" fill="currentColor">
-        <path fill-rule="evenodd"
-              d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z"
-              clip-rule="evenodd" />
-      </svg>
     </button>
 
     {#if open}
@@ -96,6 +84,19 @@
               <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/>
             </svg>
             Filters / Rules
+          </button>
+
+          <button
+            on:click={() => { appPasswordsOpen.set(true); close(); }}
+            class="flex items-center gap-3 w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-300
+                   hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors duration-100"
+          >
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+              <path d="M7 11V7a5 5 0 0110 0v4"/>
+            </svg>
+            App Passwords
           </button>
 
           {#if stalwartUrl}
