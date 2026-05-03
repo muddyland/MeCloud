@@ -1,10 +1,13 @@
 import logging
+import mimetypes
 import os
 import time
+
+mimetypes.add_type('application/manifest+json', '.webmanifest')
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Depends
 from pydantic import BaseModel, Field
-from fastapi.responses import RedirectResponse, StreamingResponse, FileResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
@@ -122,6 +125,30 @@ async def health():
 @app.get("/api/config")
 async def public_config():
     return {"appName": settings.app_name, "stalwartUrl": settings.stalwart_url}
+
+
+@app.get("/manifest.webmanifest", response_class=JSONResponse)
+async def web_manifest():
+    name = settings.app_name
+    short = name.split()[0] if name else "Mail"
+    return {
+        "name": name,
+        "short_name": short,
+        "description": f"{name} webmail client",
+        "start_url": "/",
+        "scope": "/",
+        "display": "standalone",
+        "orientation": "portrait-primary",
+        "background_color": "#ffffff",
+        "theme_color": "#2563eb",
+        "categories": ["productivity", "utilities"],
+        "icons": [
+            {"src": "/icons/icon-192.png",          "sizes": "192x192", "type": "image/png", "purpose": "any"},
+            {"src": "/icons/icon-512.png",           "sizes": "512x512", "type": "image/png", "purpose": "any"},
+            {"src": "/icons/icon-maskable-192.png",  "sizes": "192x192", "type": "image/png", "purpose": "maskable"},
+            {"src": "/icons/icon-maskable-512.png",  "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+        ],
+    }
 
 
 @app.get("/auth/login")

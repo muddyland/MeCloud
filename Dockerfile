@@ -7,7 +7,7 @@ COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install --prefer-offline
 
 COPY frontend/ ./
-RUN npm run build
+RUN node scripts/gen-icons.mjs && npm run build
 
 
 # ── Stage 2: Install Python dependencies ─────────────────────────────────────

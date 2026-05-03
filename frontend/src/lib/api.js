@@ -382,10 +382,9 @@ export async function getContacts(accountId, session, addressBookId) {
 }
 
 export async function createContact(accountId, session, contact, addressBookId) {
-  const args = { accountId, create: { new: contact } };
-  if (addressBookId) args.addressBookId = addressBookId;
+  const card = addressBookId ? { ...contact, addressBookIds: { [addressBookId]: true } } : contact;
   const data = await post(
-    [['ContactCard/set', args, 'c']],
+    [['ContactCard/set', { accountId, create: { new: card } }, 'c']],
     contactUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];

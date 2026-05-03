@@ -295,18 +295,9 @@
                          {rule.enabled ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}"
                   title={rule.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}
                 >
-                  <span class="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm
-                               transition-transform duration-200
-                               {rule.enabled ? 'translate-x-[18px]' : 'translate-x-0.5'}"></span>
+                  <span class="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-all duration-200"
+                               style="left: {rule.enabled ? '18px' : '2px'}"></span>
                 </button>
-
-                <button
-                  on:click={() => removeRule(rule.id)}
-                  class="flex-shrink-0 text-gray-300 dark:text-gray-600
-                         hover:text-red-400 dark:hover:text-red-400
-                         transition-colors duration-100 text-base leading-none"
-                  title="Delete rule"
-                >✕</button>
               </div>
 
               <!-- Expanded body -->
@@ -419,6 +410,16 @@
                       class="mt-2 text-xs text-blue-500 hover:text-blue-600 dark:hover:text-blue-400
                              transition-colors duration-100"
                     >+ Add action</button>
+                  </div>
+
+                  <!-- Delete rule -->
+                  <div class="flex justify-end pt-1">
+                    <button
+                      on:click={() => removeRule(rule.id)}
+                      class="text-xs text-gray-400 dark:text-gray-500
+                             hover:text-red-500 dark:hover:text-red-400
+                             transition-colors duration-100"
+                    >Delete rule</button>
                   </div>
                 </div>
               {/if}

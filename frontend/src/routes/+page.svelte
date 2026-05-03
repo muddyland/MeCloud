@@ -51,7 +51,50 @@
   onDestroy(() => {
     window.removeEventListener('mousemove', onMouseMove);
     window.removeEventListener('mouseup',   stopDrag);
+    clearTimeout(esTimer);
+    es?.close();
   });
+
+  // ── Real-time event stream ────────────────────────────────────────────────
+  let es      = null;
+  let esTimer = null;
+
+  function connectStream() {
+    if (es?.readyState === 0 || es?.readyState === 1) return; // CONNECTING or OPEN
+    es = new EventSource('/api/jmap/events');
+
+    const onData = ({ data }) => {
+      try {
+        const msg = JSON.parse(data);
+        if (msg?.['@type'] === 'StateChange' && msg.changed?.[accountId]?.Email !== undefined) {
+          silentRefresh();
+        }
+      } catch {}
+    };
+    es.addEventListener('state', onData);
+    es.onmessage = onData;
+    es.onerror   = () => { es.close(); es = null; esTimer = setTimeout(connectStream, 10_000); };
+  }
+
+  async function silentRefresh() {
+    const mid = $selectedMailbox?.id;
+    if (!mid || !accountId) return;
+    try {
+      const fresh = await getEmails(accountId, mid);
+      const prev  = $emails.length;
+      emails.set(fresh);
+      if (fresh.length > prev) notify(fresh.length - prev, fresh[0]?.subject ?? '');
+    } catch {}
+  }
+
+  function notify(count, subject) {
+    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    const n = new Notification(
+      count === 1 ? 'New message' : `${count} new messages`,
+      { body: subject, icon: '/icons/icon-192.png', tag: 'jmap-mail', renotify: true }
+    );
+    n.onclick = () => { window.focus(); n.close(); };
+  }
 
   // ── Mail loading ────────────────────────────────────────────────────────────
   let accountId = null;
@@ -96,6 +139,13 @@
 
       const inbox = mboxList.find((m) => m.role === 'inbox') ?? mboxList[0];
       if (inbox) selectedMailbox.set(inbox);
+
+      connectStream();
+
+      // Request notification permission once, after a brief delay
+      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        setTimeout(() => Notification.requestPermission(), 3_000);
+      }
     } catch (err) {
       console.error('Failed to initialise JMAP session:', err);
     }
