@@ -195,6 +195,16 @@ export async function createMailbox(accountId, name, parentId = null) {
   return { ...props, ...created };
 }
 
+export async function markEmailSeen(accountId, emailId, seen) {
+  const data = await post([
+    ['Email/set', { accountId, update: { [emailId]: { 'keywords/$seen': seen ? true : null } } }, 'mark']
+  ]);
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notUpdated?.[emailId]) {
+    throw new Error(resp.notUpdated[emailId].description || 'Mark failed');
+  }
+}
+
 export async function getSieveScript() {
   const res = await apiFetch('/api/sieve');
   if (!res) return null;
@@ -221,7 +231,7 @@ export async function getEmailBody(accountId, emailId) {
       {
         accountId,
         ids: [emailId],
-        properties: ['id', 'subject', 'from', 'to', 'cc', 'receivedAt', 'htmlBody', 'textBody', 'bodyValues'],
+        properties: ['id', 'subject', 'from', 'to', 'cc', 'receivedAt', 'keywords', 'htmlBody', 'textBody', 'bodyValues'],
         fetchHTMLBodyValues: true,
         fetchTextBodyValues: true
       },

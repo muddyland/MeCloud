@@ -5,7 +5,7 @@
     mailboxes, selectedMailbox, jmapAccountId, emails,
     composeContext, composeOpen
   } from '$lib/stores/mail.js';
-  import { getEmailBody, moveEmail, destroyEmail } from '$lib/api.js';
+  import { getEmailBody, moveEmail, destroyEmail, markEmailSeen } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
   import Avatar from './Avatar.svelte';
   import DOMPurify from 'dompurify';
@@ -146,6 +146,24 @@
       toast(e?.message ?? 'Delete failed', 'error');
     }
   }
+
+  $: isSeen = !!(email?.keywords?.['$seen']);
+
+  async function toggleSeen() {
+    if (!email) return;
+    const next = !isSeen;
+    try {
+      await markEmailSeen($jmapAccountId, email.id, next);
+      email = { ...email, keywords: { ...(email.keywords ?? {}), '$seen': next ? true : undefined } };
+      emails.update(list => list.map(e =>
+        e.id === email.id
+          ? { ...e, keywords: { ...(e.keywords ?? {}), '$seen': next ? true : undefined } }
+          : e
+      ));
+    } catch (e) {
+      toast(e?.message ?? 'Failed to update read status', 'error');
+    }
+  }
 </script>
 
 <section class="flex flex-col flex-1 min-w-0 h-full bg-white dark:bg-gray-900 overflow-hidden">
@@ -196,7 +214,7 @@
                 <Avatar name={primaryFrom.name} email={primaryFrom.email} size="lg" />
               {/if}
               <div class="min-w-0">
-                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
+                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate text-left">
                   {primaryFrom?.name || primaryFrom?.email || 'Unknown'}
                 </div>
                 {#if primaryFrom?.name}
@@ -212,7 +230,7 @@
           </div>
 
           <!-- Subject -->
-          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2 leading-snug">
+          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2 leading-snug text-left">
             {email.subject || '(no subject)'}
           </h2>
 
@@ -238,6 +256,13 @@
             </button>
             <button on:click={() => movePickerOpen.set(email.id)} class={btnCls}>
               <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>Move
+            </button>
+            <button on:click={toggleSeen} class={btnCls}>
+              {#if isSeen}
+                <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>Mark Unread
+              {:else}
+                <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>Mark Read
+              {/if}
             </button>
             <button on:click={deleteEmail}
               class="flex items-center px-3 py-1.5 text-xs font-medium rounded-md transition-colors duration-150

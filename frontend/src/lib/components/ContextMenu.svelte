@@ -5,7 +5,7 @@
     selectedMailbox, jmapAccountId, selectedEmailId,
     composeContext, composeOpen
   } from '$lib/stores/mail.js';
-  import { moveEmail, destroyEmail } from '$lib/api.js';
+  import { moveEmail, destroyEmail, markEmailSeen } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
 
   $: email        = $emails.find(e => e.id === $contextMenu?.emailId) ?? null;
@@ -77,6 +77,25 @@
     }
   }
 
+  $: isSeen = !!(email?.keywords?.['$seen']);
+
+  async function toggleSeen() {
+    const emailId = $contextMenu?.emailId;
+    if (!emailId) return;
+    const next = !isSeen;
+    close();
+    try {
+      await markEmailSeen($jmapAccountId, emailId, next);
+      emails.update(list => list.map(e =>
+        e.id === emailId
+          ? { ...e, keywords: { ...(e.keywords ?? {}), '$seen': next ? true : undefined } }
+          : e
+      ));
+    } catch (e) {
+      toast(e?.message ?? 'Failed to update read status', 'error');
+    }
+  }
+
   // Disable Reply All when there's only one unique address
   $: replyAllAddrs = [
     ...(email?.from ?? []),
@@ -110,6 +129,16 @@
     <button on:click={forward} class="{itemCls}">
       <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 014-4h12"/></svg>
       Forward
+    </button>
+
+    <button on:click={toggleSeen} class="{itemCls}">
+      {#if isSeen}
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
+        Mark Unread
+      {:else}
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
+        Mark Read
+      {/if}
     </button>
 
     <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
