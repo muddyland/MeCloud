@@ -6,6 +6,7 @@
   import { moveEmail, renameMailbox, deleteMailbox } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
+  import AppNav from './AppNav.svelte';
 
   let dragOverId  = null;
   let renamingId  = null;
@@ -82,23 +83,75 @@
 
 <aside class="flex flex-col h-full w-full bg-gray-100 dark:bg-gray-900">
 
-  <!-- Folders heading -->
-  <div class="px-3 pt-3 pb-1 flex items-center justify-between flex-shrink-0">
-    <span class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider select-none">
-      Folders
-    </span>
-    <button
-      on:click={() => newFolderOpen.set(true)}
-      title="New folder"
-      class="w-5 h-5 flex items-center justify-center rounded text-gray-400 dark:text-gray-500
-             hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700
-             transition-colors duration-150 text-base leading-none"
-    >+</button>
-  </div>
-
-  <!-- Mailbox list -->
   <nav class="flex-1 overflow-y-auto px-2 py-1">
-    {#each $mailboxes as mailbox (mailbox.id)}
+
+    <!-- Mailboxes section -->
+    <div class="px-1 pt-2 pb-1">
+      <span class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider select-none">
+        Mailboxes
+      </span>
+    </div>
+
+    {#each $mailboxes.filter(m => m.role) as mailbox (mailbox.id)}
+      {@const isSelected = $selectedMailbox?.id === mailbox.id}
+      {@const isDragOver = $draggedEmailId !== null && dragOverId === mailbox.id}
+
+      <div class="relative group rounded-lg mb-0.5">
+        <button
+          on:click={() => selectedMailbox.set(mailbox)}
+          on:dragover={(e) => { e.preventDefault(); dragOverId = mailbox.id; }}
+          on:dragleave={() => { dragOverId = null; }}
+          on:drop={async (e) => {
+            e.preventDefault();
+            dragOverId = null;
+            if (!$draggedEmailId) return;
+            const emailId = $draggedEmailId;
+            draggedEmailId.set(null);
+            try {
+              await moveEmail($jmapAccountId, emailId, mailbox.id, $selectedMailbox?.id);
+              emails.update(l => l.filter(em => em.id !== emailId));
+              if ($selectedEmailId === emailId) selectedEmailId.set(null);
+              toast(`Moved to ${mailbox.name}`, 'success');
+            } catch (e) {
+              toast(e?.message ?? 'Move failed', 'error');
+            }
+          }}
+          class="w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm
+                 transition-colors duration-150
+                 {isSelected
+                   ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-medium'
+                   : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'}
+                 {isDragOver ? 'ring-2 ring-blue-400 dark:ring-blue-500' : ''}"
+        >
+          <span class="flex items-center gap-2 truncate">
+            <MailboxIcon role={mailbox.role} cls="w-4 h-4 flex-shrink-0 opacity-60" />
+            <span class="truncate">{mailbox.name}</span>
+          </span>
+          {#if mailbox.unreadEmails > 0}
+            <span class="ml-1 text-xs font-semibold px-1.5 py-0.5 rounded-full
+                         bg-blue-500 dark:bg-blue-600 text-white">
+              {mailbox.unreadEmails}
+            </span>
+          {/if}
+        </button>
+      </div>
+    {/each}
+
+    <!-- Folders section -->
+    <div class="px-1 pt-3 pb-1 flex items-center justify-between">
+      <span class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider select-none">
+        Folders
+      </span>
+      <button
+        on:click={() => newFolderOpen.set(true)}
+        title="New folder"
+        class="w-5 h-5 flex items-center justify-center rounded text-gray-400 dark:text-gray-500
+               hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700
+               transition-colors duration-150 text-base leading-none"
+      >+</button>
+    </div>
+
+    {#each $mailboxes.filter(m => !m.role) as mailbox (mailbox.id)}
       {@const isSelected = $selectedMailbox?.id === mailbox.id}
       {@const isDragOver = $draggedEmailId !== null && dragOverId === mailbox.id}
 
@@ -215,6 +268,9 @@
         {/if}
       </div>
     {/each}
+
   </nav>
+
+  <AppNav />
 
 </aside>

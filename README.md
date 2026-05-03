@@ -4,9 +4,13 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 
 ## Features
 
-- JMAP protocol for fast, efficient mail access
+- JMAP protocol for fast, efficient mail access (RFC 8620 / RFC 8621)
+- **Calendar** — month view, create / edit / delete events, per-calendar filtering (JMAP Calendars / RFC 8984)
+- **Contacts** — address book list, contact search, create / edit / delete (JMAP Contacts / RFC 9553)
 - OAuth2 authentication via Stalwart's built-in OAuth2 server
 - Three-pane layout: mailboxes / message list / reading pane
+- Mailbox and Folders sections — system mailboxes (Inbox, Sent, Drafts…) separated from user folders
+- App switcher (bottom of the sidebar) to switch between Mail, Calendar, and Contacts
 - Dark mode (system preference + manual toggle, persisted)
 - Real-time push via JMAP EventSource (SSE)
 - Single Docker image — FastAPI serves both the API and the compiled frontend
@@ -18,7 +22,7 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 | Backend | Python 3.12, FastAPI, httpx |
 | Frontend | SvelteKit, Tailwind CSS |
 | Auth | OAuth2 authorization code flow |
-| Protocol | JMAP (RFC 8620, RFC 8621) |
+| Protocol | JMAP (RFC 8620, RFC 8621, RFC 8984, RFC 9553) |
 | Runtime | Single Docker image (multi-stage build) |
 
 ## Quick Start
@@ -121,12 +125,22 @@ jmap-mail/
 ├── frontend/
 │   └── src/
 │       ├── lib/
-│       │   ├── api.js          # JMAP API helpers
-│       │   ├── stores/mail.js  # Svelte stores (dark mode, mailboxes, emails)
-│       │   └── components/     # Sidebar, MessageList, MessagePane, ComposeModal
+│       │   ├── api.js                   # JMAP API helpers (mail, calendar, contacts)
+│       │   ├── stores/
+│       │   │   ├── mail.js              # Mail state (mailboxes, emails, session)
+│       │   │   ├── calendar.js          # Calendar state (events, view, selection)
+│       │   │   └── contacts.js          # Contacts state (address books, search)
+│       │   └── components/
+│       │       ├── AppNav.svelte         # Bottom app switcher
+│       │       ├── CalendarGrid.svelte   # Month-view calendar grid
+│       │       ├── EventModal.svelte     # Create / edit calendar event
+│       │       ├── ContactModal.svelte   # Create / edit contact
+│       │       └── ...                  # Sidebar, MessageList, MessagePane, …
 │       └── routes/
-│           ├── +layout.svelte  # Auth guard, dark mode bootstrap
-│           └── +page.svelte    # Main three-pane view
+│           ├── +layout.svelte            # Auth guard, dark mode bootstrap
+│           ├── +page.svelte              # Mail three-pane view
+│           ├── calendar/+page.svelte     # Calendar view
+│           └── contacts/+page.svelte     # Contacts view
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example

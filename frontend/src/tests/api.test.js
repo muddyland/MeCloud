@@ -59,6 +59,98 @@ describe('parseAddresses', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Calendar helpers
+// ---------------------------------------------------------------------------
+
+describe('getCalendarEvents', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', { location: { href: '' } });
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('returns empty array when server returns no events', async () => {
+    fetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        methodResponses: [
+          ['CalendarEvent/query', { ids: [] }, 'q'],
+          ['CalendarEvent/get',   { list: [] }, 'e'],
+        ],
+      }),
+    });
+
+    const { getCalendarEvents } = await import('$lib/api.js');
+    const result = await getCalendarEvents('acc1', {}, null, null, null);
+    expect(result).toEqual([]);
+  });
+
+  it('returns events from the second method response', async () => {
+    const events = [{ id: 'ev1', title: 'Stand-up', start: '2025-05-01T09:00:00' }];
+    fetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        methodResponses: [
+          ['CalendarEvent/query', { ids: ['ev1'] }, 'q'],
+          ['CalendarEvent/get',   { list: events }, 'e'],
+        ],
+      }),
+    });
+
+    const { getCalendarEvents } = await import('$lib/api.js');
+    const result = await getCalendarEvents('acc1', {}, null, null, null);
+    expect(result).toEqual(events);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Contacts helpers
+// ---------------------------------------------------------------------------
+
+describe('getContacts', () => {
+  beforeEach(() => {
+    vi.stubGlobal('window', { location: { href: '' } });
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  it('returns empty array when server returns no contacts', async () => {
+    fetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        methodResponses: [
+          ['ContactCard/query', { ids: [] }, 'q'],
+          ['ContactCard/get',   { list: [] }, 'c'],
+        ],
+      }),
+    });
+
+    const { getContacts } = await import('$lib/api.js');
+    const result = await getContacts('acc1', {}, null);
+    expect(result).toEqual([]);
+  });
+
+  it('returns contacts from the second method response', async () => {
+    const cards = [{ id: 'c1', fullName: 'Alice Smith', emails: { e1: { address: 'alice@example.com' } } }];
+    fetch.mockResolvedValueOnce({
+      status: 200,
+      ok: true,
+      json: async () => ({
+        methodResponses: [
+          ['ContactCard/query', { ids: ['c1'] }, 'q'],
+          ['ContactCard/get',   { list: cards }, 'c'],
+        ],
+      }),
+    });
+
+    const { getContacts } = await import('$lib/api.js');
+    const result = await getContacts('acc1', {}, null);
+    expect(result).toEqual(cards);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // apiFetch — 401 redirect behaviour (requires DOM / window mock)
 // ---------------------------------------------------------------------------
 

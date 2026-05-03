@@ -276,6 +276,158 @@ export async function deleteAppPassword(accountId, id, session) {
   }
 }
 
+// ── Calendar (RFC 8984 / urn:ietf:params:jmap:calendars) ────────────────────
+
+function calUsing(session) {
+  const caps = Object.keys(session?.capabilities ?? {});
+  return caps.length ? caps : ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:calendars'];
+}
+
+export async function getCalendars(accountId, session) {
+  const data = await post(
+    [['Calendar/get', { accountId, ids: null }, 'c']],
+    calUsing(session)
+  );
+  return data?.methodResponses?.[0]?.[1]?.list ?? [];
+}
+
+export async function getCalendarEvents(accountId, session, calendarId, after, before) {
+  const filter = {};
+  if (calendarId) filter.calendarIds = { [calendarId]: true };
+  if (after)  filter.after  = after;
+  if (before) filter.before = before;
+
+  const data = await post([
+    ['CalendarEvent/query', { accountId, filter, limit: 256 }, 'q'],
+    ['CalendarEvent/get',  {
+      accountId,
+      '#ids': { resultOf: 'q', name: 'CalendarEvent/query', path: '/ids' },
+    }, 'e'],
+  ], calUsing(session));
+  return data?.methodResponses?.[1]?.[1]?.list ?? [];
+}
+
+export async function createCalendarEvent(accountId, session, event) {
+  const data = await post(
+    [['CalendarEvent/set', { accountId, create: { new: event } }, 'e']],
+    calUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notCreated?.new) throw new Error(resp.notCreated.new.description || 'Create failed');
+  return resp?.created?.new ?? null;
+}
+
+export async function updateCalendarEvent(accountId, session, eventId, patch) {
+  const data = await post(
+    [['CalendarEvent/set', { accountId, update: { [eventId]: patch } }, 'e']],
+    calUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notUpdated?.[eventId]) throw new Error(resp.notUpdated[eventId].description || 'Update failed');
+}
+
+export async function deleteCalendarEvent(accountId, session, eventId) {
+  const data = await post(
+    [['CalendarEvent/set', { accountId, destroy: [eventId] }, 'e']],
+    calUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notDestroyed?.[eventId]) throw new Error(resp.notDestroyed[eventId].description || 'Delete failed');
+}
+
+export async function createCalendar(accountId, session, name) {
+  const data = await post(
+    [['Calendar/set', { accountId, create: { new: { name, isSubscribed: true } } }, 'c']],
+    calUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notCreated?.new) throw new Error(resp.notCreated.new.description || 'Create failed');
+  return resp?.created?.new ?? null;
+}
+
+export async function deleteCalendar(accountId, session, calendarId) {
+  const data = await post(
+    [['Calendar/set', { accountId, destroy: [calendarId] }, 'c']],
+    calUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notDestroyed?.[calendarId]) throw new Error(resp.notDestroyed[calendarId].description || 'Delete failed');
+}
+
+// ── Contacts (RFC 9553 / urn:ietf:params:jmap:contacts) ─────────────────────
+
+function contactUsing(session) {
+  const caps = Object.keys(session?.capabilities ?? {});
+  return caps.length ? caps : ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:contacts'];
+}
+
+export async function getAddressBooks(accountId, session) {
+  const data = await post(
+    [['AddressBook/get', { accountId, ids: null }, 'a']],
+    contactUsing(session)
+  );
+  return data?.methodResponses?.[0]?.[1]?.list ?? [];
+}
+
+export async function getContacts(accountId, session, addressBookId) {
+  const filter = addressBookId ? { addressBookId } : {};
+  const data = await post([
+    ['ContactCard/query', { accountId, filter, limit: 500 }, 'q'],
+    ['ContactCard/get',  {
+      accountId,
+      '#ids': { resultOf: 'q', name: 'ContactCard/query', path: '/ids' },
+    }, 'c'],
+  ], contactUsing(session));
+  return data?.methodResponses?.[1]?.[1]?.list ?? [];
+}
+
+export async function createContact(accountId, session, contact) {
+  const data = await post(
+    [['ContactCard/set', { accountId, create: { new: contact } }, 'c']],
+    contactUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notCreated?.new) throw new Error(resp.notCreated.new.description || 'Create failed');
+  return resp?.created?.new ?? null;
+}
+
+export async function updateContact(accountId, session, contactId, patch) {
+  const data = await post(
+    [['ContactCard/set', { accountId, update: { [contactId]: patch } }, 'c']],
+    contactUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notUpdated?.[contactId]) throw new Error(resp.notUpdated[contactId].description || 'Update failed');
+}
+
+export async function deleteContact(accountId, session, contactId) {
+  const data = await post(
+    [['ContactCard/set', { accountId, destroy: [contactId] }, 'c']],
+    contactUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notDestroyed?.[contactId]) throw new Error(resp.notDestroyed[contactId].description || 'Delete failed');
+}
+
+export async function createAddressBook(accountId, session, name) {
+  const data = await post(
+    [['AddressBook/set', { accountId, create: { new: { name } } }, 'a']],
+    contactUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notCreated?.new) throw new Error(resp.notCreated.new.description || 'Create failed');
+  return resp?.created?.new ?? null;
+}
+
+export async function deleteAddressBook(accountId, session, addressBookId) {
+  const data = await post(
+    [['AddressBook/set', { accountId, destroy: [addressBookId] }, 'a']],
+    contactUsing(session)
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notDestroyed?.[addressBookId]) throw new Error(resp.notDestroyed[addressBookId].description || 'Delete failed');
+}
+
 export async function getSieveScript() {
   const res = await apiFetch('/api/sieve');
   if (!res) return null;
