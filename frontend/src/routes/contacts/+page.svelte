@@ -94,7 +94,12 @@
     try {
       await deleteAddressBook($jmapAccountId, $jmapSession, book.id);
       addressBooks.update(list => list.filter(b => b.id !== book.id));
-      if ($selectedAddressBook === book.id) selectedAddressBook.set(null);
+      if ($selectedAddressBook === book.id) {
+        selectedAddressBook.set(null); // triggers loadContacts via reactive statement
+      } else {
+        await loadContacts(); // selected book unchanged, must reload explicitly
+      }
+      selectedContact.set(null);
       toast('Address book deleted', 'success');
     } catch (e) { toast(e?.message ?? 'Delete failed', 'error'); }
     finally { deletingBookId = null; }

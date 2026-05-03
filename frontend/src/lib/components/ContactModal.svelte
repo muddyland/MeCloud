@@ -167,6 +167,7 @@
     try {
       await deleteContact($jmapAccountId, $jmapSession, $editingContact.id);
       contacts.update(list => list.filter(c => c.id !== $editingContact.id));
+      selectedContact.set(null);
       toast('Contact deleted', 'success');
       close();
     } catch (e) {
