@@ -90,13 +90,21 @@
     } catch {}
   }
 
-  function notify(count, subject) {
+  async function notify(count, subject) {
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-    const n = new Notification(
-      count === 1 ? 'New message' : `${count} new messages`,
-      { body: subject, icon: '/icons/icon-192.png', tag: 'jmap-mail', renotify: true }
-    );
-    n.onclick = () => { window.focus(); n.close(); };
+    const title = count === 1 ? 'New message' : `${count} new messages`;
+    const opts  = { body: subject, icon: '/icons/icon-192.png', tag: 'jmap-mail', renotify: true };
+    try {
+      // Prefer SW notification — required in Chrome when a service worker is active
+      if ('serviceWorker' in navigator) {
+        const reg = await navigator.serviceWorker.ready;
+        await reg.showNotification(title, opts);
+      } else {
+        new Notification(title, opts);
+      }
+    } catch {
+      try { new Notification(title, opts); } catch {}
+    }
   }
 
   // ── Mail loading ────────────────────────────────────────────────────────────
