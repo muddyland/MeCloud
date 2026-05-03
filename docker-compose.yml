@@ -1,0 +1,23 @@
+services:
+  jmap-mail:
+    build: .
+    image: jmap-mail:latest
+    ports:
+      - "8000:8000"
+    env_file: .env
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+# Production: pull a specific image from the registry instead of building locally:
+#
+#   jmap-mail:
+#     image: registry.gitlab.com/yourgroup/jmap-mail:latest
+#     ports:
+#       - "8000:8000"
+#     env_file: .env
+#     restart: unless-stopped
