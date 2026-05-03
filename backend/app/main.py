@@ -4,9 +4,8 @@ import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Depends
 from pydantic import BaseModel, Field
-from fastapi.responses import RedirectResponse, StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -227,7 +226,15 @@ async def sieve_put(payload: SieveSaveRequest, access_token: str = Depends(requi
         raise HTTPException(status_code=502, detail="Upstream service error")
 
 
-# Serve the SvelteKit static build — must be mounted last
+# Serve the SvelteKit static build — SPA-aware catch-all must be last
 _static_dir = settings.frontend_static_dir
 if os.path.isdir(_static_dir):
-    app.mount("/", StaticFiles(directory=_static_dir, html=True), name="frontend")
+    _static_real = os.path.realpath(_static_dir)
+
+    @app.get("/{full_path:path}")
+    async def serve_frontend(full_path: str = ""):
+        if full_path:
+            candidate = os.path.realpath(os.path.join(_static_dir, full_path))
+            if candidate.startswith(_static_real + os.sep) and os.path.isfile(candidate):
+                return FileResponse(candidate)
+        return FileResponse(os.path.join(_static_dir, "index.html"))
