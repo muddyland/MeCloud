@@ -232,7 +232,7 @@
                 <Avatar name={primaryFrom.name} email={primaryFrom.email} size="lg" />
               {/if}
               <div class="min-w-0">
-                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate text-left">
+                <div class="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
                   {primaryFrom?.name || primaryFrom?.email || 'Unknown'}
                 </div>
                 {#if primaryFrom?.name}
@@ -248,7 +248,7 @@
           </div>
 
           <!-- Subject -->
-          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2 leading-snug text-left">
+          <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100 mb-2 leading-snug">
             {email.subject || '(no subject)'}
           </h2>
 
@@ -293,7 +293,7 @@
 
         <!-- Body -->
         <div class="flex-1 overflow-y-auto px-6 py-5">
-          <div class="prose dark:prose-invert max-w-none text-sm text-gray-800 dark:text-gray-200 leading-relaxed">
+          <div class="text-sm text-gray-800 dark:text-gray-200">
             {@html bodyHtml}
           </div>
         </div>
