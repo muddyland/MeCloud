@@ -66,7 +66,7 @@ frontend-tests:
   image: node:20-alpine
   script:
     - cd frontend
-    - npm ci --prefer-offline
+    - npm install
     - npm run check
     - npm test
   rules:
