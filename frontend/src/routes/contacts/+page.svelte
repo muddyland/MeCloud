@@ -40,9 +40,9 @@
   $: filtered = $contacts.filter(c => {
     const q = $contactSearch.toLowerCase();
     if (!q) return true;
-    return (c.fullName ?? '').toLowerCase().includes(q)
+    return fullName(c).toLowerCase().includes(q)
         || allEmails(c).some(e => e.toLowerCase().includes(q));
-  }).sort((a, b) => (a.fullName ?? '').localeCompare(b.fullName ?? ''));
+  }).sort((a, b) => fullName(a).localeCompare(fullName(b)));
 
   // ── Contact field helpers ────────────────────────────────────────────────────
   function allEmails(c) {
@@ -52,14 +52,16 @@
     return Object.values(c.phones ?? {}).map(p => ({ number: p.number ?? '', type: Object.keys(p.contexts ?? {})[0] ?? '' })).filter(p => p.number);
   }
   function firstEmail(c) { return allEmails(c)[0] ?? ''; }
+  function fullName(c)   { return c.name?.full ?? ''; }
   function jobTitle(c)   { return Object.values(c.titles ?? {})[0]?.name ?? ''; }
   function orgName(c)    { return Object.values(c.organizations ?? {})[0]?.name ?? ''; }
-  function website(c)    { return Object.values(c.links ?? {})[0]?.uri ?? ''; }
+  function website(c)    { return Object.values(c.links ?? {})[0]?.href ?? ''; }
   function notes(c)      { return Object.values(c.notes ?? {})[0]?.note ?? ''; }
   function address(c) {
     const a = Object.values(c.addresses ?? {})[0];
     if (!a) return null;
-    const street = (Array.isArray(a.street) ? a.street : []).find(s => s.kind === 'name')?.value ?? '';
+    const comps = Array.isArray(a.components) ? a.components : [];
+    const street = comps.find(s => s.kind === 'name')?.value ?? '';
     return { street, city: a.locality ?? '', state: a.region ?? '', postal: a.postcode ?? '', country: a.country ?? '' };
   }
   function birthday(c) {
@@ -237,9 +239,9 @@
                      {$selectedContact?.id === contact.id
                        ? 'bg-blue-50 dark:bg-blue-900/30'
                        : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'}">
-              <Avatar name={contact.fullName} email={firstEmail(contact)} size="sm" />
+              <Avatar name={fullName(contact)} email={firstEmail(contact)} size="sm" />
               <div class="min-w-0">
-                <div class="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{contact.fullName ?? '—'}</div>
+                <div class="text-sm font-medium text-gray-800 dark:text-gray-100 truncate">{fullName(contact) || '—'}</div>
                 {#if jobTitle(contact) || orgName(contact)}
                   <div class="text-xs text-gray-500 dark:text-gray-400 truncate">
                     {[jobTitle(contact), orgName(contact)].filter(Boolean).join(' · ')}
@@ -263,9 +265,9 @@
           <!-- Header -->
           <div class="flex items-start justify-between mb-8">
             <div class="flex items-center gap-4">
-              <Avatar name={c.fullName} email={firstEmail(c)} size="lg" />
+              <Avatar name={fullName(c)} email={firstEmail(c)} size="lg" />
               <div>
-                <h1 class="text-xl font-semibold text-gray-900 dark:text-gray-100">{c.fullName ?? '—'}</h1>
+                <h1 class="text-xl font-semibold text-gray-900 dark:text-gray-100">{fullName(c) || '—'}</h1>
                 {#if jobTitle(c) || orgName(c)}
                   <p class="text-sm text-gray-500 dark:text-gray-400 mt-0.5">
                     {[jobTitle(c), orgName(c)].filter(Boolean).join(' · ')}

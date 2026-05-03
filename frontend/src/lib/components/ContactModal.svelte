@@ -28,10 +28,10 @@
   function init() {
     const c = $editingContact;
     if (c) {
-      fullName = c.fullName ?? '';
+      fullName = c.name?.full ?? '';
       jobTitle = Object.values(c.titles ?? {})[0]?.name ?? '';
       org      = Object.values(c.organizations ?? {})[0]?.name ?? '';
-      website  = Object.values(c.links ?? {})[0]?.uri ?? '';
+      website  = Object.values(c.links ?? {})[0]?.href ?? '';
       notes    = Object.values(c.notes ?? {})[0]?.note ?? '';
 
       emailList = Object.values(c.emails ?? {}).map(e => ({
@@ -47,8 +47,8 @@
       if (!phoneList.length) phoneList = [{ number: '', type: 'mobile' }];
 
       const addr = Object.values(c.addresses ?? {})[0] ?? {};
-      const streetParts = Array.isArray(addr.street) ? addr.street : [];
-      street  = streetParts.find(s => s.kind === 'name')?.value ?? '';
+      const components = Array.isArray(addr.components) ? addr.components : [];
+      street  = components.find(s => s.kind === 'name')?.value ?? '';
       city    = addr.locality  ?? '';
       state   = addr.region    ?? '';
       postal  = addr.postcode  ?? '';
@@ -79,9 +79,9 @@
   function removePhone(i) { phoneList = phoneList.filter((_, idx) => idx !== i); }
 
   function buildCard() {
-    const card = { '@type': 'Card', version: '1.0', fullName: fullName.trim() };
+    const card = { '@type': 'Card', version: '1.0', name: { full: fullName.trim() } };
 
-    if (org.trim()) card.organizations = { o1: { name: org.trim() } };
+    if (org.trim()) card.organizations = { o1: { '@type': 'Organization', name: org.trim() } };
 
     if (jobTitle.trim()) {
       card.titles = { t1: { '@type': 'Title', name: jobTitle.trim() } };
@@ -107,7 +107,7 @@
     if (street.trim() || city.trim() || state.trim() || postal.trim() || country.trim()) {
       card.addresses = { a1: {
         '@type': 'Address',
-        ...(street.trim() ? { street: [{ '@type': 'StreetComponent', kind: 'name', value: street.trim() }] } : {}),
+        ...(street.trim() ? { components: [{ '@type': 'AddressComponent', kind: 'name', value: street.trim() }] } : {}),
         ...(city.trim()   ? { locality: city.trim()   } : {}),
         ...(state.trim()  ? { region:   state.trim()  } : {}),
         ...(postal.trim() ? { postcode: postal.trim() } : {}),
@@ -125,8 +125,8 @@
       }
     }
 
-    if (website.trim()) card.links  = { w1: { '@type': 'Link', kind: 'uri', uri: website.trim() } };
-    if (notes.trim())   card.notes  = { n1: { note: notes.trim() } };
+    if (website.trim()) card.links = { w1: { '@type': 'Link', href: website.trim() } };
+    if (notes.trim())   card.notes = { n1: { '@type': 'Note', note: notes.trim() } };
 
     return card;
   }
