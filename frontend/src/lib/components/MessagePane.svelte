@@ -42,6 +42,19 @@
         bodyHtml = '';
       }
       email = data;
+      // Auto-mark as read on open
+      if (!data?.keywords?.['$seen']) {
+        email = { ...data, keywords: { ...(data.keywords ?? {}), '$seen': true } };
+        markEmailSeen(accountId, id, true).catch(() => {});
+        emails.update(list => list.map(e =>
+          e.id === id ? { ...e, keywords: { ...(e.keywords ?? {}), '$seen': true } } : e
+        ));
+        mailboxes.update(list => list.map(mb =>
+          mb.id === $selectedMailbox?.id
+            ? { ...mb, unreadEmails: Math.max(0, (mb.unreadEmails ?? 0) - 1) }
+            : mb
+        ));
+      }
     } finally {
       loadingEmail = false;
     }
@@ -159,6 +172,11 @@
         e.id === email.id
           ? { ...e, keywords: { ...(e.keywords ?? {}), '$seen': next ? true : undefined } }
           : e
+      ));
+      mailboxes.update(list => list.map(mb =>
+        mb.id === $selectedMailbox?.id
+          ? { ...mb, unreadEmails: Math.max(0, (mb.unreadEmails ?? 0) + (next ? -1 : 1)) }
+          : mb
       ));
     } catch (e) {
       toast(e?.message ?? 'Failed to update read status', 'error');

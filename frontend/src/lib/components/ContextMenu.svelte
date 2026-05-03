@@ -91,6 +91,11 @@
           ? { ...e, keywords: { ...(e.keywords ?? {}), '$seen': next ? true : undefined } }
           : e
       ));
+      mailboxes.update(list => list.map(mb =>
+        mb.id === $selectedMailbox?.id
+          ? { ...mb, unreadEmails: Math.max(0, (mb.unreadEmails ?? 0) + (next ? -1 : 1)) }
+          : mb
+      ));
     } catch (e) {
       toast(e?.message ?? 'Failed to update read status', 'error');
     }
