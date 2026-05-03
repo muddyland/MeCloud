@@ -1,4 +1,5 @@
 <script>
+  import { onMount } from 'svelte';
   import { appName, currentUser, darkMode, sieveOpen, appPasswordsOpen } from '$lib/stores/mail.js';
   import { logout } from '$lib/api.js';
   import Avatar from './Avatar.svelte';
@@ -9,6 +10,17 @@
 
   function toggle() { open = !open; }
   function close()  { open = false; }
+
+  let notifPerm = 'unsupported';
+  onMount(() => {
+    if ('Notification' in window) notifPerm = Notification.permission;
+  });
+
+  async function requestNotifications() {
+    if (!('Notification' in window)) return;
+    await Notification.requestPermission();
+    notifPerm = Notification.permission;
+  }
 </script>
 
 <nav class="h-11 grid grid-cols-3 items-center px-4 flex-shrink-0 z-20
@@ -28,6 +40,29 @@
 
   <!-- Right controls -->
   <div class="flex items-center justify-end gap-1">
+
+  <!-- Notification bell -->
+  {#if notifPerm !== 'unsupported' && notifPerm !== 'denied'}
+    <button
+      on:click={requestNotifications}
+      title={notifPerm === 'granted' ? 'Notifications enabled' : 'Enable notifications'}
+      class="p-1.5 rounded-lg transition-colors duration-150
+             {notifPerm === 'granted'
+               ? 'text-blue-500 dark:text-blue-400'
+               : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}"
+    >
+      {#if notifPerm === 'granted'}
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>
+        </svg>
+      {:else}
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 01-3.46 0"/>
+        </svg>
+      {/if}
+    </button>
+  {/if}
+
   <!-- Dark mode toggle -->
   <button
     on:click={() => darkMode.toggle()}

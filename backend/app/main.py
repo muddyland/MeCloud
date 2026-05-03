@@ -214,10 +214,20 @@ async def jmap_proxy(payload: JMAPRequest, access_token: str = Depends(require_a
 @app.get("/api/jmap/events")
 async def jmap_events(access_token: str = Depends(require_auth)):
     async def event_generator():
-        async for line in jmap_event_stream(access_token):
-            yield f"{line}\n"
+        try:
+            async for line in jmap_event_stream(access_token):
+                yield f"{line}\n"
+        except Exception as e:
+            logger.error("JMAP event stream error: %s", e)
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 class SieveSaveRequest(BaseModel):

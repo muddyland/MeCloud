@@ -52,12 +52,14 @@
     window.removeEventListener('mousemove', onMouseMove);
     window.removeEventListener('mouseup',   stopDrag);
     clearTimeout(esTimer);
+    clearInterval(pollTimer);
     es?.close();
   });
 
-  // ── Real-time event stream ────────────────────────────────────────────────
-  let es      = null;
-  let esTimer = null;
+  // ── Real-time event stream + polling fallback ────────────────────────────
+  let es         = null;
+  let esTimer    = null;
+  let pollTimer  = null;
 
   function connectStream() {
     if (es?.readyState === 0 || es?.readyState === 1) return; // CONNECTING or OPEN
@@ -66,7 +68,8 @@
     const onData = ({ data }) => {
       try {
         const msg = JSON.parse(data);
-        if (msg?.['@type'] === 'StateChange' && msg.changed?.[accountId]?.Email !== undefined) {
+        // Trigger on any state change for our account, not just Email
+        if (msg?.['@type'] === 'StateChange' && msg.changed?.[accountId]) {
           silentRefresh();
         }
       } catch {}
@@ -141,11 +144,8 @@
       if (inbox) selectedMailbox.set(inbox);
 
       connectStream();
-
-      // Request notification permission once, after a brief delay
-      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-        setTimeout(() => Notification.requestPermission(), 3_000);
-      }
+      // 30-second polling fallback — catches updates if SSE is unavailable
+      pollTimer = setInterval(silentRefresh, 30_000);
     } catch (err) {
       console.error('Failed to initialise JMAP session:', err);
     }
