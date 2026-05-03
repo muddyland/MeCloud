@@ -137,6 +137,32 @@ export async function getEmails(accountId, mailboxId, position = 0, limit = 50) 
   return data?.methodResponses?.[1]?.[1]?.list ?? [];
 }
 
+export async function searchEmails(accountId, query, position = 0, limit = 50) {
+  const data = await post([
+    [
+      'Email/query',
+      {
+        accountId,
+        filter: { text: query },
+        sort: [{ property: 'receivedAt', isAscending: false }],
+        position,
+        limit
+      },
+      'q'
+    ],
+    [
+      'Email/get',
+      {
+        accountId,
+        '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
+        properties: ['id', 'subject', 'from', 'receivedAt', 'preview', 'keywords']
+      },
+      'e'
+    ]
+  ]);
+  return data?.methodResponses?.[1]?.[1]?.list ?? [];
+}
+
 export async function destroyEmail(accountId, emailId) {
   const data = await post([
     ['Email/set', { accountId, destroy: [emailId] }, 'del']

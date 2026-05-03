@@ -62,6 +62,9 @@ export const sieveOpen           = writable(false);
 export const newFolderOpen       = writable(false);
 export const appPasswordsOpen    = writable(false);
 
+// Search
+export const searchQuery      = writable('');
+
 // Panel widths — persisted to localStorage, clamped to sane ranges
 export const sidebarWidth     = persisted('sidebarWidth',     240, { min: 180, max: 380 });
 export const messageListWidth = persisted('messageListWidth', 320, { min: 220, max: 520 });
