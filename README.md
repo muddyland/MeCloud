@@ -2,7 +2,13 @@
 
 A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), designed for [Stalwart Mail Server](https://stalw.art/). Inspired by iCloud Mail's three-pane layout with full dark mode support.
 
-![JMAP Mail screenshot](docs/screenshot.png)
+![Mail](docs/screenshot-mail.png)
+
+![Compose](docs/screenshot.png)
+
+![Calendar](docs/screenshot-calendar.png)
+
+![Contacts](docs/screenshot-contacts.png)
 
 ## Features
 
