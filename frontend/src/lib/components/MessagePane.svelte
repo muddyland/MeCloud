@@ -3,7 +3,7 @@
   import {
     selectedEmailId, jmapSession, movePickerOpen,
     mailboxes, selectedMailbox, jmapAccountId, emails,
-    composeContext, composeOpen
+    composeContext, composeOpen, darkMode
   } from '$lib/stores/mail.js';
   import { getEmailBody, moveEmail, destroyEmail, markEmailSeen } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
@@ -11,8 +11,9 @@
   import DOMPurify from 'dompurify';
 
   let email = null;
-  let bodyHtml = '';    // sanitised HTML kept for reply/forward quoting
-  let frameDoc = '';    // srcdoc for the display iframe (always used)
+  let bodyHtml    = '';     // sanitised HTML kept for reply/forward quoting
+  let frameContent = '';    // sanitised content cached for dark-mode rebuilds
+  let framePlain   = false; // true → frameContent is escaped plain text (needs <pre>)
   let loadingEmail = false;
 
   const _purifyOpts = {
@@ -22,34 +23,48 @@
     ALLOW_DATA_ATTR: false,
   };
 
-  const _frameBase =
-    '<meta charset="utf-8">' +
-    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
-    '<base target="_blank">' +
-    '<style>' +
-      'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;' +
-           'font-size:14px;line-height:1.5;word-break:break-word;padding:16px 24px;margin:0;color:#111827}' +
-      'img{max-width:100%;height:auto}a{color:#2563eb}' +
-      'pre{white-space:pre-wrap;font-family:inherit;font-size:inherit;margin:0;line-height:1.6}' +
-      'table{max-width:100%}' +
-      'blockquote{border-left:3px solid #d1d5db;margin:.5em 0;padding:0 0 0 1em;color:#6b7280}' +
-    '</style>';
-
-  // Build a complete srcdoc document from sanitised content.
-  // Handles full HTML documents and bare fragments.
-  function wrapDoc(html) {
-    if (/<html[\s>]/i.test(html)) {
-      return html.replace(/(<head[^>]*>)/i, `$1${_frameBase}`);
-    }
-    return `<!DOCTYPE html><html><head>${_frameBase}</head><body>${html}</body></html>`;
+  // Theme-aware base styles injected into every frame document.
+  function frameBase(dark) {
+    return (
+      '<meta charset="utf-8">' +
+      '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+      '<base target="_blank">' +
+      '<style>' +
+        `body{background:${dark ? '#1f2937' : '#fff'};color:${dark ? '#e5e7eb' : '#111827'};` +
+             'font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;' +
+             'font-size:14px;line-height:1.5;word-break:break-word;padding:16px 24px;margin:0}' +
+        'img{max-width:100%;height:auto}' +
+        `a{color:${dark ? '#60a5fa' : '#2563eb'}}` +
+        'pre{white-space:pre-wrap;font-family:inherit;font-size:inherit;margin:0;line-height:1.6}' +
+        'table{max-width:100%}' +
+        `blockquote{border-left:3px solid ${dark ? '#4b5563' : '#d1d5db'};` +
+                   `margin:.5em 0;padding:0 0 0 1em;color:${dark ? '#9ca3af' : '#6b7280'}}` +
+      '</style>'
+    );
   }
+
+  function wrapDoc(html, dark) {
+    const base = frameBase(dark);
+    if (/<html[\s>]/i.test(html)) {
+      return html.replace(/(<head[^>]*>)/i, `$1${base}`);
+    }
+    return `<!DOCTYPE html><html><head>${base}</head><body>${html}</body></html>`;
+  }
+
+  // Rebuild frameDoc whenever content or dark mode changes.
+  $: frameDoc = frameContent
+    ? (framePlain
+        ? `<!DOCTYPE html><html><head>${frameBase($darkMode)}</head><body><pre>${frameContent}</pre></body></html>`
+        : wrapDoc(frameContent, $darkMode))
+    : '';
 
   async function loadEmail(id) {
     if (!id || !$jmapSession) return;
     loadingEmail = true;
     email = null;
-    bodyHtml = '';
-    frameDoc = '';
+    bodyHtml     = '';
+    frameContent = '';
+    framePlain   = false;
     try {
       const accountId = Object.keys($jmapSession.accounts)[0];
       const data = await getEmailBody(accountId, id);
@@ -65,8 +80,9 @@
       }
 
       if (rawHtml) {
-        bodyHtml = DOMPurify.sanitize(rawHtml, _purifyOpts);
-        frameDoc = wrapDoc(DOMPurify.sanitize(rawHtml, { ..._purifyOpts, WHOLE_DOCUMENT: true }));
+        bodyHtml     = DOMPurify.sanitize(rawHtml, _purifyOpts);
+        frameContent = DOMPurify.sanitize(rawHtml, { ..._purifyOpts, WHOLE_DOCUMENT: true });
+        framePlain   = false;
       } else {
         // Plain-text path — prefer textBody, fall back to htmlBody value if needed
         let text = '';
@@ -84,8 +100,9 @@
           .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
         const escaped = decoded
           .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        bodyHtml = `<pre>${escaped}</pre>`;
-        frameDoc = `<!DOCTYPE html><html><head>${_frameBase}</head><body><pre>${escaped}</pre></body></html>`;
+        bodyHtml     = `<pre>${escaped}</pre>`;
+        frameContent = escaped;
+        framePlain   = true;
       }
       email = data;
       // Auto-mark as read on open
@@ -343,7 +360,9 @@
             title="Email content"
             srcdoc={frameDoc}
             sandbox="allow-popups allow-popups-to-escape-sandbox"
-            class="w-full h-full border-0 block bg-white"
+            class="w-full h-full border-0 block"
+            class:bg-white={!$darkMode}
+            class:bg-gray-800={$darkMode}
           ></iframe>
         </div>
 
