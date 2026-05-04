@@ -163,9 +163,23 @@ async def login(request: Request):
 async def callback(request: Request, code: str, state: str):
     try:
         tokens = await exchange_code(code, state, request.session)
-    except (ValueError, Exception) as e:
+    except ValueError as e:
+        # State mismatch or missing PKCE — log what the session actually held so
+        # we can tell whether the cookie arrived at all, then send the user back
+        # to re-start the login (most common after a container restart).
+        logger.warning(
+            "OAuth callback rejected (%s). session_keys=%s  url_state=%.8s…  "
+            "session_state=%.8s…",
+            e,
+            list(request.session.keys()),
+            state,
+            request.session.get("oauth_state", "<missing>"),
+        )
+        request.session.clear()
+        return RedirectResponse("/auth/login")
+    except Exception as e:
         logger.error("OAuth callback error: %s", e)
-        raise HTTPException(status_code=400, detail="Authentication failed")
+        raise HTTPException(status_code=502, detail="Authentication failed")
 
     request.session["access_token"]     = tokens["access_token"]
     request.session["token_expires_at"] = time.time() + tokens.get("expires_in", 3600)
