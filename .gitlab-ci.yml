@@ -10,6 +10,14 @@ stages:
 variables:
   DOCKER_TLS_CERTDIR: "/certs"
 
+.wait-for-docker: &wait-for-docker
+  - |
+    for i in $(seq 1 15); do
+      docker info > /dev/null 2>&1 && break
+      echo "Waiting for Docker daemon... ($i/15)"
+      sleep 2
+    done
+
 # ---------------------------------------------------------------------------
 # build stage — compile the image and push two tags to the registry:
 #   • :$CI_COMMIT_SHORT_SHA  — immutable, identifies this exact commit
@@ -24,6 +32,7 @@ build-image:
     - name: docker:26-dind
       alias: docker
   before_script:
+    - *wait-for-docker
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
     - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" || true
@@ -84,6 +93,7 @@ smoke-test:
   needs:
     - build-image
   before_script:
+    - *wait-for-docker
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
     - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
@@ -127,6 +137,7 @@ tag-latest:
     - backend-tests
     - frontend-tests
   before_script:
+    - *wait-for-docker
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
     - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
