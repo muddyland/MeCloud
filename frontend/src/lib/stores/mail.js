@@ -52,10 +52,13 @@ export const composeContext   = writable(null);  // { mode, to, subject } | null
 export const jmapSession      = writable(null);
 export const jmapAccountId    = writable(null);
 
+// Multi-select state
+export const selectedEmailIds = writable(new Set()); // Set<emailId>
+
 // Move-to-folder / drag state
 export const draggedEmailId   = writable(null);
 export const contextMenu      = writable(null); // { x, y, emailId } | null
-export const movePickerOpen   = writable(null); // emailId to move, or null
+export const movePickerOpen   = writable(null); // emailId | emailId[] to move, or null
 
 // Modal visibility
 export const sieveOpen           = writable(false);

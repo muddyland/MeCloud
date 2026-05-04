@@ -6,6 +6,7 @@
     composeContext, composeOpen, darkMode
   } from '$lib/stores/mail.js';
   import { getEmailBody, moveEmail, destroyEmail, markEmailSeen } from '$lib/api.js';
+  import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
   import Avatar from './Avatar.svelte';
   import DOMPurify from 'dompurify';
@@ -218,6 +219,7 @@
       }
       emails.update(list => list.filter(e => e.id !== emailId));
       selectedEmailId.set(null);
+      await refreshMailboxCounts();
     } catch (e) {
       toast(e?.message ?? 'Delete failed', 'error');
     }

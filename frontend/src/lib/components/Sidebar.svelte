@@ -4,6 +4,7 @@
     draggedEmailId, emails, selectedEmailId, jmapAccountId
   } from '$lib/stores/mail.js';
   import { moveEmail, renameMailbox, deleteMailbox } from '$lib/api.js';
+  import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
   import AppNav from './AppNav.svelte';
@@ -112,13 +113,15 @@
     e.preventDefault();
     dragOverId = null;
     if (!$draggedEmailId) return;
-    const emailId = $draggedEmailId;
+    const emailId     = $draggedEmailId;
+    const sourceId    = $selectedMailbox?.id;
     draggedEmailId.set(null);
     try {
-      await moveEmail($jmapAccountId, emailId, mailbox.id, $selectedMailbox?.id);
+      await moveEmail($jmapAccountId, emailId, mailbox.id, sourceId);
       emails.update(l => l.filter(em => em.id !== emailId));
       if ($selectedEmailId === emailId) selectedEmailId.set(null);
       toast(`Moved to ${mailbox.name}`, 'success');
+      await refreshMailboxCounts();
     } catch (e) {
       toast(e?.message ?? 'Move failed', 'error');
     }

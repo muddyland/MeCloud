@@ -83,9 +83,17 @@
     const mid = $selectedMailbox?.id;
     if (!mid || !accountId) return;
     try {
-      const fresh = await getEmails(accountId, mid);
-      const prev  = $emails.length;
+      const [fresh, freshMailboxes] = await Promise.all([
+        getEmails(accountId, mid),
+        getMailboxes(accountId),
+      ]);
+      const prev = $emails.length;
       emails.set(fresh);
+      // Preserve sidebar sort order; only update server-owned fields like unreadEmails
+      mailboxes.update(existing => existing.map(mb => {
+        const update = freshMailboxes.find(f => f.id === mb.id);
+        return update ? { ...mb, unreadEmails: update.unreadEmails ?? 0 } : mb;
+      }));
       if (fresh.length > prev) notify(fresh.length - prev, fresh[0]?.subject ?? '');
     } catch {}
   }

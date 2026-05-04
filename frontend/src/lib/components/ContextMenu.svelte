@@ -6,6 +6,7 @@
     composeContext, composeOpen
   } from '$lib/stores/mail.js';
   import { moveEmail, destroyEmail, markEmailSeen } from '$lib/api.js';
+  import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
 
   $: email        = $emails.find(e => e.id === $contextMenu?.emailId) ?? null;
@@ -72,6 +73,7 @@
       }
       emails.update(list => list.filter(e => e.id !== emailId));
       if ($selectedEmailId === emailId) selectedEmailId.set(null);
+      await refreshMailboxCounts();
     } catch (e) {
       toast(e?.message ?? 'Delete failed', 'error');
     }

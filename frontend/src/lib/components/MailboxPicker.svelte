@@ -1,26 +1,45 @@
 <script>
   import { fly } from 'svelte/transition';
-  import { movePickerOpen, mailboxes, selectedMailbox, emails, selectedEmailId, jmapAccountId } from '$lib/stores/mail.js';
-  import { moveEmail } from '$lib/api.js';
+  import { movePickerOpen, selectedMailbox, emails, selectedEmailId, jmapAccountId, selectedEmailIds } from '$lib/stores/mail.js';
+  import { moveEmail, bulkMove } from '$lib/api.js';
+  import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
+  import { mailboxes } from '$lib/stores/mail.js';
 
   let moving = false;
   let error = '';
 
+  $: isBulk         = Array.isArray($movePickerOpen);
+  $: emailIds       = isBulk ? $movePickerOpen : ($movePickerOpen ? [$movePickerOpen] : []);
   $: otherMailboxes = $mailboxes.filter(m => m.id !== $selectedMailbox?.id);
 
   async function pick(mailbox) {
     if (moving) return;
     moving = true;
     error = '';
-    const emailId = $movePickerOpen;
+    // Snapshot reactive values before any await
+    const ids           = [...emailIds];
+    const bulk          = isBulk;
+    const sourceId      = $selectedMailbox?.id;
+    const accountId     = $jmapAccountId;
+    const curSelectedId = $selectedEmailId;
     try {
-      await moveEmail($jmapAccountId, emailId, mailbox.id, $selectedMailbox?.id);
-      emails.update(list => list.filter(e => e.id !== emailId));
-      if ($selectedEmailId === emailId) selectedEmailId.set(null);
-      toast(`Moved to ${mailbox.name}`, 'success');
+      if (bulk) {
+        await bulkMove(accountId, ids, mailbox.id, sourceId);
+        emails.update(list => list.filter(e => !ids.includes(e.id)));
+        if (ids.includes(curSelectedId)) selectedEmailId.set(null);
+        selectedEmailIds.set(new Set());
+        toast(`${ids.length} message${ids.length === 1 ? '' : 's'} moved to ${mailbox.name}`, 'success');
+      } else {
+        const emailId = ids[0];
+        await moveEmail(accountId, emailId, mailbox.id, sourceId);
+        emails.update(list => list.filter(e => e.id !== emailId));
+        if (curSelectedId === emailId) selectedEmailId.set(null);
+        toast(`Moved to ${mailbox.name}`, 'success');
+      }
       movePickerOpen.set(null);
+      await refreshMailboxCounts();
     } catch (e) {
       error = e.message || 'Move failed';
     } finally {
@@ -42,7 +61,7 @@
   >
     <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-700">
       <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">
-        {moving ? 'Moving…' : 'Move to folder'}
+        {moving ? 'Moving…' : isBulk ? `Move ${emailIds.length} messages` : 'Move to folder'}
       </p>
     </div>
 

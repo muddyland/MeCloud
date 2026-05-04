@@ -221,6 +221,38 @@ export async function createMailbox(accountId, name, parentId = null) {
   return { ...props, ...created };
 }
 
+export async function bulkMarkSeen(accountId, emailIds, seen) {
+  const update = {};
+  for (const id of emailIds) update[id] = { 'keywords/$seen': seen ? true : null };
+  await post([['Email/set', { accountId, update }, 'mark']]);
+}
+
+export async function bulkDestroy(accountId, emailIds) {
+  const data = await post([['Email/set', { accountId, destroy: emailIds }, 'del']]);
+  const resp = data?.methodResponses?.[0]?.[1];
+  const failed = resp?.notDestroyed ? Object.keys(resp.notDestroyed) : [];
+  if (failed.length > 0) {
+    const first = resp.notDestroyed[failed[0]];
+    throw new Error(first?.description || `Delete failed for ${failed.length} message(s)`);
+  }
+}
+
+export async function bulkMove(accountId, emailIds, toMailboxId, fromMailboxId) {
+  const update = {};
+  for (const id of emailIds) {
+    const patch = { [`mailboxIds/${toMailboxId}`]: true };
+    if (fromMailboxId) patch[`mailboxIds/${fromMailboxId}`] = null;
+    update[id] = patch;
+  }
+  const data = await post([['Email/set', { accountId, update }, 'mv']]);
+  const resp = data?.methodResponses?.[0]?.[1];
+  const failed = resp?.notUpdated ? Object.keys(resp.notUpdated) : [];
+  if (failed.length > 0) {
+    const first = resp.notUpdated[failed[0]];
+    throw new Error(first?.description || `Move failed for ${failed.length} message(s)`);
+  }
+}
+
 export async function markEmailSeen(accountId, emailId, seen) {
   const data = await post([
     ['Email/set', { accountId, update: { [emailId]: { 'keywords/$seen': seen ? true : null } } }, 'mark']

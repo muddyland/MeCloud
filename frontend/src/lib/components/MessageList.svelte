@@ -2,9 +2,11 @@
   import { onMount, onDestroy } from 'svelte';
   import {
     emails, selectedEmailId, selectedMailbox, loading,
-    draggedEmailId, contextMenu, composeOpen, jmapAccountId, searchQuery
+    draggedEmailId, contextMenu, composeOpen, jmapAccountId, searchQuery,
+    selectedEmailIds, movePickerOpen, mailboxes
   } from '$lib/stores/mail.js';
-  import { getEmails, searchEmails } from '$lib/api.js';
+  import { getEmails, searchEmails, bulkMarkSeen, bulkDestroy, bulkMove } from '$lib/api.js';
+  import { toast } from '$lib/stores/toast.js';
   import Avatar from './Avatar.svelte';
 
   const PAGE = 50;
@@ -14,6 +16,7 @@
   let sentinel;
   let observer;
   let searchInput;
+  let bulkLoading  = false;
 
   // Search state
   let searchResults  = [];
@@ -24,8 +27,9 @@
 
   $: isSearching     = $searchQuery.trim().length > 0;
   $: displayedEmails = isSearching ? searchResults : $emails;
+  $: selectionMode   = $selectedEmailIds.size > 0;
 
-  // Reset mailbox pagination and clear search when mailbox changes
+  // Reset pagination, clear search and selection when mailbox changes
   let prevMailboxId = null;
   $: {
     const id = $selectedMailbox?.id ?? null;
@@ -33,6 +37,7 @@
       prevMailboxId = id;
       hasMore       = true;
       loadingMore   = false;
+      selectedEmailIds.set(new Set());
       if ($searchQuery) searchQuery.set('');
     }
   }
@@ -64,7 +69,7 @@
       searchPosition = results.length;
       if (results.length < PAGE) searchHasMore = false;
     } catch {
-      // silent — user can retry by retyping
+      // silent
     } finally {
       searchLoading = false;
     }
@@ -108,7 +113,10 @@
   }
 
   function handleKeydown(e) {
-    if (e.key === 'Escape') { searchQuery.set(''); searchInput?.blur(); }
+    if (e.key === 'Escape') {
+      if ($selectedEmailIds.size > 0) { selectedEmailIds.set(new Set()); return; }
+      searchQuery.set(''); searchInput?.blur();
+    }
   }
 
   function handleGlobalKeydown(e) {
@@ -149,28 +157,218 @@
   function isUnread(email) {
     return !email.keywords?.['$seen'];
   }
+
+  // ── Selection ─────────────────────────────────────────────────────────────
+
+  function toggleSelect(id, e) {
+    e?.stopPropagation();
+    selectedEmailIds.update(s => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+
+  function clearSelection() { selectedEmailIds.set(new Set()); }
+
+  function selectAll() { selectedEmailIds.set(new Set(displayedEmails.map(e => e.id))); }
+
+  $: allSelected = displayedEmails.length > 0 && displayedEmails.every(e => $selectedEmailIds.has(e.id));
+
+  // ── Bulk actions ──────────────────────────────────────────────────────────
+
+  async function bulkMark(seen) {
+    if (bulkLoading) return;
+    bulkLoading = true;
+    const ids = [...$selectedEmailIds];
+    let unreadDelta = 0;
+    for (const id of ids) {
+      const e = $emails.find(e => e.id === id);
+      if (!e) continue;
+      const wasSeen = !!e.keywords?.['$seen'];
+      if (seen && !wasSeen) unreadDelta--;
+      if (!seen && wasSeen) unreadDelta++;
+    }
+    try {
+      await bulkMarkSeen($jmapAccountId, ids, seen);
+      emails.update(list => list.map(e =>
+        ids.includes(e.id)
+          ? { ...e, keywords: { ...(e.keywords ?? {}), '$seen': seen ? true : undefined } }
+          : e
+      ));
+      if (unreadDelta !== 0) {
+        mailboxes.update(list => list.map(mb =>
+          mb.id === $selectedMailbox?.id
+            ? { ...mb, unreadEmails: Math.max(0, (mb.unreadEmails ?? 0) + unreadDelta) }
+            : mb
+        ));
+      }
+      clearSelection();
+    } catch (e) {
+      toast(e?.message ?? 'Failed to update messages', 'error');
+    } finally {
+      bulkLoading = false;
+    }
+  }
+
+  async function handleBulkDelete() {
+    if (bulkLoading) return;
+    bulkLoading = true;
+    const ids = [...$selectedEmailIds];
+    const trashMailbox = $mailboxes.find(m => m.role === 'trash');
+    const inTrash = $selectedMailbox?.role === 'trash';
+    try {
+      if (inTrash) {
+        await bulkDestroy($jmapAccountId, ids);
+        toast(`${ids.length} message${ids.length === 1 ? '' : 's'} deleted permanently`, 'success');
+      } else if (trashMailbox) {
+        await bulkMove($jmapAccountId, ids, trashMailbox.id, $selectedMailbox?.id);
+        toast(`${ids.length} message${ids.length === 1 ? '' : 's'} moved to Trash`, 'success');
+      }
+      emails.update(list => list.filter(e => !ids.includes(e.id)));
+      if (ids.includes($selectedEmailId)) selectedEmailId.set(null);
+      clearSelection();
+    } catch (e) {
+      toast(e?.message ?? 'Delete failed', 'error');
+    } finally {
+      bulkLoading = false;
+    }
+  }
+
+  function handleBulkMove() {
+    if ($selectedEmailIds.size === 0) return;
+    movePickerOpen.set([...$selectedEmailIds]);
+  }
 </script>
 
 <section class="flex flex-col h-full w-full bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
-  <!-- Header -->
-  <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 flex items-center justify-between">
-    <h2 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-      {isSearching ? 'Search results' : ($selectedMailbox?.name ?? 'Inbox')}
-    </h2>
-    <button
-      on:click={() => composeOpen.set(true)}
-      title="Compose new message"
-      class="p-1 rounded-md text-gray-400 dark:text-gray-500
-             hover:text-gray-600 dark:hover:text-gray-300
-             hover:bg-gray-100 dark:hover:bg-gray-700
-             transition-colors duration-150"
-    >
-      <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
-        <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
-      </svg>
-    </button>
-  </div>
+  <!-- Header: normal or bulk-action toolbar -->
+  {#if selectionMode}
+    <div class="px-3 py-2.5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 flex items-center gap-1">
+      <!-- Select-all / clear toggle -->
+      <button
+        on:click={allSelected ? clearSelection : selectAll}
+        title={allSelected ? 'Deselect all' : 'Select all'}
+        class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded
+               text-gray-400 dark:text-gray-500
+               hover:text-gray-600 dark:hover:text-gray-300
+               hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-150"
+      >
+        {#if allSelected}
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="20 6 9 17 4 12"/>
+          </svg>
+        {:else}
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="3" width="18" height="18" rx="2"/>
+          </svg>
+        {/if}
+      </button>
+
+      <span class="text-xs font-medium text-gray-600 dark:text-gray-400 flex-1 min-w-0 truncate pl-1">
+        {$selectedEmailIds.size} selected
+      </span>
+
+      <!-- Mark read -->
+      <button
+        on:click={() => bulkMark(true)}
+        disabled={bulkLoading}
+        title="Mark as read"
+        class="flex-shrink-0 p-1.5 rounded text-gray-400 dark:text-gray-500
+               hover:text-gray-600 dark:hover:text-gray-300
+               hover:bg-gray-100 dark:hover:bg-gray-700
+               disabled:opacity-40 disabled:cursor-not-allowed
+               transition-colors duration-150"
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+        </svg>
+      </button>
+
+      <!-- Mark unread -->
+      <button
+        on:click={() => bulkMark(false)}
+        disabled={bulkLoading}
+        title="Mark as unread"
+        class="flex-shrink-0 p-1.5 rounded text-gray-400 dark:text-gray-500
+               hover:text-gray-600 dark:hover:text-gray-300
+               hover:bg-gray-100 dark:hover:bg-gray-700
+               disabled:opacity-40 disabled:cursor-not-allowed
+               transition-colors duration-150"
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/>
+          <line x1="3" y1="3" x2="21" y2="21"/>
+        </svg>
+      </button>
+
+      <!-- Move -->
+      <button
+        on:click={handleBulkMove}
+        disabled={bulkLoading}
+        title="Move to folder"
+        class="flex-shrink-0 p-1.5 rounded text-gray-400 dark:text-gray-500
+               hover:text-gray-600 dark:hover:text-gray-300
+               hover:bg-gray-100 dark:hover:bg-gray-700
+               disabled:opacity-40 disabled:cursor-not-allowed
+               transition-colors duration-150"
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/>
+        </svg>
+      </button>
+
+      <!-- Delete -->
+      <button
+        on:click={handleBulkDelete}
+        disabled={bulkLoading}
+        title={$selectedMailbox?.role === 'trash' ? 'Delete permanently' : 'Delete'}
+        class="flex-shrink-0 p-1.5 rounded text-red-400 dark:text-red-500
+               hover:text-red-600 dark:hover:text-red-400
+               hover:bg-red-50 dark:hover:bg-red-900/20
+               disabled:opacity-40 disabled:cursor-not-allowed
+               transition-colors duration-150"
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+          <path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+        </svg>
+      </button>
+
+      <!-- Clear selection -->
+      <button
+        on:click={clearSelection}
+        title="Clear selection"
+        class="flex-shrink-0 p-1.5 rounded text-gray-400 dark:text-gray-500
+               hover:text-gray-600 dark:hover:text-gray-300
+               hover:bg-gray-100 dark:hover:bg-gray-700
+               transition-colors duration-150"
+      >
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+  {:else}
+    <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 flex items-center justify-between">
+      <h2 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+        {isSearching ? 'Search results' : ($selectedMailbox?.name ?? 'Inbox')}
+      </h2>
+      <button
+        on:click={() => composeOpen.set(true)}
+        title="Compose new message"
+        class="p-1 rounded-md text-gray-400 dark:text-gray-500
+               hover:text-gray-600 dark:hover:text-gray-300
+               hover:bg-gray-100 dark:hover:bg-gray-700
+               transition-colors duration-150"
+      >
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+          <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+        </svg>
+      </button>
+    </div>
+  {/if}
 
   <!-- Search bar -->
   <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
@@ -257,54 +455,87 @@
     {:else}
       {#each displayedEmails as email (email.id)}
         {@const selected = $selectedEmailId === email.id}
+        {@const checked  = $selectedEmailIds.has(email.id)}
         {@const unread   = isUnread(email)}
         {@const s        = sender(email.from)}
-        <button
-          on:click={() => selectedEmailId.set(email.id)}
+        <div
           draggable="true"
           on:dragstart={() => draggedEmailId.set(email.id)}
           on:dragend={() => draggedEmailId.set(null)}
           on:contextmenu={(e) => { e.preventDefault(); contextMenu.set({ x: e.clientX, y: e.clientY, emailId: email.id }); }}
-          class="w-full text-left flex items-center gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-700/50
+          class="flex items-center border-b border-gray-100 dark:border-gray-700/50
                  transition-colors duration-150 group
-                 {selected
+                 {checked || selected
                    ? 'bg-blue-50 dark:bg-blue-900/30'
                    : 'hover:bg-gray-50 dark:hover:bg-gray-700/40'}
                  {$draggedEmailId === email.id ? 'opacity-50' : ''}"
         >
-          <div class="transition-transform duration-150 group-active:scale-95">
-            <Avatar name={s.name} email={s.email} size="md" />
-          </div>
-
-          <div class="flex-1 min-w-0">
-            <div class="flex items-baseline justify-between gap-1 mb-0.5">
-              <span class="text-sm truncate
-                {unread
-                  ? 'font-semibold text-gray-900 dark:text-gray-50'
-                  : 'font-medium text-gray-700 dark:text-gray-300'}">
-                {s.name || s.email || 'Unknown'}
-              </span>
-              <span class="text-xs flex-shrink-0 text-gray-400 dark:text-gray-500">
-                {formatDate(email.receivedAt)}
-              </span>
-            </div>
-            <div class="text-xs truncate mb-0.5
-              {unread
-                ? 'font-medium text-gray-800 dark:text-gray-200'
-                : 'text-gray-600 dark:text-gray-400'}">
-              {email.subject || '(no subject)'}
-            </div>
-            {#if email.preview}
-              <div class="text-xs truncate text-gray-400 dark:text-gray-500">
-                {email.preview}
+          <!-- Checkbox / Avatar toggle area -->
+          <button
+            on:click={(e) => toggleSelect(email.id, e)}
+            title={checked ? 'Deselect' : 'Select'}
+            class="flex-shrink-0 flex items-center justify-center w-12 self-stretch
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
+          >
+            <div class="relative w-9 h-9">
+              <!-- Avatar: hidden on hover or when checked/selectionMode -->
+              <div class="absolute inset-0 flex items-center justify-center transition-opacity duration-100
+                          {checked || selectionMode ? 'opacity-0' : 'opacity-100 group-hover:opacity-0'}">
+                <Avatar name={s.name} email={s.email} size="md" />
               </div>
-            {/if}
-          </div>
+              <!-- Checkbox: shown on hover or when checked/selectionMode -->
+              <div class="absolute inset-0 flex items-center justify-center transition-opacity duration-100
+                          {checked || selectionMode ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}">
+                <div class="w-5 h-5 rounded border-2 flex items-center justify-center transition-colors duration-100
+                            {checked
+                              ? 'bg-blue-500 border-blue-500'
+                              : 'border-gray-300 dark:border-gray-500 bg-white dark:bg-gray-800'}">
+                  {#if checked}
+                    <svg class="w-3 h-3 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                  {/if}
+                </div>
+              </div>
+            </div>
+          </button>
 
-          {#if unread}
-            <div class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></div>
-          {/if}
-        </button>
+          <!-- Email content (opens email) -->
+          <button
+            on:click={() => selectedEmailId.set(email.id)}
+            class="flex-1 min-w-0 flex items-center gap-2 py-3 pr-4 text-left
+                   focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
+          >
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline justify-between gap-1 mb-0.5">
+                <span class="text-sm truncate
+                  {unread
+                    ? 'font-semibold text-gray-900 dark:text-gray-50'
+                    : 'font-medium text-gray-700 dark:text-gray-300'}">
+                  {s.name || s.email || 'Unknown'}
+                </span>
+                <span class="text-xs flex-shrink-0 text-gray-400 dark:text-gray-500">
+                  {formatDate(email.receivedAt)}
+                </span>
+              </div>
+              <div class="text-xs truncate mb-0.5
+                {unread
+                  ? 'font-medium text-gray-800 dark:text-gray-200'
+                  : 'text-gray-600 dark:text-gray-400'}">
+                {email.subject || '(no subject)'}
+              </div>
+              {#if email.preview}
+                <div class="text-xs truncate text-gray-400 dark:text-gray-500">
+                  {email.preview}
+                </div>
+              {/if}
+            </div>
+
+            {#if unread}
+              <div class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"></div>
+            {/if}
+          </button>
+        </div>
       {/each}
 
     {/if}
