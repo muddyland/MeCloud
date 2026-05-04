@@ -73,9 +73,10 @@ async def test_auth_logout_clears_session_and_redirects(client):
 
 
 async def test_callback_rejects_invalid_state(client):
-    # Provide a state that doesn't match anything in the session
-    r = await client.get("/auth/callback?code=abc123&state=bad-state")
-    assert r.status_code == 400
+    # State mismatch redirects back to login rather than exposing an error page
+    r = await client.get("/auth/callback?code=abc123&state=bad-state", follow_redirects=False)
+    assert r.status_code in (302, 307)
+    assert r.headers["location"] == "/auth/login"
 
 
 # ---------------------------------------------------------------------------

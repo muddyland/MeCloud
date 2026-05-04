@@ -57,11 +57,11 @@ async def get_authorization_url(session: dict) -> str:
 
 
 async def exchange_code(code: str, state: str, session: dict) -> dict:
-    endpoints = await _discover_endpoints()
-    settings = get_settings()
-
     if session.get("oauth_state") != state:
         raise ValueError("Invalid OAuth state parameter")
+
+    endpoints = await _discover_endpoints()
+    settings = get_settings()
 
     code_verifier = session.get("code_verifier")
     if not code_verifier:
