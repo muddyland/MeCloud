@@ -11,35 +11,81 @@
   import DOMPurify from 'dompurify';
 
   let email = null;
-  let bodyHtml = '';
+  let bodyHtml = '';    // sanitised HTML kept for reply/forward quoting
+  let frameDoc = '';    // srcdoc for the display iframe (always used)
   let loadingEmail = false;
+
+  const _purifyOpts = {
+    USE_PROFILES: { html: true },
+    FORBID_TAGS: ['script', 'object', 'embed', 'form', 'input', 'button'],
+    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'action'],
+    ALLOW_DATA_ATTR: false,
+  };
+
+  const _frameBase =
+    '<meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    '<base target="_blank">' +
+    '<style>' +
+      'body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;' +
+           'font-size:14px;line-height:1.5;word-break:break-word;padding:16px 24px;margin:0;color:#111827}' +
+      'img{max-width:100%;height:auto}a{color:#2563eb}' +
+      'pre{white-space:pre-wrap;font-family:inherit;font-size:inherit;margin:0;line-height:1.6}' +
+      'table{max-width:100%}' +
+      'blockquote{border-left:3px solid #d1d5db;margin:.5em 0;padding:0 0 0 1em;color:#6b7280}' +
+    '</style>';
+
+  // Build a complete srcdoc document from sanitised content.
+  // Handles full HTML documents and bare fragments.
+  function wrapDoc(html) {
+    if (/<html[\s>]/i.test(html)) {
+      return html.replace(/(<head[^>]*>)/i, `$1${_frameBase}`);
+    }
+    return `<!DOCTYPE html><html><head>${_frameBase}</head><body>${html}</body></html>`;
+  }
 
   async function loadEmail(id) {
     if (!id || !$jmapSession) return;
     loadingEmail = true;
     email = null;
+    bodyHtml = '';
+    frameDoc = '';
     try {
       const accountId = Object.keys($jmapSession.accounts)[0];
       const data = await getEmailBody(accountId, id);
-      const sanitize = (rawHtml) => DOMPurify.sanitize(rawHtml, {
-        USE_PROFILES: { html: true },
-        FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'button'],
-        FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'action'],
-        ALLOW_DATA_ATTR: false,
-        FORCE_BODY: true,
-      });
 
+      // Fetch the htmlBody value, but only treat it as real HTML if it
+      // actually contains markup — Stalwart sometimes points htmlBody at a
+      // text/plain part, and parsing plain text as HTML collapses newlines.
+      let rawHtml = '';
       if (data?.htmlBody?.length) {
-        const partId = data.htmlBody[0].partId;
-        const rawHtml = data.bodyValues?.[partId]?.value ?? '';
-        bodyHtml = sanitize(rawHtml);
-      } else if (data?.textBody?.length) {
-        const partId = data.textBody[0].partId;
-        const text = data.bodyValues?.[partId]?.value ?? '';
-        const rawHtml = `<pre class="whitespace-pre-wrap font-sans text-sm">${text}</pre>`;
-        bodyHtml = sanitize(rawHtml);
+        const pid = data.htmlBody[0].partId;
+        const val = data.bodyValues?.[pid]?.value ?? '';
+        if (val.includes('</')) rawHtml = val;
+      }
+
+      if (rawHtml) {
+        bodyHtml = DOMPurify.sanitize(rawHtml, _purifyOpts);
+        frameDoc = wrapDoc(DOMPurify.sanitize(rawHtml, { ..._purifyOpts, WHOLE_DOCUMENT: true }));
       } else {
-        bodyHtml = '';
+        // Plain-text path — prefer textBody, fall back to htmlBody value if needed
+        let text = '';
+        if (data?.textBody?.length) {
+          const pid = data.textBody[0].partId;
+          text = data.bodyValues?.[pid]?.value ?? '';
+        }
+        if (!text && data?.htmlBody?.length) {
+          const pid = data.htmlBody[0].partId;
+          text = data.bodyValues?.[pid]?.value ?? '';
+        }
+        // Decode pre-encoded entities (e.g. iOS Mail sends &gt; instead of >)
+        const decoded = text
+          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
+          .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
+        const escaped = decoded
+          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        bodyHtml = `<pre>${escaped}</pre>`;
+        frameDoc = `<!DOCTYPE html><html><head>${_frameBase}</head><body><pre>${escaped}</pre></body></html>`;
       }
       email = data;
       // Auto-mark as read on open
@@ -291,11 +337,14 @@
           </div>
         </div>
 
-        <!-- Body -->
-        <div class="flex-1 overflow-y-auto px-6 py-5">
-          <div class="text-sm text-gray-800 dark:text-gray-200">
-            {@html bodyHtml}
-          </div>
+        <!-- Body — always rendered in a sandboxed iframe -->
+        <div class="flex-1 min-h-0 overflow-hidden">
+          <iframe
+            title="Email content"
+            srcdoc={frameDoc}
+            sandbox="allow-popups allow-popups-to-escape-sandbox"
+            class="w-full h-full border-0 block bg-white"
+          ></iframe>
         </div>
 
       </div>
