@@ -18,7 +18,7 @@ variables:
 build-image:
   stage: build
   tags:
-    - docker
+    - saas-linux-small-amd64
   image: docker:26
   services:
     - name: docker:26-dind
@@ -76,7 +76,7 @@ frontend-tests:
 smoke-test:
   stage: test
   tags:
-    - docker
+    - saas-linux-small-amd64
   image: docker:26
   services:
     - name: docker:26-dind
@@ -112,7 +112,7 @@ smoke-test:
 tag-latest:
   stage: release
   tags:
-    - docker
+    - saas-linux-small-amd64
   image: docker:26
   services:
     - name: docker:26-dind
