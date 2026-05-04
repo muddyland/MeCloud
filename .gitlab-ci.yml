@@ -97,8 +97,13 @@ smoke-test:
         -e SESSION_SECRET=testsecretplaceholder00000000000 \
         -p 8000:8000 \
         "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
-    - sleep 5
-    - wget -qO- http://localhost:8000/health | grep -q '"status":"ok"'
+    - |
+      for i in $(seq 1 20); do
+        wget -qO- http://docker:8000/health 2>/dev/null | grep -q '"status":"ok"' && break
+        echo "Waiting for app to start... ($i/20)"
+        sleep 2
+      done
+    - wget -qO- http://docker:8000/health | grep -q '"status":"ok"'
   after_script:
     - docker rm -f test-app || true
   rules:
