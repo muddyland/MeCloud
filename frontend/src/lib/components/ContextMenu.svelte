@@ -2,10 +2,10 @@
   import { fly } from 'svelte/transition';
   import {
     contextMenu, movePickerOpen, emails, mailboxes,
-    selectedMailbox, jmapAccountId, selectedEmailId,
+    selectedMailbox, jmapAccountId, selectedEmailId, selectedEmailIds,
     composeContext, composeOpen
   } from '$lib/stores/mail.js';
-  import { moveEmail, destroyEmail, markEmailSeen } from '$lib/api.js';
+  import { moveEmail, destroyEmail, markEmailSeen, bulkMove, bulkDestroy, bulkMarkSeen } from '$lib/api.js';
   import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
 
@@ -13,11 +13,52 @@
   $: trashMailbox = $mailboxes.find(m => m.role === 'trash') ?? null;
   $: inTrash      = $selectedMailbox?.role === 'trash';
 
+  // Bulk mode when multiple IDs were passed (right-click on a selected item in a multi-selection)
+  $: isBulk    = ($contextMenu?.ids?.length ?? 0) > 1;
+  $: bulkIds   = $contextMenu?.ids ?? [];
+  $: bulkCount = bulkIds.length;
+
   function close() { contextMenu.set(null); }
 
   function openPicker() {
-    if ($contextMenu) movePickerOpen.set($contextMenu.emailId);
+    if ($contextMenu) movePickerOpen.set(isBulk ? bulkIds : $contextMenu.emailId);
     close();
+  }
+
+  async function bulkDel() {
+    const ids = [...bulkIds];
+    close();
+    try {
+      if (inTrash) {
+        await bulkDestroy($jmapAccountId, ids);
+        toast(`${ids.length} messages deleted permanently`, 'success');
+      } else if (trashMailbox) {
+        await bulkMove($jmapAccountId, ids, trashMailbox.id, $selectedMailbox?.id);
+        toast(`${ids.length} messages moved to Trash`, 'success');
+      }
+      emails.update(list => list.filter(e => !ids.includes(e.id)));
+      if (ids.includes($selectedEmailId)) selectedEmailId.set(null);
+      selectedEmailIds.set(new Set());
+      await refreshMailboxCounts();
+    } catch (e) {
+      toast(e?.message ?? 'Delete failed', 'error');
+    }
+  }
+
+  async function bulkToggleSeen(seen) {
+    const ids = [...bulkIds];
+    close();
+    try {
+      await bulkMarkSeen($jmapAccountId, ids, seen);
+      emails.update(list => list.map(e =>
+        ids.includes(e.id)
+          ? { ...e, keywords: { ...(e.keywords ?? {}), '$seen': seen ? true : undefined } }
+          : e
+      ));
+      selectedEmailIds.set(new Set());
+    } catch (e) {
+      toast(e?.message ?? 'Failed to update read status', 'error');
+    }
   }
 
   function reply() {
@@ -124,46 +165,82 @@
     style="left: {$contextMenu.x}px; top: {$contextMenu.y}px"
     in:fly={{ y: -4, duration: 120 }}
   >
-    <button on:click={reply} class="{itemCls}">
-      <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
-      Reply
-    </button>
-    <button on:click={replyAll} class="{itemCls}" disabled={!canReplyAll}
-      class:opacity-40={!canReplyAll} class:cursor-not-allowed={!canReplyAll}>
-      <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 17 2 12 7 7"/><polyline points="12 17 7 12 12 7"/><path d="M20 18v-2a4 4 0 00-4-4H2"/></svg>
-      Reply All
-    </button>
-    <button on:click={forward} class="{itemCls}">
-      <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 014-4h12"/></svg>
-      Forward
-    </button>
+    {#if isBulk}
+      <!-- Bulk mode: no reply/forward, just batch operations -->
+      <div class="px-4 py-1.5 text-xs font-medium text-gray-400 dark:text-gray-500 select-none">
+        {bulkCount} selected
+      </div>
+      <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
 
-    <button on:click={toggleSeen} class="{itemCls}">
-      {#if isSeen}
-        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
-        Mark Unread
-      {:else}
+      <button on:click={() => bulkToggleSeen(true)} class="{itemCls}">
         <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
-        Mark Read
-      {/if}
-    </button>
+        Mark All Read
+      </button>
+      <button on:click={() => bulkToggleSeen(false)} class="{itemCls}">
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
+        Mark All Unread
+      </button>
 
-    <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
+      <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
 
-    <button on:click={openPicker} class="{itemCls}">
-      <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
-      Move to folder…
-    </button>
+      <button on:click={openPicker} class="{itemCls}">
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+        Move to folder…
+      </button>
 
-    <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
+      <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
 
-    <button on:click={del}
-      class="flex items-center gap-2.5 w-full px-4 py-2 text-sm text-left
-             text-red-600 dark:text-red-400
-             hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-100"
-    >
-      <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
-      {inTrash ? 'Delete Permanently' : 'Delete'}
-    </button>
+      <button on:click={bulkDel}
+        class="flex items-center gap-2.5 w-full px-4 py-2 text-sm text-left
+               text-red-600 dark:text-red-400
+               hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-100"
+      >
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+        {inTrash ? 'Delete Permanently' : 'Delete'}
+      </button>
+    {:else}
+      <!-- Single email mode -->
+      <button on:click={reply} class="{itemCls}">
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>
+        Reply
+      </button>
+      <button on:click={replyAll} class="{itemCls}" disabled={!canReplyAll}
+        class:opacity-40={!canReplyAll} class:cursor-not-allowed={!canReplyAll}>
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="7 17 2 12 7 7"/><polyline points="12 17 7 12 12 7"/><path d="M20 18v-2a4 4 0 00-4-4H2"/></svg>
+        Reply All
+      </button>
+      <button on:click={forward} class="{itemCls}">
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 17 20 12 15 7"/><path d="M4 18v-2a4 4 0 014-4h12"/></svg>
+        Forward
+      </button>
+
+      <button on:click={toggleSeen} class="{itemCls}">
+        {#if isSeen}
+          <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
+          Mark Unread
+        {:else}
+          <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
+          Mark Read
+        {/if}
+      </button>
+
+      <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
+
+      <button on:click={openPicker} class="{itemCls}">
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>
+        Move to folder…
+      </button>
+
+      <div class="my-1 border-t border-gray-100 dark:border-gray-700"></div>
+
+      <button on:click={del}
+        class="flex items-center gap-2.5 w-full px-4 py-2 text-sm text-left
+               text-red-600 dark:text-red-400
+               hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-100"
+      >
+        <svg class="w-4 h-4 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+        {inTrash ? 'Delete Permanently' : 'Delete'}
+      </button>
+    {/if}
   </div>
 {/if}

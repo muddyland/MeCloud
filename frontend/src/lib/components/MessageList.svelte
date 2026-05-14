@@ -460,15 +460,26 @@
         {@const s        = sender(email.from)}
         <div
           draggable="true"
-          on:dragstart={() => draggedEmailId.set(email.id)}
+          on:dragstart={() => {
+            const ids = $selectedEmailIds.has(email.id) && $selectedEmailIds.size > 1
+              ? [...$selectedEmailIds]
+              : email.id;
+            draggedEmailId.set(ids);
+          }}
           on:dragend={() => draggedEmailId.set(null)}
-          on:contextmenu={(e) => { e.preventDefault(); contextMenu.set({ x: e.clientX, y: e.clientY, emailId: email.id }); }}
+          on:contextmenu={(e) => {
+            e.preventDefault();
+            const ids = $selectedEmailIds.has(email.id) && $selectedEmailIds.size > 1
+              ? [...$selectedEmailIds]
+              : [email.id];
+            contextMenu.set({ x: e.clientX, y: e.clientY, emailId: email.id, ids });
+          }}
           class="flex items-center border-b border-gray-100 dark:border-gray-700/50
                  transition-colors duration-150 group
                  {checked || selected
                    ? 'bg-blue-50 dark:bg-blue-900/30'
                    : 'hover:bg-gray-50 dark:hover:bg-gray-700/40'}
-                 {$draggedEmailId === email.id ? 'opacity-50' : ''}"
+                 {(Array.isArray($draggedEmailId) ? $draggedEmailId.includes(email.id) : $draggedEmailId === email.id) ? 'opacity-50' : ''}"
         >
           <!-- Checkbox / Avatar toggle area -->
           <button

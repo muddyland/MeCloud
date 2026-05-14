@@ -3,13 +3,21 @@
   import Navbar from '$lib/components/Navbar.svelte';
   import AppNav from '$lib/components/AppNav.svelte';
   import ContactModal from '$lib/components/ContactModal.svelte';
+  import ContactImportModal from '$lib/components/ContactImportModal.svelte';
+  import ComposeModal from '$lib/components/ComposeModal.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
   import Avatar from '$lib/components/Avatar.svelte';
   import {
     addressBooks, contacts, selectedAddressBook, selectedContact,
-    contactsLoading, contactSearch, contactModalOpen, editingContact
+    contactsLoading, contactSearch, contactModalOpen, editingContact,
+    contactImportModalOpen
   } from '$lib/stores/contacts.js';
-  import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
+  import { jmapAccountId, jmapSession, currentUser, sidebarWidth, composeOpen, composeContext } from '$lib/stores/mail.js';
+
+  function mailTo(address, name) {
+    composeContext.set({ mode: 'compose', to: name ? `${name} <${address}>` : address });
+    composeOpen.set(true);
+  }
   import {
     getAddressBooks, getContacts, getAppConfig, getJMAPSession,
     createAddressBook, deleteAddressBook
@@ -210,8 +218,31 @@
     <div class="flex-shrink-0 h-full flex flex-col bg-white dark:bg-gray-900
                 border-r border-gray-200 dark:border-gray-700 w-72">
 
-      <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex gap-2">
-        <div class="relative flex-1">
+      <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 flex items-center justify-between">
+        <h2 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Contacts</h2>
+        <div class="flex items-center gap-1">
+          <button on:click={() => contactImportModalOpen.set(true)} title="Import contacts from vCard file"
+            class="p-1 rounded-md text-gray-400 dark:text-gray-500
+                   hover:text-gray-600 dark:hover:text-gray-300
+                   hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-150">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 16V4m0 12-3-3m3 3 3-3"/>
+              <path d="M20 16.5A3.5 3.5 0 0 1 16.5 20h-9A3.5 3.5 0 0 1 4 16.5"/>
+            </svg>
+          </button>
+          <button on:click={openNew} title="New contact"
+            class="p-1 rounded-md text-gray-400 dark:text-gray-500
+                   hover:text-gray-600 dark:hover:text-gray-300
+                   hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-150">
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 5v14M5 12h14"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700">
+        <div class="relative">
           <svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400"
                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/>
@@ -225,10 +256,6 @@
                    focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
         </div>
-        <button on:click={openNew}
-          class="flex-shrink-0 px-3 py-1.5 text-sm rounded-lg bg-blue-600 hover:bg-blue-700 text-white transition-colors">
-          + New
-        </button>
       </div>
 
       <div class="flex-1 overflow-y-auto">
@@ -300,7 +327,10 @@
                         {Object.keys(e.contexts)[0]}
                       </span>
                     {/if}
-                    <a href="mailto:{e.address}" class="text-blue-600 dark:text-blue-400 hover:underline truncate">{e.address}</a>
+                    <button on:click={() => mailTo(e.address, fullName(c))}
+                      class="text-blue-600 dark:text-blue-400 hover:underline truncate text-left">
+                      {e.address}
+                    </button>
                   </dd>
                 {/each}
               </div>
@@ -376,4 +406,6 @@
 </div>
 
 <ContactModal />
+<ContactImportModal />
+<ComposeModal />
 <Toasts />

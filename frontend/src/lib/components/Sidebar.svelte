@@ -1,9 +1,9 @@
 <script>
   import {
     mailboxes, selectedMailbox, newFolderOpen,
-    draggedEmailId, emails, selectedEmailId, jmapAccountId
+    draggedEmailId, emails, selectedEmailId, selectedEmailIds, jmapAccountId
   } from '$lib/stores/mail.js';
-  import { moveEmail, renameMailbox, deleteMailbox } from '$lib/api.js';
+  import { moveEmail, bulkMove, renameMailbox, deleteMailbox } from '$lib/api.js';
   import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
@@ -113,14 +113,22 @@
     e.preventDefault();
     dragOverId = null;
     if (!$draggedEmailId) return;
-    const emailId     = $draggedEmailId;
-    const sourceId    = $selectedMailbox?.id;
+    const dragged  = $draggedEmailId;
+    const sourceId = $selectedMailbox?.id;
     draggedEmailId.set(null);
     try {
-      await moveEmail($jmapAccountId, emailId, mailbox.id, sourceId);
-      emails.update(l => l.filter(em => em.id !== emailId));
-      if ($selectedEmailId === emailId) selectedEmailId.set(null);
-      toast(`Moved to ${mailbox.name}`, 'success');
+      if (Array.isArray(dragged)) {
+        await bulkMove($jmapAccountId, dragged, mailbox.id, sourceId);
+        emails.update(l => l.filter(em => !dragged.includes(em.id)));
+        if (dragged.includes($selectedEmailId)) selectedEmailId.set(null);
+        selectedEmailIds.set(new Set());
+        toast(`${dragged.length} messages moved to ${mailbox.name}`, 'success');
+      } else {
+        await moveEmail($jmapAccountId, dragged, mailbox.id, sourceId);
+        emails.update(l => l.filter(em => em.id !== dragged));
+        if ($selectedEmailId === dragged) selectedEmailId.set(null);
+        toast(`Moved to ${mailbox.name}`, 'success');
+      }
       await refreshMailboxCounts();
     } catch (e) {
       toast(e?.message ?? 'Move failed', 'error');

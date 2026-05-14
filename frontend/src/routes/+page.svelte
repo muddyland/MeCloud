@@ -87,14 +87,21 @@
         getEmails(accountId, mid),
         getMailboxes(accountId),
       ]);
-      const prev = $emails.length;
+      const prevIds = new Set($emails.map(e => e.id));
       emails.set(fresh);
       // Preserve sidebar sort order; only update server-owned fields like unreadEmails
       mailboxes.update(existing => existing.map(mb => {
         const update = freshMailboxes.find(f => f.id === mb.id);
         return update ? { ...mb, unreadEmails: update.unreadEmails ?? 0 } : mb;
       }));
-      if (fresh.length > prev) notify(fresh.length - prev, fresh[0]?.subject ?? '');
+      // Only notify about emails with IDs not previously in the store AND recently received.
+      // Comparing IDs (not lengths) avoids false positives when moves/deletes cause other
+      // emails to slide into the top-50 fetch window.
+      const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+      const reallyNew = fresh.filter(
+        e => !prevIds.has(e.id) && new Date(e.receivedAt).getTime() > fiveMinAgo
+      );
+      if (reallyNew.length > 0) notify(reallyNew.length, reallyNew[0].subject ?? '');
     } catch {}
   }
 
