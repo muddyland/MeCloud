@@ -19,11 +19,20 @@ variables:
 #
 # Two different mechanisms are involved, which is easy to trip over:
 #
-#   • Job `image:` and `services:` — the runner authenticates to the proxy on
-#     its own, so prefixing the name is all that is required.
+#   • Job `image:` — the runner authenticates to the proxy on its own, so
+#     prefixing the name is all that is required.
 #   • `FROM` lines inside the Dockerfile — those are pulled by the dind daemon,
 #     which has no such credentials. That needs an explicit `docker login`
 #     (see .proxy-login) plus the prefix passed in as a build arg.
+#
+# The `docker:26-dind` SERVICE is deliberately NOT proxied. Prefixing it made
+# the service fail to start, and GitLab does not fail a job when a service
+# image cannot be pulled — it warns and carries on, so the `docker` alias
+# resolved to a container that was never running and every subsequent command
+# died with "dial tcp ...:2376: connect: no route to host". Job images kept
+# working throughout, so proxy auth itself is fine; it is specifically the
+# service that does not tolerate the prefix here. One un-proxied image per
+# dind job is a cheap price for a pipeline that starts.
 #
 # The proxy only fronts Docker Hub. Anything pulled from $CI_REGISTRY keeps
 # using the registry login, which is why both logins appear in build-image.
@@ -36,13 +45,27 @@ variables:
       -p "$CI_DEPENDENCY_PROXY_PASSWORD" \
       "$CI_DEPENDENCY_PROXY_SERVER"
 
+# Fails the job outright if the daemon never appears. The previous version just
+# fell out of the loop and let the next command run, so a dead dind service
+# surfaced as an unrelated-looking "no route to host" on whichever docker
+# command happened to run first. Report the actual cause instead.
 .wait-for-docker: &wait-for-docker
   - |
-    for i in $(seq 1 15); do
+    for i in $(seq 1 30); do
       docker info > /dev/null 2>&1 && break
-      echo "Waiting for Docker daemon... ($i/15)"
+      echo "Waiting for Docker daemon... ($i/30)"
       sleep 2
     done
+    if ! docker info > /dev/null 2>&1; then
+      echo "ERROR: the docker-in-docker service never became reachable."
+      echo "  DOCKER_HOST=${DOCKER_HOST:-<unset>}"
+      echo "  DOCKER_TLS_CERTDIR=${DOCKER_TLS_CERTDIR:-<unset>}"
+      echo "Check the 'services' section of this job's log for a failed image pull —"
+      echo "GitLab only warns when a service image cannot be pulled, it does not fail"
+      echo "the job, and every later docker command then fails with 'no route to host'."
+      docker info || true
+      exit 1
+    fi
 
 # ---------------------------------------------------------------------------
 # build stage — compile the image and push two tags to the registry:
@@ -55,7 +78,8 @@ build-image:
     - saas-linux-small-amd64
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
   services:
-    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26-dind
+    # NOT proxied — see the Dependency Proxy note at the top of this file.
+    - name: docker:26-dind
       alias: docker
   before_script:
     - *wait-for-docker
@@ -126,7 +150,8 @@ smoke-test:
     - saas-linux-small-amd64
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
   services:
-    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26-dind
+    # NOT proxied — see the Dependency Proxy note at the top of this file.
+    - name: docker:26-dind
       alias: docker
   needs:
     - build-image
@@ -168,7 +193,8 @@ tag-latest:
     - saas-linux-small-amd64
   image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
   services:
-    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26-dind
+    # NOT proxied — see the Dependency Proxy note at the top of this file.
+    - name: docker:26-dind
       alias: docker
   needs:
     - smoke-test
