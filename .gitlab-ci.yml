@@ -78,7 +78,9 @@ frontend-tests:
   image: node:24-alpine
   script:
     - cd frontend
-    - npm install
+    # `npm ci`, not `npm install`: CI should fail on lockfile drift rather than
+    # quietly resolving a tree that differs from the one we ship.
+    - npm ci
     - npm run check
     - npm test
   rules:

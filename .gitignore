@@ -19,6 +19,8 @@ dist/
 node_modules/
 frontend/.svelte-kit/
 frontend/build/
+# PWA icons — generated at build time by scripts/gen-icons.mjs
+frontend/static/
 
 # Docker
 *.log

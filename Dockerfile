@@ -3,10 +3,12 @@ FROM node:24-alpine AS frontend-builder
 
 WORKDIR /app
 
-COPY frontend/package.json frontend/package-lock.json* ./
-# `npm ci` when the lockfile is in sync with package.json, `npm install` otherwise
-# (which also refreshes the lockfile inside the image).
-RUN npm ci --prefer-offline || npm install --prefer-offline
+COPY frontend/package.json frontend/package-lock.json ./
+# Strictly `npm ci`: it installs exactly the committed lockfile, and fails loudly
+# if the lockfile has drifted from package.json. An `|| npm install` fallback
+# looks forgiving but is worse — it turns "your lockfile is stale" into an
+# ERESOLVE conflict deep in a half-resolved tree.
+RUN npm ci --prefer-offline
 
 COPY frontend/ ./
 RUN node scripts/gen-icons.mjs && npm run build

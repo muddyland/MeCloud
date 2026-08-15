@@ -212,9 +212,11 @@ cd frontend && npm install && npm test
 
 ## Upgrading dependencies
 
-`frontend/package-lock.json` is not regenerated automatically. After changing
-`frontend/package.json`, run `npm install` in `frontend/` and commit the updated
-lockfile so `npm ci` stays reproducible.
+Both the Docker build and CI use `npm ci`, which installs the committed
+lockfile exactly and fails if it has drifted from `package.json`. So after
+changing `frontend/package.json`, run `npm install` in `frontend/` and commit
+the regenerated `package-lock.json` in the same change — otherwise the build
+stops, by design.
 
 ## AI Disclosure
 
