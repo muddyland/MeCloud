@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { toasts, toast, dismiss } from '$lib/stores/toast.js';
+import { toasts, toast, dismiss, clearToasts } from '$lib/stores/toast.js';
 
 function drainToasts() {
   toasts.subscribe(() => {})();          // subscribe once to flush
@@ -71,5 +71,33 @@ describe('toast store', () => {
     toast('B', 'error');
     toast('C', 'info');
     expect(get(toasts)).toHaveLength(3);
+  });
+
+  it('cancels the auto-dismiss timer when dismissed by hand', () => {
+    // Manual dismissal used to leave the timer running, so it fired later
+    // against an id that was already gone.
+    const id = toast('Bye', 'info', 1000);
+    dismiss(id);
+    expect(vi.getTimerCount()).toBe(0);
+    vi.advanceTimersByTime(2000);
+    expect(get(toasts)).toHaveLength(0);
+  });
+
+  it('returns the id so callers can dismiss a toast themselves', () => {
+    const id = toast('Tracked');
+    expect(get(toasts)[0].id).toBe(id);
+  });
+
+  it('keeps a toast forever when duration is zero', () => {
+    toast('Sticky', 'error', 0);
+    vi.advanceTimersByTime(60_000);
+    expect(get(toasts)).toHaveLength(1);
+  });
+
+  it('clearToasts removes everything and cancels every timer', () => {
+    toast('A'); toast('B'); toast('C');
+    clearToasts();
+    expect(get(toasts)).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
   });
 });

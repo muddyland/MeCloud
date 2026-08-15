@@ -66,10 +66,16 @@ async def test_auth_login_redirects_to_authorization_url(client):
     assert r.headers["location"] == fake_url
 
 
-async def test_auth_logout_clears_session_and_redirects(client):
+async def test_auth_logout_accepts_post(client):
+    r = await client.post("/auth/logout")
+    assert r.status_code == 200
+    assert r.json() == {"ok": True}
+
+
+async def test_auth_logout_rejects_get(client):
+    # A GET logout can be triggered cross-site by any <img> tag, so it is gone.
     r = await client.get("/auth/logout", follow_redirects=False)
-    assert r.status_code in (302, 307)
-    assert r.headers["location"] == "/"
+    assert r.status_code == 405
 
 
 async def test_callback_rejects_invalid_state(client):
@@ -201,3 +207,82 @@ async def test_security_headers_present(client):
     assert "object-src 'none'" in csp
     assert "frame-src 'none'" in csp
     assert "base-uri 'self'" in csp
+    assert "frame-ancestors 'none'" in csp
+
+
+async def test_api_responses_are_not_cacheable(auth_client):
+    """Mail content must never be written to a shared or on-disk cache."""
+    r = await auth_client.get("/api/config")
+    assert "no-store" in r.headers.get("cache-control", "")
+
+
+async def test_health_is_not_marked_no_store(client):
+    # Only /api and /auth get the no-store treatment; the healthcheck does not.
+    r = await client.get("/health")
+    assert "no-store" not in r.headers.get("cache-control", "")
+
+
+# ---------------------------------------------------------------------------
+# Request size limits
+# ---------------------------------------------------------------------------
+
+async def test_oversized_body_is_rejected(auth_client):
+    from app.config import get_settings
+
+    oversized = "x" * (get_settings().max_request_bytes + 1_000)
+    r = await auth_client.post("/api/jmap", json={
+        "using": ["urn:ietf:params:jmap:core"],
+        "methodCalls": [["Mailbox/get", {"filter": oversized}, "q"]],
+    })
+    assert r.status_code == 413
+
+
+# ---------------------------------------------------------------------------
+# Upstream error mapping
+# ---------------------------------------------------------------------------
+
+async def test_upstream_auth_failure_becomes_401(auth_client):
+    """A revoked token must log the user out, not loop them through 502s."""
+    from app.http import UpstreamError
+
+    with patch("app.main.jmap_request", new_callable=AsyncMock) as m:
+        m.side_effect = UpstreamError("JMAP request failed with HTTP 401", 401)
+        r = await auth_client.post("/api/jmap", json={
+            "using": ["urn:ietf:params:jmap:core"],
+            "methodCalls": [["Mailbox/get", {}, "q"]],
+        })
+    assert r.status_code == 401
+
+
+async def test_upstream_server_error_becomes_502(auth_client):
+    from app.http import UpstreamError
+
+    with patch("app.main.jmap_request", new_callable=AsyncMock) as m:
+        m.side_effect = UpstreamError("JMAP request failed with HTTP 500", 500)
+        r = await auth_client.post("/api/jmap", json={
+            "using": ["urn:ietf:params:jmap:core"],
+            "methodCalls": [["Mailbox/get", {}, "q"]],
+        })
+    assert r.status_code == 502
+
+
+async def test_upstream_timeout_becomes_504(auth_client):
+    import httpx
+
+    with patch("app.main.jmap_request", new_callable=AsyncMock) as m:
+        m.side_effect = httpx.ConnectTimeout("timed out")
+        r = await auth_client.post("/api/jmap", json={
+            "using": ["urn:ietf:params:jmap:core"],
+            "methodCalls": [["Mailbox/get", {}, "q"]],
+        })
+    assert r.status_code == 504
+
+
+# ---------------------------------------------------------------------------
+# Unknown API paths
+# ---------------------------------------------------------------------------
+
+async def test_unknown_api_path_returns_json_404(client):
+    r = await client.get("/api/does-not-exist")
+    assert r.status_code == 404
+    assert r.json()["detail"] == "Not found"

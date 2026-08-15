@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
 
 function createDarkModeStore() {
@@ -64,9 +64,37 @@ export const movePickerOpen   = writable(null); // emailId | emailId[] to move, 
 export const sieveOpen           = writable(false);
 export const newFolderOpen       = writable(false);
 export const appPasswordsOpen    = writable(false);
+export const shortcutsOpen       = writable(false);
+
+// True while any modal owns the screen — keyboard shortcuts stand down so they
+// don't fire while the user is typing into a dialog.
+export const anyModalOpen = derived(
+  [composeOpen, sieveOpen, newFolderOpen, appPasswordsOpen, shortcutsOpen, movePickerOpen, contextMenu],
+  ([$compose, $sieve, $folder, $passwords, $shortcuts, $picker, $menu]) =>
+    $compose || $sieve || $folder || $passwords || $shortcuts || $picker !== null || $menu !== null
+);
+
+// The list the user is actually looking at (search results or the mailbox),
+// published by MessageList so keyboard navigation can walk it.
+export const visibleEmails = writable([]);
+
+// Actions for the message currently in the reading pane, registered by
+// MessagePane. Lets r/a/f/# reach the open message without prop-drilling.
+export const messageActions = writable(null);
+
+// Registered by the mail page so the list's refresh button (and the `.`
+// shortcut) can trigger the same background refresh the event stream does.
+export const mailRefresher = writable(null);
 
 // Search
 export const searchQuery      = writable('');
+
+// Unread count for the browser tab title — inbox only, matching what other
+// mail clients badge.
+export const inboxUnread = derived(mailboxes, ($mailboxes) => {
+  const inbox = $mailboxes.find((m) => m.role === 'inbox');
+  return inbox?.unreadEmails ?? 0;
+});
 
 // Panel widths — persisted to localStorage, clamped to sane ranges
 export const sidebarWidth     = persisted('sidebarWidth',     240, { min: 180, max: 380 });

@@ -1,8 +1,39 @@
+import { begin, end } from '$lib/stores/activity.js';
+
+// A request that never settles leaves a spinner turning forever. Everything
+// except the event stream is bounded.
+const REQUEST_TIMEOUT_MS = 30_000;
+
+// One redirect to the login page per page load. Without this guard a backend
+// that answers 401 to everything turns concurrent requests into a redirect
+// storm, and the user sees the login page flicker instead of load.
+let redirectingToLogin = false;
+
 async function apiFetch(url, options = {}) {
-  const res = await fetch(url, { credentials: 'include', ...options });
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => controller.abort(new Error('Request timed out')), REQUEST_TIMEOUT_MS)
+    : null;
+
+  begin();
+  let res;
+  try {
+    res = await fetch(url, {
+      credentials: 'include',
+      signal: controller?.signal,
+      ...options,
+    });
+  } finally {
+    if (timer) clearTimeout(timer);
+    end();
+  }
+
   if (res.status === 401 && typeof window !== 'undefined') {
     // Session expired — send the user back to the login flow
-    window.location.href = '/auth/login';
+    if (!redirectingToLogin) {
+      redirectingToLogin = true;
+      window.location.href = '/auth/login';
+    }
     return null;
   }
   return res;
@@ -15,14 +46,28 @@ async function post(methodCalls, using = ['urn:ietf:params:jmap:core', 'urn:ietf
     body: JSON.stringify({ using, methodCalls }),
   });
   if (!res) return null;
-  if (!res.ok) throw new Error(`JMAP error ${res.status}`);
+  if (!res.ok) throw new Error(await errorMessage(res, 'JMAP request failed'));
   return res.json();
+}
+
+/** Prefer the server's `detail` over a bare status code — it is user-readable. */
+async function errorMessage(res, fallback) {
+  try {
+    const body = await res.json();
+    if (body?.detail) return body.detail;
+  } catch {
+    // Non-JSON error body; fall through to the generic message.
+  }
+  if (res.status === 429) return 'Too many requests — please slow down.';
+  if (res.status === 504) return 'The mail server is not responding.';
+  if (res.status >= 500) return 'The mail server returned an error.';
+  return `${fallback} (${res.status})`;
 }
 
 export async function getJMAPSession() {
   const res = await apiFetch('/api/jmap/session');
   if (!res) return null;
-  if (!res.ok) throw new Error(`Session error ${res.status}`);
+  if (!res.ok) throw new Error(await errorMessage(res, 'Could not load your mailbox'));
   return res.json();
 }
 
@@ -40,7 +85,15 @@ export async function getMe() {
 }
 
 export async function logout() {
-  window.location.href = '/auth/logout';
+  // POST, not a link: a GET logout endpoint can be fired cross-site by any
+  // <img src="…/auth/logout"> on a page the user happens to visit.
+  try {
+    await apiFetch('/auth/logout', { method: 'POST' });
+  } catch {
+    // Even if the call fails, sending the user to a fresh page is the right
+    // end state — the cookie is httpOnly and will be re-validated there.
+  }
+  window.location.href = '/';
 }
 
 export async function getIdentities(accountId) {
@@ -60,10 +113,30 @@ export function parseAddresses(str) {
   }).filter(a => a.email);
 }
 
-export async function sendEmail(accountId, identityId, { fromEmail, fromName, to, cc, subject, html, sentMailboxId }) {
+/**
+ * RFC 5322 headers that make a reply thread correctly in every other mail
+ * client. Without them a reply starts a brand-new conversation, which is the
+ * single most visible way a webmail client feels unfinished.
+ */
+export function threadingHeaders(inReplyTo, references) {
+  const headers = {};
+  if (!inReplyTo) return headers;
+  headers.inReplyTo = [inReplyTo];
+  // References is the full ancestry, capped so a long thread cannot produce an
+  // unbounded header.
+  const chain = [...(references ?? []), inReplyTo].filter(Boolean);
+  headers.references = chain.slice(-20);
+  return headers;
+}
+
+export async function sendEmail(accountId, identityId, {
+  fromEmail, fromName, to, cc, bcc, subject, html, sentMailboxId,
+  inReplyTo = null, references = null,
+}) {
   const from = [fromName ? { name: fromName, email: fromEmail } : { email: fromEmail }];
   const toAddrs = parseAddresses(to);
   const ccAddrs = parseAddresses(cc);
+  const bccAddrs = parseAddresses(bcc);
 
   const emailCreate = {
     from,
@@ -72,9 +145,11 @@ export async function sendEmail(accountId, identityId, { fromEmail, fromName, to
     keywords: { '$seen': true },
     bodyValues: { body: { value: html || '' } },
     htmlBody: [{ partId: 'body', type: 'text/html' }],
+    ...threadingHeaders(inReplyTo, references),
   };
   if (sentMailboxId) emailCreate.mailboxIds = { [sentMailboxId]: true };
   if (ccAddrs.length) emailCreate.cc = ccAddrs;
+  if (bccAddrs.length) emailCreate.bcc = bccAddrs;
 
   // Step 1: create the email
   const createData = await post(
@@ -111,6 +186,27 @@ export async function getMailboxes(accountId) {
   return data?.methodResponses?.[0]?.[1]?.list ?? [];
 }
 
+/**
+ * Just the counters, for the background refresh. Asking for three properties
+ * instead of the whole Mailbox object cuts the polled payload by roughly an
+ * order of magnitude on an account with many folders.
+ */
+export async function getMailboxCounts(accountId) {
+  const data = await post([
+    ['Mailbox/get', {
+      accountId,
+      ids: null,
+      properties: ['id', 'unreadEmails', 'totalEmails'],
+    }, 'mb']
+  ]);
+  return data?.methodResponses?.[0]?.[1]?.list ?? [];
+}
+
+// Everything the message list renders, and nothing else.
+const LIST_PROPERTIES = [
+  'id', 'threadId', 'subject', 'from', 'receivedAt', 'preview', 'keywords', 'hasAttachment',
+];
+
 export async function getEmails(accountId, mailboxId, position = 0, limit = 50) {
   const data = await post([
     [
@@ -120,7 +216,8 @@ export async function getEmails(accountId, mailboxId, position = 0, limit = 50) 
         filter: { inMailbox: mailboxId },
         sort: [{ property: 'receivedAt', isAscending: false }],
         position,
-        limit
+        limit,
+        calculateTotal: false,
       },
       'q'
     ],
@@ -129,7 +226,7 @@ export async function getEmails(accountId, mailboxId, position = 0, limit = 50) 
       {
         accountId,
         '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
-        properties: ['id', 'subject', 'from', 'receivedAt', 'preview', 'keywords']
+        properties: LIST_PROPERTIES,
       },
       'e'
     ]
@@ -146,7 +243,8 @@ export async function searchEmails(accountId, query, position = 0, limit = 50) {
         filter: { text: query },
         sort: [{ property: 'receivedAt', isAscending: false }],
         position,
-        limit
+        limit,
+        calculateTotal: false,
       },
       'q'
     ],
@@ -155,7 +253,7 @@ export async function searchEmails(accountId, query, position = 0, limit = 50) {
       {
         accountId,
         '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
-        properties: ['id', 'subject', 'from', 'receivedAt', 'preview', 'keywords']
+        properties: LIST_PROPERTIES,
       },
       'e'
     ]
@@ -224,7 +322,15 @@ export async function createMailbox(accountId, name, parentId = null) {
 export async function bulkMarkSeen(accountId, emailIds, seen) {
   const update = {};
   for (const id of emailIds) update[id] = { 'keywords/$seen': seen ? true : null };
-  await post([['Email/set', { accountId, update }, 'mark']]);
+  const data = await post([['Email/set', { accountId, update }, 'mark']]);
+  // This used to ignore the response entirely, so a partial failure left the
+  // UI showing messages as read that the server had refused to change.
+  const resp = data?.methodResponses?.[0]?.[1];
+  const failed = resp?.notUpdated ? Object.keys(resp.notUpdated) : [];
+  if (failed.length > 0) {
+    const first = resp.notUpdated[failed[0]];
+    throw new Error(first?.description || `Could not update ${failed.length} message(s)`);
+  }
 }
 
 export async function bulkDestroy(accountId, emailIds) {
@@ -465,7 +571,7 @@ export async function getSieveScript() {
   const res = await apiFetch('/api/sieve');
   if (!res) return null;
   if (res.status === 503) return null;
-  if (!res.ok) throw new Error(`Sieve error ${res.status}`);
+  if (!res.ok) throw new Error(await errorMessage(res, 'Could not load your rules'));
   return res.json();
 }
 
@@ -476,7 +582,7 @@ export async function saveSieveScript(id, name, content, makeActive = true) {
     body: JSON.stringify({ id, name, content, makeActive }),
   });
   if (!res) return null;
-  if (!res.ok) throw new Error(`Sieve save error ${res.status}`);
+  if (!res.ok) throw new Error(await errorMessage(res, 'Could not save your rules'));
   return res.json();
 }
 
@@ -487,9 +593,16 @@ export async function getEmailBody(accountId, emailId) {
       {
         accountId,
         ids: [emailId],
-        properties: ['id', 'subject', 'from', 'to', 'cc', 'receivedAt', 'keywords', 'htmlBody', 'textBody', 'bodyValues'],
+        properties: [
+          'id', 'threadId', 'subject', 'from', 'to', 'cc', 'replyTo',
+          'receivedAt', 'keywords', 'hasAttachment', 'attachments',
+          // messageId/references are what make a reply thread correctly.
+          'messageId', 'references', 'inReplyTo',
+          'htmlBody', 'textBody', 'bodyValues',
+        ],
         fetchHTMLBodyValues: true,
-        fetchTextBodyValues: true
+        fetchTextBodyValues: true,
+        maxBodyValueBytes: 1_000_000,   // don't pull a 50 MB body into the tab
       },
       'e'
     ]

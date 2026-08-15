@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { parseAddresses } from '$lib/api.js';
+import { parseAddresses, threadingHeaders } from '$lib/api.js';
 
 // ---------------------------------------------------------------------------
 // parseAddresses
@@ -55,6 +55,46 @@ describe('parseAddresses', () => {
   it('handles extra whitespace inside angle brackets', () => {
     const result = parseAddresses('Bob < bob@example.com >');
     expect(result[0].email).toBe('bob@example.com');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// threadingHeaders
+//
+// Without In-Reply-To / References a reply starts a new conversation in every
+// other mail client, which is the most visible way a webmail client feels
+// half-finished.
+// ---------------------------------------------------------------------------
+
+describe('threadingHeaders', () => {
+  it('returns nothing for a brand-new message', () => {
+    expect(threadingHeaders(null, null)).toEqual({});
+    expect(threadingHeaders(undefined, ['<a@x>'])).toEqual({});
+  });
+
+  it('sets In-Reply-To to the message being replied to', () => {
+    expect(threadingHeaders('<parent@x>', null).inReplyTo).toEqual(['<parent@x>']);
+  });
+
+  it('appends the parent to the existing References chain', () => {
+    const { references } = threadingHeaders('<parent@x>', ['<root@x>', '<mid@x>']);
+    expect(references).toEqual(['<root@x>', '<mid@x>', '<parent@x>']);
+  });
+
+  it('starts a References chain when the parent had none', () => {
+    expect(threadingHeaders('<parent@x>', null).references).toEqual(['<parent@x>']);
+  });
+
+  it('caps a long chain but always keeps the immediate parent last', () => {
+    const long = Array.from({ length: 40 }, (_, i) => `<m${i}@x>`);
+    const { references } = threadingHeaders('<parent@x>', long);
+    expect(references).toHaveLength(20);
+    expect(references.at(-1)).toBe('<parent@x>');
+  });
+
+  it('drops empty entries from the chain', () => {
+    const { references } = threadingHeaders('<parent@x>', ['<root@x>', '', null]);
+    expect(references).toEqual(['<root@x>', '<parent@x>']);
   });
 });
 

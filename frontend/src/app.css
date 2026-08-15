@@ -7,19 +7,34 @@
     --accent: theme('colors.blue.500');
     --scrollbar-thumb: rgba(0, 0, 0, 0.18);
     --scrollbar-thumb-hover: rgba(0, 0, 0, 0.32);
+    color-scheme: light;
   }
 
   .dark {
     --scrollbar-thumb: rgba(255, 255, 255, 0.15);
     --scrollbar-thumb-hover: rgba(255, 255, 255, 0.28);
+    /* Tells the browser to render native widgets (scrollbars, form controls,
+       the space behind the page) in dark, so nothing flashes white. */
+    color-scheme: dark;
   }
 
   html {
     @apply h-full;
+    /* Stops iOS Safari inflating text in landscape. */
+    -webkit-text-size-adjust: 100%;
   }
 
   body {
-    @apply h-full overflow-hidden font-sans;
+    @apply h-full overflow-hidden font-sans antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* A visible focus ring for keyboard users, and none for mouse users — the
+     default `outline: none` sprinkled through the components left keyboard
+     navigation with no indication of where focus was. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-blue-500 ring-offset-1
+           ring-offset-white dark:ring-offset-gray-900 rounded-sm;
   }
 
   /* Webkit (Chrome, Safari, Edge) */
@@ -49,5 +64,24 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+
+/* Respect the OS "reduce motion" setting: spinners keep turning (they carry
+   information) but everything decorative stops moving. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .animate-spin {
+    animation: spin 1.2s linear infinite !important;
+    animation-duration: 1.2s !important;
+    animation-iteration-count: infinite !important;
   }
 }

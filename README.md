@@ -20,16 +20,22 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 - Mailbox and Folders sections — system mailboxes (Inbox, Sent, Drafts…) separated from user folders
 - App switcher (bottom of the sidebar) to switch between Mail, Calendar, and Contacts
 - Dark mode (system preference + manual toggle, persisted)
-- Real-time push via JMAP EventSource (SSE)
+- Real-time push via JMAP EventSource (SSE), with an exponential-backoff reconnect and a polling fallback
+- **Remote images blocked by default** — tracking pixels do not load until you ask, per message or per sender
+- **Keyboard shortcuts** — `j`/`k` to move, `r`/`a`/`f` to reply, `c` to compose, `?` for the full list
+- Correct reply threading (`In-Reply-To` / `References`), Cc and Bcc
+- Loading indicators throughout — a global activity bar, skeleton lists, and a spinner on every action that talks to the server
 - Single Docker image — FastAPI serves both the API and the compiled frontend
 
 ## Stack
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.12, FastAPI, httpx |
-| Frontend | SvelteKit, Tailwind CSS |
-| Auth | OAuth2 authorization code flow |
+| Backend | Python 3.13, FastAPI, Starlette, httpx |
+| Frontend | SvelteKit 2, Svelte 5, Vite 8, Tailwind CSS |
+| Sanitisation | DOMPurify, plus a script-less sandboxed iframe |
+| Auth | OAuth2 authorization code flow with PKCE (S256) |
+| Session | Encrypted cookie (Fernet: AES-CBC + HMAC-SHA256) |
 | Protocol | JMAP (RFC 8620, RFC 8621, RFC 8984, RFC 9553) |
 | Runtime | Single Docker image (multi-stage build) |
 
@@ -96,9 +102,9 @@ The Vite dev server proxies `/api` and `/auth` to `http://localhost:8000`, so bo
 
 The image uses a true multi-stage build:
 
-1. **`frontend-builder`** (Node 20) — runs `npm run build`, producing a static SvelteKit output
-2. **`python-deps`** (Python 3.12-slim) — installs Python packages into a prefix directory
-3. **Final stage** (Python 3.12-slim) — copies packages and built frontend, runs as a non-root user
+1. **`frontend-builder`** (Node 24) — runs `npm run build`, producing a static SvelteKit output
+2. **`python-deps`** (Python 3.13-slim) — installs Python packages into a prefix directory
+3. **Final stage** (Python 3.13-slim) — copies packages and built frontend, runs as a non-root user
 
 ```bash
 # Build manually
@@ -126,27 +132,38 @@ Uses GitLab's built-in container registry (`$CI_REGISTRY_IMAGE`). No additional 
 jmap-mail/
 ├── backend/
 │   └── app/
-│       ├── main.py       # FastAPI app, routes, static file serving
-│       ├── auth.py       # OAuth2 authorization code flow
-│       ├── jmap.py       # JMAP session, request proxy, SSE stream
+│       ├── main.py       # FastAPI app, security middleware, routes, static serving
+│       ├── auth.py       # OAuth2 authorization code flow (PKCE)
+│       ├── jmap.py       # JMAP session cache, request proxy, SSE stream
+│       ├── http.py       # Pooled upstream httpx clients + error mapping
+│       ├── session.py    # Encrypted session cookie middleware
+│       ├── models.py     # Request envelope validation
 │       └── config.py     # Settings (pydantic-settings)
 ├── frontend/
 │   └── src/
 │       ├── lib/
 │       │   ├── api.js                   # JMAP API helpers (mail, calendar, contacts)
+│       │   ├── sanitize.js              # DOMPurify config + remote-content blocking
+│       │   ├── urls.js                  # Remote-URL classification (pure, unit-tested)
+│       │   ├── trustedSenders.js        # "Always show images from…" list
 │       │   ├── stores/
 │       │   │   ├── mail.js              # Mail state (mailboxes, emails, session)
+│       │   │   ├── activity.js          # In-flight request counter → progress bar
 │       │   │   ├── calendar.js          # Calendar state (events, view, selection)
 │       │   │   └── contacts.js          # Contacts state (address books, search)
 │       │   └── components/
+│       │       ├── Modal.svelte          # Accessible dialog shell (focus trap, Esc)
+│       │       ├── Spinner.svelte        # Shared loading indicator
+│       │       ├── ProgressBar.svelte    # Global activity bar
+│       │       ├── ShortcutsHelp.svelte  # Keyboard shortcut reference
 │       │       ├── AppNav.svelte         # Bottom app switcher
 │       │       ├── CalendarGrid.svelte   # Month-view calendar grid
 │       │       ├── EventModal.svelte     # Create / edit calendar event
 │       │       ├── ContactModal.svelte   # Create / edit contact
 │       │       └── ...                  # Sidebar, MessageList, MessagePane, …
 │       └── routes/
-│           ├── +layout.svelte            # Auth guard, dark mode bootstrap
-│           ├── +page.svelte              # Mail three-pane view
+│           ├── +layout.svelte            # Auth guard, dark mode, activity bar, tab badge
+│           ├── +page.svelte              # Mail three-pane view, realtime, shortcuts
 │           ├── calendar/+page.svelte     # Calendar view
 │           └── contacts/+page.svelte     # Contacts view
 ├── Dockerfile
@@ -157,9 +174,47 @@ jmap-mail/
 
 ## Security Notes
 
-- Access tokens are stored server-side in signed session cookies and never sent to the browser
-- HTML email bodies are rendered with `{@html}` — add [DOMPurify](https://github.com/cure53/DOMPurify) before deploying to production
-- Set `SESSION_SECRET` to a cryptographically random value (see `.env.example`)
+**Tokens and sessions**
+
+- OAuth access and refresh tokens never reach the browser as usable credentials. They live in an **encrypted** session cookie — Fernet (AES-128-CBC + HMAC-SHA256), keyed by HKDF from `SESSION_SECRET`. Starlette's stock session middleware only *signs* the cookie, which leaves the payload readable as plain base64; that is why this app ships its own middleware in [`backend/app/session.py`](backend/app/session.py).
+- The cookie is `HttpOnly`, `SameSite=Lax`, and in production `Secure` with the `__Host-` prefix, which pins it to the exact origin.
+- `SESSION_SECRET` must be at least 32 characters in production — the app refuses to start otherwise. Rotating it invalidates every outstanding session.
+- The session is rotated on login, so a pre-login cookie cannot be upgraded into an authenticated one.
+- OAuth state is compared in constant time, the PKCE verifier is single-use, and discovered OAuth endpoints must be same-origin with `STALWART_URL`.
+- Logout is `POST`-only; a `GET` logout can be fired cross-site by an `<img>` tag.
+
+**Rendering untrusted mail**
+
+- Message bodies render inside an iframe whose `sandbox` omits `allow-scripts` and `allow-same-origin`. Script in an email cannot execute and cannot reach this origin — that is the actual boundary, not the sanitiser.
+- DOMPurify runs as defence in depth, and rewrites every link to `target="_blank" rel="noopener noreferrer nofollow"`.
+- Remote images, `srcset`, `poster`, `background`, and remote `url()` in inline CSS are stripped by default and restored only when the user clicks **Show images** (or trusts the sender). A remote image in an email is a read receipt the sender never asked permission for.
+
+**Transport and abuse**
+
+- CSP, HSTS, `frame-ancestors 'none'`, `X-Content-Type-Options`, COOP/CORP on every response; `no-store` on everything under `/api` and `/auth`.
+- Host header allow-list derived from `APP_URL`, per-IP rate limits on every route, and a 1 MiB request body cap enforced against both the declared `Content-Length` and the bytes actually received.
+- All upstream calls run through a pooled `httpx` client with explicit connect/read timeouts, and concurrent SSE streams are capped.
+- An upstream `401` maps to a `401` (log back in) rather than a `502`, so a revoked token no longer traps the client in a retry loop.
+
+**Known residual risk**
+
+- `script-src` still includes `'unsafe-inline'`, which SvelteKit's hydration bootstrap requires. Because email content cannot execute script at all (see above), this is not the app's XSS boundary. To remove it, enable `csp: { mode: 'hash' }` in `svelte.config.js` and verify the build still hydrates.
+
+## Testing
+
+```bash
+# Backend
+cd backend && pip install -r requirements-dev.txt && pytest
+
+# Frontend
+cd frontend && npm install && npm test
+```
+
+## Upgrading dependencies
+
+`frontend/package-lock.json` is not regenerated automatically. After changing
+`frontend/package.json`, run `npm install` in `frontend/` and commit the updated
+lockfile so `npm ci` stays reproducible.
 
 ## AI Disclosure
 

@@ -11,19 +11,26 @@
   import AppPasswordsModal from '$lib/components/AppPasswordsModal.svelte';
   import MailboxPicker from '$lib/components/MailboxPicker.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
+  import ShortcutsHelp from '$lib/components/ShortcutsHelp.svelte';
   import {
     mailboxes, selectedMailbox, emails, loading,
-    jmapSession, jmapAccountId, selectedEmailId, sidebarWidth, messageListWidth, currentUser
+    jmapSession, jmapAccountId, selectedEmailId, sidebarWidth, messageListWidth, currentUser,
+    composeOpen, composeContext, anyModalOpen, visibleEmails, messageActions,
+    shortcutsOpen, selectedEmailIds, mailRefresher
   } from '$lib/stores/mail.js';
-  import { getJMAPSession, getMailboxes, getEmails, getAppConfig } from '$lib/api.js';
+  import { getJMAPSession, getMailboxes, getMailboxCounts, getEmails, getAppConfig } from '$lib/api.js';
+  import { toast } from '$lib/stores/toast.js';
 
   const MIN_SIDEBAR  = 180;  const MAX_SIDEBAR  = 380;
   const MIN_MSGLIST  = 220;  const MAX_MSGLIST  = 520;
+
+  const PAGE = 50;
 
   let dragging       = null;
   let dragStartX     = 0;
   let dragStartWidth = 0;
   let stalwartUrl    = '';
+  let initError      = '';
 
   function startDrag(e, panel) {
     dragging       = panel;
@@ -51,18 +58,29 @@
   onDestroy(() => {
     window.removeEventListener('mousemove', onMouseMove);
     window.removeEventListener('mouseup',   stopDrag);
-    clearTimeout(esTimer);
-    clearInterval(pollTimer);
-    es?.close();
+    teardownRealtime();
   });
 
   // ── Real-time event stream + polling fallback ────────────────────────────
-  let es         = null;
-  let esTimer    = null;
-  let pollTimer  = null;
+  let es          = null;
+  let esTimer     = null;
+  let pollTimer   = null;
+  let esRetries   = 0;
+  let streamLive  = false;
+
+  function teardownRealtime() {
+    clearTimeout(esTimer);
+    clearInterval(pollTimer);
+    esTimer = pollTimer = null;
+    try { es?.close(); } catch {}
+    es = null;
+    streamLive = false;
+  }
 
   function connectStream() {
     if (es?.readyState === 0 || es?.readyState === 1) return; // CONNECTING or OPEN
+    clearTimeout(esTimer);
+    esTimer = null;
     es = new EventSource('/api/jmap/events');
 
     const onData = ({ data }) => {
@@ -74,36 +92,86 @@
         }
       } catch {}
     };
+
+    es.onopen = () => { streamLive = true; esRetries = 0; };
     es.addEventListener('state', onData);
     es.onmessage = onData;
-    es.onerror   = () => { es.close(); es = null; esTimer = setTimeout(connectStream, 10_000); };
+    es.onerror = () => {
+      streamLive = false;
+      try { es?.close(); } catch {}
+      es = null;
+      // Exponential backoff with jitter. A fixed 10s retry means every tab in
+      // every browser reconnects in lockstep after an outage, which is exactly
+      // the thundering herd the server least needs while recovering.
+      const base = Math.min(60_000, 2_000 * 2 ** Math.min(esRetries, 5));
+      esRetries += 1;
+      clearTimeout(esTimer);
+      esTimer = setTimeout(connectStream, base + Math.random() * 1_000);
+    };
   }
+
+  // Polling exists only to cover the case where SSE cannot connect at all
+  // (a proxy that buffers event streams, say). Running it *alongside* a healthy
+  // stream just doubles the request load for no new information.
+  function startPolling() {
+    clearInterval(pollTimer);
+    pollTimer = setInterval(() => {
+      if (streamLive) return;
+      if (typeof document !== 'undefined' && document.hidden) return;
+      silentRefresh();
+    }, 30_000);
+  }
+
+  function onVisibilityChange() {
+    if (document.hidden) return;
+    // Coming back to the tab: catch up immediately rather than waiting out the
+    // rest of the poll interval, and re-establish the stream if it dropped.
+    if (!streamLive) connectStream();
+    silentRefresh();
+  }
+
+  let refreshing = false;
 
   async function silentRefresh() {
     const mid = $selectedMailbox?.id;
-    if (!mid || !accountId) return;
+    if (!mid || !accountId || refreshing) return;
+    refreshing = true;
     try {
-      const [fresh, freshMailboxes] = await Promise.all([
-        getEmails(accountId, mid),
-        getMailboxes(accountId),
+      // Refetch exactly as many messages as the user has scrolled into view.
+      // Refetching a flat 50 used to silently discard everything past the first
+      // page, so an infinite-scrolled list jumped back to the top on every tick.
+      const want = Math.min(Math.max($emails.length, PAGE), 500);
+      const [fresh, counts] = await Promise.all([
+        getEmails(accountId, mid, 0, want),
+        getMailboxCounts(accountId),
       ]);
+      if ($selectedMailbox?.id !== mid) return;      // user moved on mid-flight
+
       const prevIds = new Set($emails.map(e => e.id));
       emails.set(fresh);
-      // Preserve sidebar sort order; only update server-owned fields like unreadEmails
+
+      // Preserve sidebar sort order; only update server-owned counters.
+      const byId = new Map(counts.map(c => [c.id, c]));
       mailboxes.update(existing => existing.map(mb => {
-        const update = freshMailboxes.find(f => f.id === mb.id);
+        const update = byId.get(mb.id);
         return update ? { ...mb, unreadEmails: update.unreadEmails ?? 0 } : mb;
       }));
+
       // Only notify about emails with IDs not previously in the store AND recently received.
       // Comparing IDs (not lengths) avoids false positives when moves/deletes cause other
-      // emails to slide into the top-50 fetch window.
+      // emails to slide into the fetch window.
       const fiveMinAgo = Date.now() - 5 * 60 * 1000;
       const reallyNew = fresh.filter(
         e => !prevIds.has(e.id) && new Date(e.receivedAt).getTime() > fiveMinAgo
       );
       if (reallyNew.length > 0) notify(reallyNew.length, reallyNew[0].subject ?? '');
-    } catch {}
+    } catch {
+      // Background refresh — a failure here is not worth interrupting the user.
+    } finally {
+      refreshing = false;
+    }
   }
+
 
   async function notify(count, subject) {
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
@@ -125,27 +193,105 @@
   // ── Mail loading ────────────────────────────────────────────────────────────
   let accountId = null;
 
-  $: if ($selectedMailbox && accountId) loadEmails($selectedMailbox.id);
+  // Track the id, not the object: renaming a folder produces a new object and
+  // used to trigger a pointless full reload of its message list.
+  let loadedMailboxId = null;
+  $: if ($selectedMailbox && accountId && $selectedMailbox.id !== loadedMailboxId) {
+    loadedMailboxId = $selectedMailbox.id;
+    loadEmails($selectedMailbox.id);
+  }
+
+  // Sequence guard: switching folders quickly used to let a slow response for
+  // the previous folder land last and paint the wrong messages.
+  let loadSeq = 0;
 
   async function loadEmails(mailboxId) {
+    const seq = ++loadSeq;
     loading.set(true);
     selectedEmailId.set(null);
     try {
-      emails.set(await getEmails(accountId, mailboxId));
+      const list = await getEmails(accountId, mailboxId, 0, PAGE);
+      if (seq !== loadSeq) return;
+      emails.set(list);
+    } catch (e) {
+      if (seq === loadSeq) {
+        emails.set([]);
+        toast(e?.message ?? 'Could not load messages', 'error');
+      }
     } finally {
-      loading.set(false);
+      if (seq === loadSeq) loading.set(false);
+    }
+  }
+
+  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
+  function isTyping(target) {
+    if (!target) return false;
+    const tag = target.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+  }
+
+  function step(delta) {
+    const list = $visibleEmails;
+    if (!list.length) return;
+    const current = list.findIndex(e => e.id === $selectedEmailId);
+    const next = current === -1
+      ? (delta > 0 ? 0 : list.length - 1)
+      : Math.min(list.length - 1, Math.max(0, current + delta));
+    selectedEmailId.set(list[next].id);
+    document.getElementById(`email-row-${list[next].id}`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }
+
+  function onKeydown(e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    if (isTyping(e.target)) return;
+
+    // `?` opens help even while a modal is up; everything else stands down.
+    if (e.key === '?') { e.preventDefault(); shortcutsOpen.update(v => !v); return; }
+    if ($anyModalOpen) return;
+
+    const actions = $messageActions;
+
+    switch (e.key) {
+      case 'j': case 'ArrowDown':  e.preventDefault(); step(1);  break;
+      case 'k': case 'ArrowUp':    e.preventDefault(); step(-1); break;
+      case 'Escape':
+        if ($selectedEmailIds.size) selectedEmailIds.set(new Set());
+        else selectedEmailId.set(null);
+        break;
+      case 'c':
+        e.preventDefault();
+        composeContext.set(null);
+        composeOpen.set(true);
+        break;
+      case '.':
+        e.preventDefault();
+        silentRefresh();
+        break;
+      case 'r': if (actions) { e.preventDefault(); actions.reply(); }      break;
+      case 'a': if (actions) { e.preventDefault(); actions.replyAll(); }   break;
+      case 'f': if (actions) { e.preventDefault(); actions.forward(); }    break;
+      case 'u': if (actions) { e.preventDefault(); actions.toggleSeen(); } break;
+      case '#':
+      case 'Delete':
+        if (actions) { e.preventDefault(); actions.remove(); }
+        break;
     }
   }
 
   onMount(async () => {
+    mailRefresher.set(silentRefresh);
+
     // Grab stalwartUrl from config for the navbar link
     const config = await getAppConfig();
     stalwartUrl = config.stalwartUrl ?? '';
 
     try {
       const session = await getJMAPSession();
+      if (!session) return;                 // apiFetch already redirected to login
       jmapSession.set(session);
-      accountId = Object.keys(session.accounts)[0];
+      accountId = Object.keys(session.accounts ?? {})[0];
+      if (!accountId) throw new Error('This account has no mail access.');
       jmapAccountId.set(accountId);
 
       // Populate the username shown in the navbar
@@ -156,7 +302,7 @@
       mboxList.sort((a, b) => {
         const ai = roleOrder.indexOf(a.role ?? '');
         const bi = roleOrder.indexOf(b.role ?? '');
-        if (ai === -1 && bi === -1) return a.name.localeCompare(b.name);
+        if (ai === -1 && bi === -1) return (a.name ?? '').localeCompare(b.name ?? '');
         if (ai === -1) return 1;
         if (bi === -1) return -1;
         return ai - bi;
@@ -167,13 +313,23 @@
       if (inbox) selectedMailbox.set(inbox);
 
       connectStream();
-      // 30-second polling fallback — catches updates if SSE is unavailable
-      pollTimer = setInterval(silentRefresh, 30_000);
+      startPolling();
+      document.addEventListener('visibilitychange', onVisibilityChange);
     } catch (err) {
       console.error('Failed to initialise JMAP session:', err);
+      initError = err?.message ?? 'Could not reach the mail server.';
+    }
+  });
+
+  onDestroy(() => {
+    mailRefresher.set(null);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
     }
   });
 </script>
+
+<svelte:window on:keydown={onKeydown} />
 
 <div
   class="flex flex-col h-screen bg-gray-100 dark:bg-gray-950"
@@ -181,6 +337,23 @@
 >
   <!-- Top navbar -->
   <Navbar {stalwartUrl} />
+
+  {#if initError}
+    <div class="flex items-center gap-3 px-4 py-2 flex-shrink-0
+                bg-red-50 dark:bg-red-900/25 border-b border-red-200 dark:border-red-800/60">
+      <svg class="w-4 h-4 flex-shrink-0 text-red-500" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5h.01" />
+      </svg>
+      <span class="text-xs text-red-800 dark:text-red-200 flex-1">{initError}</span>
+      <button on:click={() => location.reload()}
+        class="text-xs font-medium px-2.5 py-1 rounded-md
+               bg-red-100 dark:bg-red-800/60 hover:bg-red-200 dark:hover:bg-red-800
+               text-red-900 dark:text-red-100 transition-colors duration-150">
+        Reload
+      </button>
+    </div>
+  {/if}
 
   <!-- Three-pane area -->
   <div class="flex flex-1 min-h-0 overflow-hidden select-none">
@@ -239,4 +412,5 @@
 <NewFolderModal />
 <SieveEditor />
 <AppPasswordsModal />
+<ShortcutsHelp />
 <Toasts />

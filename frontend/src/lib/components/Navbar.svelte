@@ -1,15 +1,24 @@
 <script>
   import { onMount } from 'svelte';
-  import { appName, currentUser, darkMode, sieveOpen, appPasswordsOpen } from '$lib/stores/mail.js';
+  import {
+    appName, currentUser, darkMode, sieveOpen, appPasswordsOpen, shortcutsOpen
+  } from '$lib/stores/mail.js';
   import { logout } from '$lib/api.js';
   import Avatar from './Avatar.svelte';
+  import Spinner from './Spinner.svelte';
 
   export let stalwartUrl = '';
 
   let open = false;
+  let signingOut = false;
+  let requestingNotif = false;
 
   function toggle() { open = !open; }
   function close()  { open = false; }
+
+  function onKeydown(e) {
+    if (open && e.key === 'Escape') close();
+  }
 
   let notifPerm = 'unsupported';
   onMount(() => {
@@ -17,11 +26,24 @@
   });
 
   async function requestNotifications() {
-    if (!('Notification' in window)) return;
-    await Notification.requestPermission();
-    notifPerm = Notification.permission;
+    if (!('Notification' in window) || requestingNotif) return;
+    requestingNotif = true;
+    try {
+      await Notification.requestPermission();
+      notifPerm = Notification.permission;
+    } finally {
+      requestingNotif = false;
+    }
+  }
+
+  async function signOut() {
+    if (signingOut) return;
+    signingOut = true;
+    await logout();
   }
 </script>
+
+<svelte:window on:keydown={onKeydown} />
 
 <nav class="h-11 grid grid-cols-3 items-center px-4 flex-shrink-0 z-20
             bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
@@ -45,13 +67,17 @@
   {#if notifPerm !== 'unsupported' && notifPerm !== 'denied'}
     <button
       on:click={requestNotifications}
+      disabled={requestingNotif}
       title={notifPerm === 'granted' ? 'Notifications enabled' : 'Enable notifications'}
-      class="p-1.5 rounded-lg transition-colors duration-150
+      class="w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150
+             disabled:opacity-50
              {notifPerm === 'granted'
                ? 'text-blue-500 dark:text-blue-400'
                : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800'}"
     >
-      {#if notifPerm === 'granted'}
+      {#if requestingNotif}
+        <Spinner size="xs" label="Requesting permission" />
+      {:else if notifPerm === 'granted'}
         <svg class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
           <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.63-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.64 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>
         </svg>
@@ -63,11 +89,25 @@
     </button>
   {/if}
 
+  <!-- Keyboard shortcuts -->
+  <button
+    on:click={() => shortcutsOpen.set(true)}
+    title="Keyboard shortcuts ( ? )"
+    class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 dark:text-gray-400
+           hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
+  >
+    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+         stroke-linecap="round" stroke-linejoin="round">
+      <rect x="2" y="6" width="20" height="12" rx="2" />
+      <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" />
+    </svg>
+  </button>
+
   <!-- Dark mode toggle -->
   <button
     on:click={() => darkMode.toggle()}
     title="Toggle dark mode"
-    class="p-1.5 rounded-lg text-gray-500 dark:text-gray-400
+    class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 dark:text-gray-400
            hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
   >
     {#if $darkMode}
@@ -154,18 +194,24 @@
           {/if}
 
           <button
-            on:click={logout}
+            on:click={signOut}
+            disabled={signingOut}
             class="flex items-center gap-3 w-full px-4 py-2 text-sm text-red-600 dark:text-red-400
-                   hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-100"
+                   hover:bg-red-50 dark:hover:bg-red-900/20 disabled:opacity-60
+                   transition-colors duration-100"
           >
-            <!-- sign out icon -->
-            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none"
-                 stroke="currentColor" stroke-width="2">
-              <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
-              <polyline points="16 17 21 12 16 7"/>
-              <line x1="21" y1="12" x2="9" y2="12"/>
-            </svg>
-            Sign out
+            {#if signingOut}
+              <Spinner size="xs" label="" accent="border-t-red-500" />
+            {:else}
+              <!-- sign out icon -->
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2">
+                <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+            {/if}
+            {signingOut ? 'Signing out…' : 'Sign out'}
           </button>
         </div>
       </div>

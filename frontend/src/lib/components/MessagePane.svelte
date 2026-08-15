@@ -1,28 +1,34 @@
 <script>
+  import { onDestroy } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import {
     selectedEmailId, jmapSession, movePickerOpen,
     mailboxes, selectedMailbox, jmapAccountId, emails,
-    composeContext, composeOpen, darkMode
+    composeContext, composeOpen, darkMode, messageActions
   } from '$lib/stores/mail.js';
   import { getEmailBody, moveEmail, destroyEmail, markEmailSeen } from '$lib/api.js';
   import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
+  import { sanitizeEmailHtml, escapeText, decodeEntities } from '$lib/sanitize.js';
+  import { isTrustedSender, trustSender } from '$lib/trustedSenders.js';
   import Avatar from './Avatar.svelte';
-  import DOMPurify from 'dompurify';
+  import Spinner from './Spinner.svelte';
 
   let email = null;
-  let bodyHtml    = '';     // sanitised HTML kept for reply/forward quoting
   let frameContent = '';    // sanitised content cached for dark-mode rebuilds
   let framePlain   = false; // true → frameContent is escaped plain text (needs <pre>)
   let loadingEmail = false;
+  let loadError    = '';
 
-  const _purifyOpts = {
-    USE_PROFILES: { html: true },
-    FORBID_TAGS: ['script', 'object', 'embed', 'form', 'input', 'button'],
-    FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'action'],
-    ALLOW_DATA_ATTR: false,
-  };
+  // Remote-content state for the message on screen.
+  let rawHtml       = '';    // kept so "show images" can re-sanitise without a refetch
+  let blockedCount  = 0;
+  let imagesAllowed = false;
+
+  // Per-action busy flags so each control can show its own spinner rather than
+  // freezing the whole pane.
+  let deleting   = false;
+  let togglingSeen = false;
 
   // Theme-aware base styles injected into every frame document.
   function frameBase(dark) {
@@ -59,55 +65,99 @@
         : wrapDoc(frameContent, $darkMode))
     : '';
 
+  /** Re-sanitise `rawHtml` at the current trust level and refresh the frame. */
+  function renderBody() {
+    if (!rawHtml) return;
+    const framed = sanitizeEmailHtml(rawHtml, {
+      allowRemote: imagesAllowed,
+      wholeDocument: true,
+    });
+    frameContent = framed.html;
+    blockedCount = framed.blocked;
+    framePlain   = false;
+  }
+
+  /**
+   * The body as a fragment, for quoting into a reply or forward. Computed on
+   * demand rather than alongside every render: sanitising a large message twice
+   * on open was pure waste when most messages are never replied to.
+   */
+  function quotedBodyHtml() {
+    if (framePlain) return `<pre>${frameContent}</pre>`;
+    if (!rawHtml) return '';
+    return sanitizeEmailHtml(rawHtml, { allowRemote: imagesAllowed }).html;
+  }
+
+  function showImages() {
+    imagesAllowed = true;
+    renderBody();
+  }
+
+  function alwaysShowImages() {
+    if (primaryFrom?.email) trustSender(primaryFrom.email);
+    showImages();
+  }
+
+  // Guards against a slow request for message A landing after the user has
+  // already clicked message B and overwriting the pane with stale content.
+  let loadSeq = 0;
+
   async function loadEmail(id) {
     if (!id || !$jmapSession) return;
+    const seq = ++loadSeq;
+
     loadingEmail = true;
+    loadError    = '';
     email = null;
-    bodyHtml     = '';
-    frameContent = '';
-    framePlain   = false;
+    frameContent  = '';
+    rawHtml       = '';
+    framePlain    = false;
+    blockedCount  = 0;
+    imagesAllowed = false;
+
     try {
       const accountId = Object.keys($jmapSession.accounts)[0];
       const data = await getEmailBody(accountId, id);
+      if (seq !== loadSeq) return;          // superseded by a newer selection
+      if (!data) {
+        loadError = 'This message could not be loaded.';
+        return;
+      }
+
+      // Trust decisions are per sender, so this has to happen before the first
+      // render rather than after the banner has already flashed up.
+      imagesAllowed = isTrustedSender(data.from?.[0]?.email);
 
       // Fetch the htmlBody value, but only treat it as real HTML if it
       // actually contains markup — Stalwart sometimes points htmlBody at a
       // text/plain part, and parsing plain text as HTML collapses newlines.
-      let rawHtml = '';
-      if (data?.htmlBody?.length) {
+      let html = '';
+      if (data.htmlBody?.length) {
         const pid = data.htmlBody[0].partId;
         const val = data.bodyValues?.[pid]?.value ?? '';
-        if (val.includes('</')) rawHtml = val;
+        if (val.includes('</')) html = val;
       }
 
-      if (rawHtml) {
-        bodyHtml     = DOMPurify.sanitize(rawHtml, _purifyOpts);
-        frameContent = DOMPurify.sanitize(rawHtml, { ..._purifyOpts, WHOLE_DOCUMENT: true });
-        framePlain   = false;
+      if (html) {
+        rawHtml = html;
+        renderBody();
       } else {
         // Plain-text path — prefer textBody, fall back to htmlBody value if needed
         let text = '';
-        if (data?.textBody?.length) {
-          const pid = data.textBody[0].partId;
-          text = data.bodyValues?.[pid]?.value ?? '';
+        if (data.textBody?.length) {
+          text = data.bodyValues?.[data.textBody[0].partId]?.value ?? '';
         }
-        if (!text && data?.htmlBody?.length) {
-          const pid = data.htmlBody[0].partId;
-          text = data.bodyValues?.[pid]?.value ?? '';
+        if (!text && data.htmlBody?.length) {
+          text = data.bodyValues?.[data.htmlBody[0].partId]?.value ?? '';
         }
-        // Decode pre-encoded entities (e.g. iOS Mail sends &gt; instead of >)
-        const decoded = text
-          .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"')
-          .replace(/&#39;|&apos;/g, "'").replace(/&amp;/g, '&');
-        const escaped = decoded
-          .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-        bodyHtml     = `<pre>${escaped}</pre>`;
+        const escaped = escapeText(decodeEntities(text));
         frameContent = escaped;
         framePlain   = true;
       }
+
       email = data;
       // Auto-mark as read on open
-      if (!data?.keywords?.['$seen']) {
+      if (!data.keywords?.['$seen']) {
         email = { ...data, keywords: { ...(data.keywords ?? {}), '$seen': true } };
         markEmailSeen(accountId, id, true).catch(() => {});
         emails.update(list => list.map(e =>
@@ -119,8 +169,10 @@
             : mb
         ));
       }
+    } catch (e) {
+      if (seq === loadSeq) loadError = e?.message ?? 'This message could not be loaded.';
     } finally {
-      loadingEmail = false;
+      if (seq === loadSeq) loadingEmail = false;
     }
   }
 
@@ -154,10 +206,18 @@
   $: canReplyAll = allAddrs.length > 1;
 
   function quotedHtml(mode) {
+    // Every field below comes from the message headers, which the sender
+    // controls. The quote block ends up as innerHTML in the compose editor, and
+    // innerHTML assignment fires inline handlers such as <img onerror> even
+    // though it will not run a <script> tag — so these must be escaped, not
+    // interpolated raw. Only `body` is pre-sanitised markup.
     const from = primaryFrom?.name
-      ? `${primaryFrom.name} &lt;${primaryFrom.email}&gt;`
-      : (primaryFrom?.email ?? '');
-    const date = formatDate(email?.receivedAt);
+      ? `${escapeText(primaryFrom.name)} &lt;${escapeText(primaryFrom.email ?? '')}&gt;`
+      : escapeText(primaryFrom?.email ?? '');
+    const date    = escapeText(formatDate(email?.receivedAt));
+    const subject = escapeText(email?.subject ?? '');
+    const to      = escapeText(formatAddress(email?.to));
+    const body    = quotedBodyHtml();
 
     if (mode === 'forward') {
       return `<br><br>
@@ -166,27 +226,39 @@
     -------- Forwarded Message --------<br>
     <b>From:</b> ${from}<br>
     <b>Date:</b> ${date}<br>
-    <b>Subject:</b> ${email?.subject ?? ''}<br>
-    <b>To:</b> ${formatAddress(email?.to)}
+    <b>Subject:</b> ${subject}<br>
+    <b>To:</b> ${to}
   </p>
-  ${bodyHtml}
+  ${body}
 </div>`;
     }
     // reply / reply_all
     return `<br><br>
 <div style="border-left:3px solid #ccc;padding:0 0 0 1em;color:#555;margin-top:1em">
   <p style="margin:0 0 0.5em;font-size:0.85em;color:#777">On ${date}, ${from} wrote:</p>
-  ${bodyHtml}
+  ${body}
 </div>`;
   }
 
+  // Reply-To wins over From when the sender asked for it (mailing lists rely
+  // on this), which is what every other client does.
+  $: replyTarget = email?.replyTo?.[0]?.email ?? email?.from?.[0]?.email ?? '';
+
   function openCompose(mode) {
+    // Carrying messageId/references through is what keeps the reply in the
+    // same conversation in the recipient's client.
+    const thread = {
+      inReplyTo: email?.messageId?.[0] ?? null,
+      references: email?.references ?? [],
+    };
+
     if (mode === 'reply') {
       composeContext.set({
         mode: 'reply',
-        to: email?.from?.[0]?.email ?? '',
+        to: replyTarget,
         subject: email?.subject ? `Re: ${email.subject}` : '',
         body: quotedHtml('reply'),
+        ...thread,
       });
     } else if (mode === 'reply_all') {
       composeContext.set({
@@ -194,6 +266,7 @@
         to: allAddrs.join(', '),
         subject: email?.subject ? `Re: ${email.subject}` : '',
         body: quotedHtml('reply'),
+        ...thread,
       });
     } else {
       composeContext.set({
@@ -207,8 +280,9 @@
   }
 
   async function deleteEmail() {
-    if (!email) return;
+    if (!email || deleting) return;
     const emailId = email.id;
+    deleting = true;
     try {
       if (inTrash) {
         await destroyEmail($jmapAccountId, emailId);
@@ -222,14 +296,17 @@
       await refreshMailboxCounts();
     } catch (e) {
       toast(e?.message ?? 'Delete failed', 'error');
+    } finally {
+      deleting = false;
     }
   }
 
   $: isSeen = !!(email?.keywords?.['$seen']);
 
   async function toggleSeen() {
-    if (!email) return;
+    if (!email || togglingSeen) return;
     const next = !isSeen;
+    togglingSeen = true;
     try {
       await markEmailSeen($jmapAccountId, email.id, next);
       email = { ...email, keywords: { ...(email.keywords ?? {}), '$seen': next ? true : undefined } };
@@ -245,8 +322,33 @@
       ));
     } catch (e) {
       toast(e?.message ?? 'Failed to update read status', 'error');
+    } finally {
+      togglingSeen = false;
     }
   }
+
+  function formatBytes(bytes) {
+    if (!bytes) return '';
+    const units = ['B', 'KB', 'MB', 'GB'];
+    let value = bytes;
+    let unit = 0;
+    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
+    return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
+  }
+
+  $: attachments = (email?.attachments ?? []).filter(a => a?.disposition !== 'inline');
+
+  // Publish this message's actions so the page-level keyboard handler can drive
+  // them (r / a / f / u / #) without either component knowing about the other.
+  $: messageActions.set(email ? {
+    reply:     () => openCompose('reply'),
+    replyAll:  () => { if (canReplyAll) openCompose('reply_all'); },
+    forward:   () => openCompose('forward'),
+    toggleSeen,
+    remove:    deleteEmail,
+  } : null);
+
+  onDestroy(() => messageActions.set(null));
 </script>
 
 <section class="flex flex-col flex-1 min-w-0 h-full bg-white dark:bg-gray-900 overflow-hidden">
@@ -282,6 +384,27 @@
           <div class="h-3 bg-gray-100 dark:bg-gray-700/50 rounded animate-pulse" style="width: {w * 100}%"></div>
         {/each}
       </div>
+
+      <div class="flex items-center justify-center gap-2 pb-6 text-xs text-gray-400 dark:text-gray-500">
+        <Spinner size="xs" label="" />
+        Loading message…
+      </div>
+    </div>
+
+  {:else if loadError}
+    <div class="flex flex-col items-center justify-center h-full gap-3 px-6 text-center"
+         in:fade={{ duration: 150 }}>
+      <svg class="w-10 h-10 text-gray-300 dark:text-gray-600" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5h.01" />
+      </svg>
+      <p class="text-sm text-gray-500 dark:text-gray-400">{loadError}</p>
+      <button
+        on:click={() => loadEmail($selectedEmailId)}
+        class="text-xs font-medium px-3 py-1.5 rounded-lg
+               bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600
+               text-gray-700 dark:text-gray-200 transition-colors duration-150"
+      >Try again</button>
     </div>
 
   {:else if email}
@@ -340,28 +463,95 @@
             <button on:click={() => movePickerOpen.set(email.id)} class={btnCls}>
               <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/></svg>Move
             </button>
-            <button on:click={toggleSeen} class={btnCls}>
-              {#if isSeen}
-                <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>Mark Unread
+            <button on:click={toggleSeen} class={btnCls} disabled={togglingSeen}
+              class:opacity-60={togglingSeen}>
+              {#if togglingSeen}
+                <Spinner size="xs" label="" cls="mr-1 align-[-1px]" />
+              {:else if isSeen}
+                <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
               {:else}
-                <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>Mark Read
+                <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
               {/if}
+              {isSeen ? 'Mark Unread' : 'Mark Read'}
             </button>
-            <button on:click={deleteEmail}
+            <button on:click={deleteEmail} disabled={deleting}
               class="flex items-center px-3 py-1.5 text-xs font-medium rounded-md transition-colors duration-150
                      bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40
-                     text-red-600 dark:text-red-400">
-              <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>{inTrash ? 'Delete Permanently' : 'Delete'}
+                     text-red-600 dark:text-red-400
+                     disabled:opacity-60 disabled:cursor-not-allowed">
+              {#if deleting}
+                <Spinner size="xs" label="" accent="border-t-red-500" cls="mr-1" />
+              {:else}
+                <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
+              {/if}
+              {deleting ? 'Deleting…' : inTrash ? 'Delete Permanently' : 'Delete'}
             </button>
           </div>
+
+          <!-- Attachments -->
+          {#if attachments.length}
+            <div class="flex flex-wrap items-center gap-2 mt-3 pt-3 border-t border-gray-100 dark:border-gray-700/60">
+              <span class="text-xs text-gray-400 dark:text-gray-500 flex items-center gap-1">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
+                </svg>
+                {attachments.length}
+              </span>
+              {#each attachments as att}
+                <span class="inline-flex items-center gap-1.5 max-w-[14rem] px-2 py-1 rounded-md
+                             bg-gray-100 dark:bg-gray-700/60 text-xs text-gray-600 dark:text-gray-300">
+                  <span class="truncate">{att.name || 'attachment'}</span>
+                  {#if att.size}
+                    <span class="text-gray-400 dark:text-gray-500 flex-shrink-0">{formatBytes(att.size)}</span>
+                  {/if}
+                </span>
+              {/each}
+            </div>
+          {/if}
         </div>
 
-        <!-- Body — always rendered in a sandboxed iframe -->
+        <!-- Remote-content notice: a remote <img> is a read receipt the sender
+             gets without asking, so nothing off-origin loads until requested. -->
+        {#if blockedCount > 0 && !imagesAllowed}
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-6 py-2.5 flex-shrink-0
+                      bg-amber-50 dark:bg-amber-900/20
+                      border-b border-amber-200 dark:border-amber-800/50"
+               in:fade={{ duration: 150 }}>
+            <svg class="w-4 h-4 flex-shrink-0 text-amber-500 dark:text-amber-400" viewBox="0 0 24 24"
+                 fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/>
+              <path d="M14.12 14.12a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>
+            </svg>
+            <span class="text-xs text-amber-800 dark:text-amber-200 flex-1 min-w-0">
+              {blockedCount} remote {blockedCount === 1 ? 'image was' : 'images were'} blocked to stop
+              the sender tracking when you opened this message.
+            </span>
+            <div class="flex items-center gap-2 flex-shrink-0">
+              <button on:click={showImages}
+                class="text-xs font-medium px-2.5 py-1 rounded-md
+                       bg-amber-100 dark:bg-amber-800/60 hover:bg-amber-200 dark:hover:bg-amber-800
+                       text-amber-900 dark:text-amber-100 transition-colors duration-150">
+                Show images
+              </button>
+              {#if primaryFrom?.email}
+                <button on:click={alwaysShowImages}
+                  class="text-xs text-amber-700 dark:text-amber-300 hover:underline">
+                  Always from this sender
+                </button>
+              {/if}
+            </div>
+          </div>
+        {/if}
+
+        <!-- Body — always rendered in a sandboxed iframe. The sandbox omits
+             allow-scripts and allow-same-origin, so message markup cannot run
+             code or reach this origin no matter what it contains. -->
         <div class="flex-1 min-h-0 overflow-hidden">
           <iframe
             title="Email content"
             srcdoc={frameDoc}
             sandbox="allow-popups allow-popups-to-escape-sandbox"
+            referrerpolicy="no-referrer"
             class="w-full h-full border-0 block"
             class:bg-white={!$darkMode}
             class:bg-gray-800={$darkMode}

@@ -5,36 +5,55 @@ import time
 
 mimetypes.add_type('application/manifest+json', '.webmanifest')
 from contextlib import asynccontextmanager
+
+import httpx
 from fastapi import FastAPI, Request, HTTPException, Depends
 from pydantic import BaseModel, Field
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.middleware.sessions import SessionMiddleware
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
+from . import http as upstream
 from .config import get_settings
 from .auth import get_authorization_url, exchange_code, refresh_access_token, _discover_endpoints
-from .jmap import get_jmap_session, jmap_request, jmap_event_stream, get_sieve_script, save_sieve_script
+from .http import UpstreamError
+from .jmap import (
+    get_jmap_session, jmap_request, jmap_event_stream,
+    get_sieve_script, save_sieve_script, invalidate_session,
+)
 from .models import JMAPRequest
+from .session import EncryptedSessionMiddleware
 
 logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
 
+# 'unsafe-inline' in script-src is required by SvelteKit's hydration bootstrap,
+# which is emitted as an inline <script>. It is not the app's XSS boundary:
+# untrusted email HTML is rendered in a sandboxed iframe with no allow-scripts,
+# so it cannot execute script at all regardless of this directive. Removing it
+# means switching SvelteKit to `csp: { mode: 'hash' }` in svelte.config.js.
 _CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "    # unsafe-inline needed for SvelteKit hydration
+    "script-src 'self' 'unsafe-inline'; "
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob: https:; "    # emails may contain external images
     "font-src 'self' data:; "
     "connect-src 'self'; "
     "frame-src 'none'; "
+    "child-src 'none'; "
+    "worker-src 'self'; "                    # service worker
+    "manifest-src 'self'; "
+    "media-src 'self' data:; "
     "object-src 'none'; "
     "base-uri 'self'; "
+    "frame-ancestors 'none'; "               # clickjacking; supersedes X-Frame-Options
     "form-action 'self';"
 )
 
@@ -47,9 +66,91 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["Referrer-Policy"]          = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"]       = "camera=(), microphone=(), geolocation=()"
         response.headers["Content-Security-Policy"]  = _CSP
+        response.headers["Cross-Origin-Opener-Policy"]   = "same-origin"
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+
+        path = request.url.path
+        if path.startswith("/api/") or path.startswith("/auth/"):
+            # Mail content and auth responses must never land in a shared or
+            # on-disk cache, and must not be replayed from history after logout.
+            response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, private"
+            response.headers["Pragma"]        = "no-cache"
+
         if settings.is_production:
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
         return response
+
+
+_BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+
+class BodySizeLimitMiddleware:
+    """Reject request bodies larger than ``max_request_bytes``.
+
+    A declared Content-Length is checked up front and the request then streams
+    through untouched. A body-bearing request that declines to declare its
+    length (chunked encoding) is buffered up to the limit instead, so it cannot
+    simply omit the header to bypass the check.
+    """
+
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        headers = dict(scope.get("headers") or [])
+        declared = headers.get(b"content-length")
+
+        if declared is not None:
+            try:
+                too_big = int(declared) > self.max_bytes
+            except ValueError:
+                too_big = True
+            if too_big:
+                await self._too_large(scope, send)
+                return
+            await self.app(scope, receive, send)
+            return
+
+        if scope.get("method", "GET").upper() not in _BODY_METHODS:
+            await self.app(scope, receive, send)
+            return
+
+        body = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] != "http.request":
+                break
+            body.extend(message.get("body", b""))
+            if len(body) > self.max_bytes:
+                await self._too_large(scope, send)
+                return
+            if not message.get("more_body", False):
+                break
+
+        buffered = bytes(body)
+        sent = False
+
+        async def replay() -> Message:
+            nonlocal sent
+            if sent:
+                return {"type": "http.disconnect"}
+            sent = True
+            return {"type": "http.request", "body": buffered, "more_body": False}
+
+        await self.app(scope, replay, send)
+
+    async def _too_large(self, scope: Scope, send: Send) -> None:
+        response = JSONResponse({"detail": "Request body too large"}, status_code=413)
+        await response(scope, _empty_receive, send)
+
+
+async def _empty_receive() -> Message:
+    return {"type": "http.disconnect"}
 
 
 limiter = Limiter(key_func=get_remote_address)
@@ -57,12 +158,16 @@ limiter = Limiter(key_func=get_remote_address)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await upstream.startup()
     # Warm the OAuth2 discovery cache so the first login has no extra latency
     try:
         await _discover_endpoints()
-    except Exception:
-        pass  # Non-fatal — discovery will retry on first login
-    yield
+    except Exception as e:
+        logger.warning("OAuth discovery warm-up failed (will retry on first login): %s", e)
+    try:
+        yield
+    finally:
+        await upstream.shutdown()
 
 
 app = FastAPI(title="JMAP Mail", lifespan=lifespan, docs_url=None, redoc_url=None)
@@ -70,12 +175,38 @@ app = FastAPI(title="JMAP Mail", lifespan=lifespan, docs_url=None, redoc_url=Non
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-app.add_middleware(SecurityHeadersMiddleware)
+
+@app.exception_handler(UpstreamError)
+async def _upstream_error_handler(request: Request, exc: UpstreamError):
+    """Turn an upstream failure into something the client can act on.
+
+    A revoked or expired token used to surface as a 502, which the frontend
+    retried forever. Mapping it to 401 makes the client log the user back in.
+    """
+    if exc.is_auth_failure:
+        request.session.clear()
+        return JSONResponse({"detail": "Session expired, please log in again"}, status_code=401)
+    logger.error("Upstream error on %s: %s", request.url.path, exc)
+    status = 503 if exc.status == 503 else 502
+    return JSONResponse({"detail": "Upstream service error"}, status_code=status)
+
+
+@app.exception_handler(httpx.HTTPError)
+async def _upstream_transport_error_handler(request: Request, exc: httpx.HTTPError):
+    """Connect/read timeouts and DNS failures are a bad gateway, not a bug."""
+    logger.error("Upstream transport error on %s: %s: %s",
+                 request.url.path, type(exc).__name__, exc)
+    return JSONResponse({"detail": "Upstream service unavailable"}, status_code=504)
+
+
+# Middleware added last runs outermost, so this list reads inside-out:
+# session -> CORS -> body limit -> security headers -> host check.
 app.add_middleware(
-    SessionMiddleware,
+    EncryptedSessionMiddleware,
     secret_key=settings.session_secret,
     https_only=settings.is_production,
     same_site="lax",
+    max_age=settings.session_max_age,
 )
 origins = (
     [settings.app_url]
@@ -86,9 +217,12 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
+app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
 
 async def require_auth(request: Request) -> str:
@@ -99,20 +233,21 @@ async def require_auth(request: Request) -> str:
     expires_at = request.session.get("token_expires_at", 0)
     if expires_at and time.time() > expires_at - 300:   # refresh 5 min before expiry
         rt = request.session.get("refresh_token")
-        if rt:
-            try:
-                old_token = token
-                new_tokens = await refresh_access_token(rt)
-                token = new_tokens["access_token"]
-                request.session["access_token"] = token
-                if "refresh_token" in new_tokens:
-                    request.session["refresh_token"] = new_tokens["refresh_token"]
-                request.session["token_expires_at"] = time.time() + new_tokens.get("expires_in", 3600)
-                # Invalidate the JMAP session cache for the old token
-                from .jmap import _jmap_session_cache
-                _jmap_session_cache.pop(old_token, None)
-            except Exception:
-                raise HTTPException(status_code=401, detail="Session expired, please log in again")
+        if not rt:
+            request.session.clear()
+            raise HTTPException(status_code=401, detail="Session expired, please log in again")
+        try:
+            old_token = token
+            new_tokens = await refresh_access_token(rt)
+            token = new_tokens["access_token"]
+            request.session["access_token"] = token
+            if "refresh_token" in new_tokens:
+                request.session["refresh_token"] = new_tokens["refresh_token"]
+            request.session["token_expires_at"] = time.time() + new_tokens.get("expires_in", 3600)
+            invalidate_session(old_token)
+        except Exception:
+            request.session.clear()
+            raise HTTPException(status_code=401, detail="Session expired, please log in again")
 
     return token
 
@@ -168,12 +303,10 @@ async def callback(request: Request, code: str, state: str):
         # we can tell whether the cookie arrived at all, then send the user back
         # to re-start the login (most common after a container restart).
         logger.warning(
-            "OAuth callback rejected (%s). session_keys=%s  url_state=%.8s…  "
-            "session_state=%.8s…",
+            "OAuth callback rejected (%s). session_keys=%s  url_state=%.8s…",
             e,
             list(request.session.keys()),
             state,
-            request.session.get("oauth_state", "<missing>"),
         )
         request.session.clear()
         return RedirectResponse("/auth/login")
@@ -181,56 +314,56 @@ async def callback(request: Request, code: str, state: str):
         logger.error("OAuth callback error: %s", e)
         raise HTTPException(status_code=502, detail="Authentication failed")
 
+    if not tokens.get("access_token"):
+        logger.error("OAuth token endpoint returned no access_token")
+        raise HTTPException(status_code=502, detail="Authentication failed")
+
+    # Rotate the session on privilege change so a pre-login cookie handed to the
+    # browser by an attacker cannot be upgraded into an authenticated one.
+    request.session.clear()
     request.session["access_token"]     = tokens["access_token"]
     request.session["token_expires_at"] = time.time() + tokens.get("expires_in", 3600)
     if "refresh_token" in tokens:
         request.session["refresh_token"] = tokens["refresh_token"]
-    request.session.pop("oauth_state", None)
 
     return RedirectResponse("/")
 
 
-@app.get("/auth/logout")
+@app.post("/auth/logout")
 async def logout(request: Request):
+    # POST-only: a GET logout is trivially triggered cross-site by an <img> tag.
     request.session.clear()
-    return RedirectResponse("/")
+    return JSONResponse({"ok": True})
 
 
 @app.get("/auth/me")
 async def me(request: Request):
-    token = request.session.get("access_token")
-    if not token:
+    if not request.session.get("access_token"):
         return {"authenticated": False, "email": None}
-    # Email is not stored separately yet; return authenticated status
     return {"authenticated": True, "email": request.session.get("email")}
 
 
 @app.get("/api/jmap/session")
-async def jmap_session(access_token: str = Depends(require_auth)):
-    try:
-        session = await get_jmap_session(access_token)
-        return session
-    except Exception as e:
-        logger.error("JMAP session error: %s", e)
-        raise HTTPException(status_code=502, detail="Upstream service error")
+@limiter.limit("60/minute")
+async def jmap_session(request: Request, access_token: str = Depends(require_auth)):
+    return await get_jmap_session(access_token)
 
 
 @app.post("/api/jmap")
-async def jmap_proxy(payload: JMAPRequest, access_token: str = Depends(require_auth)):
-    try:
-        result = await jmap_request(access_token, payload.model_dump())
-        return result
-    except Exception as e:
-        logger.error("JMAP request error: %s", e)
-        raise HTTPException(status_code=502, detail="Upstream service error")
+@limiter.limit("300/minute")
+async def jmap_proxy(request: Request, payload: JMAPRequest, access_token: str = Depends(require_auth)):
+    return await jmap_request(access_token, payload.model_dump())
 
 
 @app.get("/api/jmap/events")
-async def jmap_events(access_token: str = Depends(require_auth)):
+@limiter.limit("30/minute")
+async def jmap_events(request: Request, access_token: str = Depends(require_auth)):
     async def event_generator():
         try:
             async for line in jmap_event_stream(access_token):
                 yield f"{line}\n"
+        except UpstreamError as e:
+            logger.info("JMAP event stream ended: %s", e)
         except Exception as e:
             logger.error("JMAP event stream error: %s", e)
 
@@ -238,54 +371,63 @@ async def jmap_events(access_token: str = Depends(require_auth)):
         event_generator(),
         media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store",
             "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
         },
     )
 
 
 class SieveSaveRequest(BaseModel):
-    id: str | None = None
+    id: str | None = Field(default=None, max_length=128)
     name: str = Field(default="My Rules", max_length=255)
     content: str = Field(max_length=65_536)   # 64 KB ceiling
     makeActive: bool = True
 
 
 @app.get("/api/sieve")
-async def sieve_get(access_token: str = Depends(require_auth)):
-    try:
-        result = await get_sieve_script(access_token)
-        if result is None:
-            raise HTTPException(status_code=503, detail="Sieve not supported by this server")
-        return result
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error("Sieve get error: %s", e)
-        raise HTTPException(status_code=502, detail="Upstream service error")
+@limiter.limit("60/minute")
+async def sieve_get(request: Request, access_token: str = Depends(require_auth)):
+    result = await get_sieve_script(access_token)
+    if result is None:
+        raise HTTPException(status_code=503, detail="Sieve not supported by this server")
+    return result
 
 
 @app.put("/api/sieve")
-async def sieve_put(payload: SieveSaveRequest, access_token: str = Depends(require_auth)):
-    try:
-        result = await save_sieve_script(
-            access_token, payload.id, payload.name, payload.content, payload.makeActive
-        )
-        return result
-    except Exception as e:
-        logger.error("Sieve put error: %s", e)
-        raise HTTPException(status_code=502, detail="Upstream service error")
+@limiter.limit("30/minute")
+async def sieve_put(request: Request, payload: SieveSaveRequest,
+                    access_token: str = Depends(require_auth)):
+    return await save_sieve_script(
+        access_token, payload.id, payload.name, payload.content, payload.makeActive
+    )
+
+
+@app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+               include_in_schema=False)
+async def api_not_found(rest: str):
+    # Without this the SPA catch-all below would answer unknown /api paths with
+    # index.html, so a typo in a fetch URL looked like a JSON parse error.
+    raise HTTPException(status_code=404, detail="Not found")
 
 
 # Serve the SvelteKit static build — SPA-aware catch-all must be last
 _static_dir = settings.frontend_static_dir
 if os.path.isdir(_static_dir):
     _static_real = os.path.realpath(_static_dir)
+    _index_html = os.path.join(_static_dir, "index.html")
 
-    @app.get("/{full_path:path}")
+    @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str = ""):
         if full_path:
             candidate = os.path.realpath(os.path.join(_static_dir, full_path))
             if candidate.startswith(_static_real + os.sep) and os.path.isfile(candidate):
-                return FileResponse(candidate)
-        return FileResponse(os.path.join(_static_dir, "index.html"))
+                # Vite emits content-hashed filenames under _app/immutable, so
+                # those can be cached hard. Everything else revalidates.
+                immutable = "/_app/immutable/" in f"/{full_path}"
+                cache = ("public, max-age=31536000, immutable" if immutable
+                         else "public, max-age=0, must-revalidate")
+                return FileResponse(candidate, headers={"Cache-Control": cache})
+        # The SPA shell must always revalidate or users get stranded on an old
+        # build that references deleted asset hashes.
+        return FileResponse(_index_html, headers={"Cache-Control": "no-cache"})

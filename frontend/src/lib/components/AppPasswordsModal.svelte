@@ -3,10 +3,12 @@
   import { appPasswordsOpen, jmapAccountId, jmapSession } from '$lib/stores/mail.js';
   import { getAppPasswords, createAppPassword, deleteAppPassword } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
+  import Spinner from './Spinner.svelte';
 
   let passwords = [];
   let loading   = false;
   let creating  = false;
+  let deletingId = null;
   let newDesc   = '';
   let revealed  = null; // { id, secret } shown once after creation
   let copied    = false;
@@ -41,6 +43,8 @@
   }
 
   async function remove(id) {
+    if (deletingId) return;
+    deletingId = id;
     try {
       await deleteAppPassword($jmapAccountId, id, $jmapSession);
       if (revealed?.id === id) revealed = null;
@@ -48,19 +52,33 @@
       toast('App password deleted', 'success');
     } catch (e) {
       toast(e?.message ?? 'Failed to delete app password', 'error');
+    } finally {
+      deletingId = null;
     }
   }
 
+  let copyTimer;
   async function copy() {
-    await navigator.clipboard.writeText(revealed.secret);
-    copied = true;
-    setTimeout(() => { copied = false; }, 2000);
+    try {
+      await navigator.clipboard.writeText(revealed.secret);
+      copied = true;
+      clearTimeout(copyTimer);
+      copyTimer = setTimeout(() => { copied = false; }, 2000);
+    } catch {
+      toast('Could not copy — select the password and copy it manually.', 'error');
+    }
   }
 
   $: if ($appPasswordsOpen) { revealed = null; load(); }
 
-  function close() { appPasswordsOpen.set(false); }
+  function close() { if (!creating) appPasswordsOpen.set(false); }
+
+  function onKeydown(e) {
+    if ($appPasswordsOpen && e.key === 'Escape') close();
+  }
 </script>
+
+<svelte:window on:keydown={onKeydown} />
 
 {#if $appPasswordsOpen}
   <!-- Backdrop -->
@@ -133,11 +151,16 @@
           <button
             type="submit"
             disabled={creating || !newDesc.trim()}
-            class="px-4 py-2 text-sm font-medium rounded-lg
+            class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg
                    bg-blue-600 hover:bg-blue-700 text-white
-                   disabled:opacity-50 disabled:cursor-not-allowed
+                   disabled:opacity-60 disabled:cursor-not-allowed
                    transition-colors duration-150 flex-shrink-0">
-            {creating ? 'Creating…' : 'Create'}
+            {#if creating}
+              <Spinner size="xs" label="" accent="border-t-white" cls="border-white/40" />
+              Creating…
+            {:else}
+              Create
+            {/if}
           </button>
         </form>
 
@@ -167,16 +190,24 @@
                 </div>
                 <button
                   on:click={() => remove(pw.id)}
+                  disabled={deletingId !== null}
                   title="Delete"
-                  class="flex-shrink-0 p-1.5 rounded-md text-gray-400 hover:text-red-500
-                         hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors duration-150">
-                  <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                       stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="3 6 5 6 21 6"/>
-                    <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
-                    <path d="M10 11v6M14 11v6"/>
-                    <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
-                  </svg>
+                  class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-md
+                         text-gray-400 hover:text-red-500
+                         hover:bg-red-50 dark:hover:bg-red-900/20
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         transition-colors duration-150">
+                  {#if deletingId === pw.id}
+                    <Spinner size="xs" label="Deleting" accent="border-t-red-500" />
+                  {:else}
+                    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6"/>
+                      <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+                      <path d="M10 11v6M14 11v6"/>
+                      <path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/>
+                    </svg>
+                  {/if}
                 </button>
               </li>
             {/each}

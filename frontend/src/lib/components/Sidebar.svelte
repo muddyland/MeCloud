@@ -8,8 +8,10 @@
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
   import AppNav from './AppNav.svelte';
+  import Spinner from './Spinner.svelte';
 
   let dragOverId  = null;
+  let droppingId  = null;   // folder currently receiving a drop, for its spinner
   let renamingId  = null;
   let renameValue = '';
   let renameError = '';
@@ -116,11 +118,13 @@
     const dragged  = $draggedEmailId;
     const sourceId = $selectedMailbox?.id;
     draggedEmailId.set(null);
+    droppingId = mailbox.id;
     try {
       if (Array.isArray(dragged)) {
+        const idSet = new Set(dragged);
         await bulkMove($jmapAccountId, dragged, mailbox.id, sourceId);
-        emails.update(l => l.filter(em => !dragged.includes(em.id)));
-        if (dragged.includes($selectedEmailId)) selectedEmailId.set(null);
+        emails.update(l => l.filter(em => !idSet.has(em.id)));
+        if (idSet.has($selectedEmailId)) selectedEmailId.set(null);
         selectedEmailIds.set(new Set());
         toast(`${dragged.length} messages moved to ${mailbox.name}`, 'success');
       } else {
@@ -132,6 +136,8 @@
       await refreshMailboxCounts();
     } catch (e) {
       toast(e?.message ?? 'Move failed', 'error');
+    } finally {
+      droppingId = null;
     }
   }
 </script>
@@ -146,6 +152,17 @@
         Mailboxes
       </span>
     </div>
+
+    {#if $mailboxes.length === 0}
+      <!-- Startup skeleton: the sidebar is the first thing on screen, and an
+           empty box reads as "broken" where shimmering rows read as "loading". -->
+      {#each Array(5) as _}
+        <div class="flex items-center gap-2 px-3 py-2 mb-0.5">
+          <div class="w-4 h-4 rounded bg-gray-200 dark:bg-gray-700 animate-pulse flex-shrink-0"></div>
+          <div class="h-3 rounded bg-gray-200 dark:bg-gray-700 animate-pulse flex-1 max-w-[7rem]"></div>
+        </div>
+      {/each}
+    {/if}
 
     {#each $mailboxes.filter(m => m.role) as mailbox (mailbox.id)}
       {@const isSelected = $selectedMailbox?.id === mailbox.id}
@@ -168,7 +185,9 @@
             <MailboxIcon role={mailbox.role} cls="w-4 h-4 flex-shrink-0 opacity-60" />
             <span class="truncate">{mailbox.name}</span>
           </span>
-          {#if mailbox.unreadEmails > 0}
+          {#if droppingId === mailbox.id}
+            <Spinner size="xs" label="Moving messages" />
+          {:else if mailbox.unreadEmails > 0}
             <span class="ml-1 text-xs font-semibold px-1.5 py-0.5 rounded-full
                          bg-blue-500 dark:bg-blue-600 text-white">
               {mailbox.unreadEmails}
@@ -214,9 +233,16 @@
             <button
               on:click={() => confirmRename(mailbox)}
               disabled={renaming}
+              title="Save"
               class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 font-medium
-                     flex-shrink-0 disabled:opacity-50"
-            >✓</button>
+                     flex-shrink-0 disabled:opacity-50 w-4 flex items-center justify-center"
+            >
+              {#if renaming}
+                <Spinner size="xs" label="Renaming" />
+              {:else}
+                ✓
+              {/if}
+            </button>
             <button
               on:click={cancelRename}
               class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 flex-shrink-0"
@@ -270,7 +296,9 @@
                 <MailboxIcon role={mailbox.role} cls="w-4 h-4 flex-shrink-0 opacity-60" />
                 <span class="truncate">{mailbox.name}</span>
               </span>
-              {#if mailbox.unreadEmails > 0}
+              {#if droppingId === mailbox.id}
+                <Spinner size="xs" label="Moving messages" />
+              {:else if mailbox.unreadEmails > 0}
                 <span class="ml-1 text-xs font-semibold px-1.5 py-0.5 rounded-full
                              bg-blue-500 dark:bg-blue-600 text-white
                              group-hover:invisible">
@@ -287,8 +315,16 @@
                 on:click|stopPropagation={() => confirmDelete(mailbox)}
                 disabled={deleting}
                 class="text-xs px-1.5 py-0.5 rounded bg-red-500 hover:bg-red-600 text-white
-                       disabled:opacity-50 transition-colors duration-100"
-              >{deleting ? '…' : 'Delete?'}</button>
+                       disabled:opacity-70 transition-colors duration-100
+                       inline-flex items-center gap-1"
+              >
+                {#if deleting}
+                  <Spinner size="xs" label="" accent="border-t-white" cls="border-white/40" />
+                  Deleting…
+                {:else}
+                  Delete?
+                {/if}
+              </button>
               <button
                 on:click|stopPropagation={cancelDelete}
                 class="text-xs px-1 py-0.5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"

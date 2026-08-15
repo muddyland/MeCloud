@@ -3,10 +3,15 @@
   import { composeOpen, composeContext, jmapAccountId, mailboxes, currentUser } from '$lib/stores/mail.js';
   import { getIdentities, sendEmail } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
+  import { sanitizeEmailHtml } from '$lib/sanitize.js';
+  import Spinner from './Spinner.svelte';
 
-  let to = '', cc = '', subject = '';
+  let to = '', cc = '', bcc = '', subject = '';
   let showCc  = false;
+  let showBcc = false;
   let editorEl;
+  let initialBody = '';       // what the editor held before the user touched it
+  let confirmingDiscard = false;
 
   // ── Identity ──────────────────────────────────────────────────────────────
   let identities        = [];
@@ -46,6 +51,9 @@
   let appliedContext = null;
   $: if ($composeContext !== appliedContext) {
     appliedContext = $composeContext;
+    to = cc = bcc = subject = '';
+    showCc = showBcc = false;
+    confirmingDiscard = false;
     if ($composeContext) {
       to      = $composeContext.to      ?? '';
       cc      = $composeContext.cc      ?? '';
@@ -59,13 +67,50 @@
   let sending   = false;
   let sendError = '';
 
-  function close() {
-    if (sending) return;
+  /** Anything the user typed that isn't part of the pre-filled reply. */
+  function isDirty() {
+    const prefill = $composeContext ?? {};
+    if (to.trim() !== (prefill.to ?? '').trim()) return true;
+    if (cc.trim() !== (prefill.cc ?? '').trim()) return true;
+    if (bcc.trim()) return true;
+    if (subject.trim() !== (prefill.subject ?? '').trim()) return true;
+    return (editorEl?.innerHTML ?? '').trim() !== initialBody;
+  }
+
+  function reset() {
     composeOpen.set(false);
     composeContext.set(null);
     appliedContext = null;
-    to = ''; cc = ''; subject = ''; showCc = false; sendError = '';
+    to = ''; cc = ''; bcc = ''; subject = '';
+    showCc = showBcc = false;
+    sendError = '';
+    confirmingDiscard = false;
+    initialBody = '';
     if (editorEl) editorEl.innerHTML = '';
+  }
+
+  /**
+   * Losing a half-written message to a stray backdrop click is the classic
+   * webmail papercut, so an unsent draft asks before it goes.
+   */
+  function close() {
+    if (sending) return;
+    if (isDirty() && !confirmingDiscard) {
+      confirmingDiscard = true;
+      return;
+    }
+    reset();
+  }
+
+  function onKeydown(e) {
+    if (!$composeOpen) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      close();
+    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      send();
+    }
   }
 
   async function send() {
@@ -88,13 +133,16 @@
         fromName:  selectedIdentity?.name  ?? '',
         to,
         cc,
+        bcc,
         subject,
         html,
         sentMailboxId: sentMailbox?.id ?? null,
+        inReplyTo:  $composeContext?.inReplyTo  ?? null,
+        references: $composeContext?.references ?? null,
       });
       sending = false;
       toast('Message sent', 'success');
-      close();
+      reset();
     } catch (e) {
       sendError = e?.message ?? 'Failed to send. Please try again.';
       sending = false;
@@ -102,9 +150,20 @@
   }
 
   // ── Body init action ──────────────────────────────────────────────────────
-  // Explicit parameter avoids any store-subscription timing ambiguity
+  // Explicit parameter avoids any store-subscription timing ambiguity.
+  //
+  // The quoted reply/forward block is assembled from message headers, and this
+  // is the one place where message-derived markup lands in the *parent*
+  // document rather than the sandboxed iframe. It is escaped at the source, but
+  // it gets sanitised again here so a future change upstream cannot quietly
+  // turn a header into script. allowRemote is true because anything the user
+  // was not meant to see has already been stripped by this point.
   function initBody(node, body) {
-    node.innerHTML = body;
+    node.innerHTML = sanitizeEmailHtml(body ?? '', { allowRemote: true }).html;
+    // Read back what the DOM actually stored: the browser normalises markup on
+    // assignment, so comparing against the string we passed in would report a
+    // pristine reply as edited and prompt to discard on every close.
+    initialBody = node.innerHTML.trim();
     return { update() {}, destroy() {} };
   }
 
@@ -144,10 +203,13 @@
   const label = `text-xs text-gray-400 dark:text-gray-500 w-16 flex-shrink-0 select-none`;
 </script>
 
+<svelte:window on:keydown={onKeydown} />
+
 {#if $composeOpen}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/30 dark:bg-black/50 p-4"
+    class="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/40 dark:bg-black/60 backdrop-blur-[2px] p-4"
     on:click={close}
+    role="presentation"
   >
     <div
       transition:fly={{ y: 16, duration: 200 }}
@@ -192,19 +254,38 @@
         <!-- To -->
         <div class="flex items-center px-4 gap-2">
           <span class={label}>To</span>
-          <input bind:value={to} placeholder="Recipients" type="text" class={field} />
-          {#if !showCc}
-            <button on:click={() => (showCc = true)}
-              class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 flex-shrink-0 px-1">
-              Cc
-            </button>
-          {/if}
+          <!-- svelte-ignore a11y-autofocus -->
+          <input bind:value={to} placeholder="Recipients" type="text" class={field}
+            autocomplete="off" autofocus={!$composeContext?.to} />
+          <div class="flex items-center gap-1 flex-shrink-0">
+            {#if !showCc}
+              <button on:click={() => (showCc = true)}
+                class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 px-1">
+                Cc
+              </button>
+            {/if}
+            {#if !showBcc}
+              <button on:click={() => (showBcc = true)}
+                class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 px-1">
+                Bcc
+              </button>
+            {/if}
+          </div>
         </div>
 
         {#if showCc}
           <div class="flex items-center px-4 gap-2">
             <span class={label}>Cc</span>
-            <input bind:value={cc} placeholder="Cc recipients" type="text" class={field} />
+            <input bind:value={cc} placeholder="Cc recipients" type="text" class={field}
+              autocomplete="off" />
+          </div>
+        {/if}
+
+        {#if showBcc}
+          <div class="flex items-center px-4 gap-2">
+            <span class={label}>Bcc</span>
+            <input bind:value={bcc} placeholder="Bcc recipients" type="text" class={field}
+              autocomplete="off" />
           </div>
         {/if}
 
@@ -278,26 +359,37 @@
 
       <!-- Footer -->
       <div class="flex items-center justify-between px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex-shrink-0 gap-4">
-        <div class="flex items-center gap-3">
-          <button on:click={close} disabled={sending}
-            class="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200
-                   transition-colors duration-150 disabled:opacity-40">
-            Discard
-          </button>
+        <div class="flex items-center gap-3 min-w-0">
+          {#if confirmingDiscard}
+            <span class="text-xs text-gray-600 dark:text-gray-300">Discard this draft?</span>
+            <button on:click={reset}
+              class="text-xs font-medium text-red-600 dark:text-red-400 hover:underline">
+              Discard
+            </button>
+            <button on:click={() => (confirmingDiscard = false)}
+              class="text-xs text-gray-500 dark:text-gray-400 hover:underline">
+              Keep editing
+            </button>
+          {:else}
+            <button on:click={close} disabled={sending}
+              class="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200
+                     transition-colors duration-150 disabled:opacity-40">
+              Discard
+            </button>
+          {/if}
           {#if sendError}
-            <p class="text-xs text-red-500">{sendError}</p>
+            <p class="text-xs text-red-500 truncate">{sendError}</p>
           {/if}
         </div>
 
         <button on:click={send} disabled={sending}
+          title="Send (⌘/Ctrl + Enter)"
           class="flex items-center gap-2 px-5 py-2 text-sm font-medium rounded-lg
                  bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-500
-                 text-white transition-colors duration-150
+                 text-white transition-colors duration-150 flex-shrink-0
                  disabled:opacity-60 disabled:cursor-not-allowed">
           {#if sending}
-            <svg class="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-              <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
-            </svg>
+            <Spinner size="sm" label="" accent="border-t-white" cls="border-white/40" />
             Sending…
           {:else}
             Send

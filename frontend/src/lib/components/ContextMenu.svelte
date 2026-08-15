@@ -20,13 +20,31 @@
 
   function close() { contextMenu.set(null); }
 
+  function onKeydown(e) {
+    if ($contextMenu && e.key === 'Escape') { e.preventDefault(); close(); }
+  }
+
+  // Keep the menu on screen when it is opened near the right or bottom edge —
+  // it used to run off the viewport and become partly unclickable.
+  const MENU_W = 190;
+  const MENU_H = 320;
+  $: menuX = $contextMenu
+    ? Math.max(8, Math.min($contextMenu.x, (typeof window !== 'undefined' ? window.innerWidth : 1e4) - MENU_W))
+    : 0;
+  $: menuY = $contextMenu
+    ? Math.max(8, Math.min($contextMenu.y, (typeof window !== 'undefined' ? window.innerHeight : 1e4) - MENU_H))
+    : 0;
+
   function openPicker() {
     if ($contextMenu) movePickerOpen.set(isBulk ? bulkIds : $contextMenu.emailId);
     close();
   }
 
   async function bulkDel() {
-    const ids = [...bulkIds];
+    // Set membership rather than Array.includes inside filter/map: with a large
+    // selection the array form is quadratic.
+    const idSet = new Set(bulkIds);
+    const ids   = [...idSet];
     close();
     try {
       if (inTrash) {
@@ -35,9 +53,11 @@
       } else if (trashMailbox) {
         await bulkMove($jmapAccountId, ids, trashMailbox.id, $selectedMailbox?.id);
         toast(`${ids.length} messages moved to Trash`, 'success');
+      } else {
+        throw new Error('No Trash folder on this account.');
       }
-      emails.update(list => list.filter(e => !ids.includes(e.id)));
-      if (ids.includes($selectedEmailId)) selectedEmailId.set(null);
+      emails.update(list => list.filter(e => !idSet.has(e.id)));
+      if (idSet.has($selectedEmailId)) selectedEmailId.set(null);
       selectedEmailIds.set(new Set());
       await refreshMailboxCounts();
     } catch (e) {
@@ -46,16 +66,18 @@
   }
 
   async function bulkToggleSeen(seen) {
-    const ids = [...bulkIds];
+    const idSet = new Set(bulkIds);
+    const ids   = [...idSet];
     close();
     try {
       await bulkMarkSeen($jmapAccountId, ids, seen);
       emails.update(list => list.map(e =>
-        ids.includes(e.id)
+        idSet.has(e.id)
           ? { ...e, keywords: { ...(e.keywords ?? {}), '$seen': seen ? true : undefined } }
           : e
       ));
       selectedEmailIds.set(new Set());
+      await refreshMailboxCounts();
     } catch (e) {
       toast(e?.message ?? 'Failed to update read status', 'error');
     }
@@ -156,13 +178,17 @@
     hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors duration-100 text-left`;
 </script>
 
+<svelte:window on:keydown={onKeydown} />
+
 {#if $contextMenu}
-  <div class="fixed inset-0 z-40" on:click={close} aria-hidden="true"></div>
+  <div class="fixed inset-0 z-40" on:click={close} on:contextmenu|preventDefault={close}
+       aria-hidden="true"></div>
 
   <div
     class="fixed z-50 min-w-[180px] rounded-lg shadow-lg ring-1
            bg-white dark:bg-gray-800 ring-black/5 dark:ring-white/10 py-1 overflow-hidden"
-    style="left: {$contextMenu.x}px; top: {$contextMenu.y}px"
+    style="left: {menuX}px; top: {menuY}px"
+    role="menu"
     in:fly={{ y: -4, duration: 120 }}
   >
     {#if isBulk}

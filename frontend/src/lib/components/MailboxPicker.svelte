@@ -5,10 +5,19 @@
   import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
+  import Spinner from './Spinner.svelte';
   import { mailboxes } from '$lib/stores/mail.js';
 
   let moving = false;
+  let movingId = null;      // which row was clicked, so its spinner shows there
   let error = '';
+
+  function onKeydown(e) {
+    if ($movePickerOpen !== null && e.key === 'Escape' && !moving) {
+      e.preventDefault();
+      movePickerOpen.set(null);
+    }
+  }
 
   $: isBulk         = Array.isArray($movePickerOpen);
   $: emailIds       = isBulk ? $movePickerOpen : ($movePickerOpen ? [$movePickerOpen] : []);
@@ -17,6 +26,7 @@
   async function pick(mailbox) {
     if (moving) return;
     moving = true;
+    movingId = mailbox.id;
     error = '';
     // Snapshot reactive values before any await
     const ids           = [...emailIds];
@@ -44,9 +54,12 @@
       error = e.message || 'Move failed';
     } finally {
       moving = false;
+      movingId = null;
     }
   }
 </script>
+
+<svelte:window on:keydown={onKeydown} />
 
 {#if $movePickerOpen !== null}
   <div class="fixed inset-0 z-40 bg-black/30 dark:bg-black/50"
@@ -75,7 +88,10 @@
                  disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <MailboxIcon role={mailbox.role} cls="w-4 h-4 opacity-60 flex-shrink-0" />
-          {mailbox.name}
+          <span class="truncate flex-1 text-left">{mailbox.name}</span>
+          {#if movingId === mailbox.id}
+            <Spinner size="xs" label="Moving" />
+          {/if}
         </button>
       {/each}
     </div>

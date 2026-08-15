@@ -2,6 +2,7 @@
   import { fly } from 'svelte/transition';
   import { sieveOpen, mailboxes } from '$lib/stores/mail.js';
   import { getSieveScript, saveSieveScript } from '$lib/api.js';
+  import Spinner from './Spinner.svelte';
 
   const FIELDS = [
     { value: 'from',    label: 'From' },
@@ -236,6 +237,10 @@
             {#each [1, 2] as _}
               <div class="h-11 rounded-lg bg-gray-100 dark:bg-gray-700 animate-pulse"></div>
             {/each}
+            <div class="flex items-center justify-center gap-2 pt-3 text-xs text-gray-400 dark:text-gray-500">
+              <Spinner size="xs" label="" />
+              Loading your rules…
+            </div>
           </div>
 
         {:else}
@@ -455,9 +460,17 @@
             <button
               on:click={save}
               disabled={saving}
-              class="text-sm font-medium text-white bg-blue-500 hover:bg-blue-600 px-4 py-1.5 rounded-lg
-                     disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-150"
-            >{saving ? 'Saving…' : 'Save Rules'}</button>
+              class="inline-flex items-center gap-2 text-sm font-medium text-white
+                     bg-blue-500 hover:bg-blue-600 px-4 py-1.5 rounded-lg
+                     disabled:opacity-60 disabled:cursor-not-allowed transition-colors duration-150"
+            >
+              {#if saving}
+                <Spinner size="xs" label="" accent="border-t-white" cls="border-white/40" />
+                Saving…
+              {:else}
+                Save Rules
+              {/if}
+            </button>
           </div>
         </div>
       {/if}
