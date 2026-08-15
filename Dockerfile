@@ -1,17 +1,15 @@
-# Registry prefix for the public base images below.
+# Optional registry prefix for the base images, e.g. a GitLab Dependency Proxy
+# ("<host>/<group>/dependency_proxy/containers/") so CI pulls through a cache and
+# avoids Docker Hub rate limits. Must include a trailing slash. Empty by default,
+# so local builds pull straight from Docker Hub.
 #
-# Empty by default, so `docker build .` and `docker compose build` pull straight
-# from Docker Hub with no extra setup. CI passes GitLab's Dependency Proxy
-# prefix instead — including the trailing slash, since the predefined
-# CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX variable does not carry one:
-#
-#   docker build --build-arg BASE_IMAGE_PREFIX="${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/" .
+#   docker build --build-arg BASE_REGISTRY="${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/" .
 #
 # Declared before the first FROM so every stage below can interpolate it.
-ARG BASE_IMAGE_PREFIX=
+ARG BASE_REGISTRY=
 
 # ── Stage 1: Build SvelteKit frontend ────────────────────────────────────────
-FROM ${BASE_IMAGE_PREFIX}node:24-alpine AS frontend-builder
+FROM ${BASE_REGISTRY}node:24-alpine AS frontend-builder
 
 WORKDIR /app
 
@@ -27,7 +25,7 @@ RUN node scripts/gen-icons.mjs && npm run build
 
 
 # ── Stage 2: Install Python dependencies ─────────────────────────────────────
-FROM ${BASE_IMAGE_PREFIX}python:3.13-slim AS python-deps
+FROM ${BASE_REGISTRY}python:3.13-slim AS python-deps
 
 WORKDIR /deps
 
@@ -36,7 +34,7 @@ RUN pip install --no-cache-dir --prefix=/deps/install -r requirements.txt
 
 
 # ── Stage 3: Final image ──────────────────────────────────────────────────────
-FROM ${BASE_IMAGE_PREFIX}python:3.13-slim
+FROM ${BASE_REGISTRY}python:3.13-slim
 
 RUN useradd -m -u 1000 appuser
 

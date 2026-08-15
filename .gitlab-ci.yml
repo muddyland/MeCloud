@@ -7,48 +7,51 @@ stages:
   - test
   - release
 
-variables:
-  DOCKER_TLS_CERTDIR: "/certs"
-
 # ---------------------------------------------------------------------------
 # Dependency Proxy
 #
-# Every public base image below is pulled through GitLab's Dependency Proxy
-# rather than straight from Docker Hub, so the pipeline stops burning anonymous
-# Docker Hub pull quota and gets a warm local cache instead.
+# Every public image is pulled through GitLab's Dependency Proxy rather than
+# straight from Docker Hub, so the pipeline stops burning anonymous pull quota.
 #
-# Two different mechanisms are involved, which is easy to trip over:
+# Two mechanisms are involved, which is easy to trip over:
 #
-#   • Job `image:` — the runner authenticates to the proxy on its own, so
-#     prefixing the name is all that is required.
+#   • Job `image:` and `services:` — the runner authenticates to the proxy on
+#     its own, so prefixing the name is all that is required.
 #   • `FROM` lines inside the Dockerfile — those are pulled by the dind daemon,
 #     which has no such credentials. That needs an explicit `docker login`
-#     (see .proxy-login) plus the prefix passed in as a build arg.
+#     against $CI_DEPENDENCY_PROXY_SERVER plus the prefix passed as a build arg.
 #
-# The `docker:26-dind` SERVICE is deliberately NOT proxied. Prefixing it made
-# the service fail to start, and GitLab does not fail a job when a service
-# image cannot be pulled — it warns and carries on, so the `docker` alias
-# resolved to a container that was never running and every subsequent command
-# died with "dial tcp ...:2376: connect: no route to host". Job images kept
-# working throughout, so proxy auth itself is fine; it is specifically the
-# service that does not tolerate the prefix here. One un-proxied image per
-# dind job is a cheap price for a pipeline that starts.
+# The proxy only fronts Docker Hub. Anything from $CI_REGISTRY keeps using the
+# registry login, which is why build:image performs both.
 #
-# The proxy only fronts Docker Hub. Anything pulled from $CI_REGISTRY keeps
-# using the registry login, which is why both logins appear in build-image.
+# Docker is pinned to an exact patch version rather than a floating major tag.
+# This mirrors the configuration already proven against this GitLab instance in
+# the sibling `cove` project; a floating `docker:26` tag did not come up as a
+# proxied service here.
 # ---------------------------------------------------------------------------
 
-.proxy-login: &proxy-login
-  - |
-    docker login \
-      -u "$CI_DEPENDENCY_PROXY_USER" \
-      -p "$CI_DEPENDENCY_PROXY_PASSWORD" \
-      "$CI_DEPENDENCY_PROXY_SERVER"
+.docker_base:
+  tags:
+    - saas-linux-small-amd64
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:24.0.5
+  services:
+    # Explicit alias: GitLab derives a service's hostname from its image name,
+    # so the dependency-proxy prefix would otherwise move it away from "docker"
+    # and every command would sit waiting on a host that never appears.
+    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:24.0.5-dind
+      alias: docker
+  variables:
+    # Scoped to the dind jobs rather than set globally — the plain python and
+    # node jobs have no daemon and no business carrying TLS settings for one.
+    DOCKER_TLS_CERTDIR: "/certs"
 
-# Fails the job outright if the daemon never appears. The previous version just
-# fell out of the loop and let the next command run, so a dead dind service
-# surfaced as an unrelated-looking "no route to host" on whichever docker
-# command happened to run first. Report the actual cause instead.
+.proxy-login: &proxy-login
+  - docker login -u "$CI_DEPENDENCY_PROXY_USER" -p "$CI_DEPENDENCY_PROXY_PASSWORD" "$CI_DEPENDENCY_PROXY_SERVER"
+
+# Bounded rather than `until docker info; do sleep 1; done`: an unbounded wait
+# turns a dead service into a job that hangs until the pipeline timeout with no
+# explanation. GitLab only *warns* when a service image fails to pull, so this
+# is a failure mode worth naming explicitly.
 .wait-for-docker: &wait-for-docker
   - |
     for i in $(seq 1 30); do
@@ -60,9 +63,7 @@ variables:
       echo "ERROR: the docker-in-docker service never became reachable."
       echo "  DOCKER_HOST=${DOCKER_HOST:-<unset>}"
       echo "  DOCKER_TLS_CERTDIR=${DOCKER_TLS_CERTDIR:-<unset>}"
-      echo "Check the 'services' section of this job's log for a failed image pull —"
-      echo "GitLab only warns when a service image cannot be pulled, it does not fail"
-      echo "the job, and every later docker command then fails with 'no route to host'."
+      echo "Check the 'services' section of this job's log for a failed image pull."
       docker info || true
       exit 1
     fi
@@ -73,14 +74,8 @@ variables:
 #   • :$CI_COMMIT_REF_SLUG   — mutable branch/tag pointer, reused as layer cache
 # ---------------------------------------------------------------------------
 build-image:
+  extends: .docker_base
   stage: build
-  tags:
-    - saas-linux-small-amd64
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
-  services:
-    # NOT proxied — see the Dependency Proxy note at the top of this file.
-    - name: docker:26-dind
-      alias: docker
   before_script:
     - *wait-for-docker
     # Two registries, two logins: the proxy for the Dockerfile's public base
@@ -89,12 +84,12 @@ build-image:
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
     - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" || true
-    # BASE_IMAGE_PREFIX defaults to empty in the Dockerfile so a plain
+    # BASE_REGISTRY defaults to empty in the Dockerfile so a plain
     # `docker build .` still works off Docker Hub; CI supplies the proxy prefix.
     # The trailing slash lives here, because the predefined variable has none.
     - |
       docker build \
-        --build-arg BASE_IMAGE_PREFIX="${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/" \
+        --build-arg BASE_REGISTRY="${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/" \
         --cache-from "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
@@ -145,14 +140,8 @@ frontend-tests:
     - if: '$CI_COMMIT_TAG'
 
 smoke-test:
+  extends: .docker_base
   stage: test
-  tags:
-    - saas-linux-small-amd64
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
-  services:
-    # NOT proxied — see the Dependency Proxy note at the top of this file.
-    - name: docker:26-dind
-      alias: docker
   needs:
     - build-image
   before_script:
@@ -188,14 +177,8 @@ smoke-test:
 # Runs only when changes land on the main branch.
 # ---------------------------------------------------------------------------
 tag-latest:
+  extends: .docker_base
   stage: release
-  tags:
-    - saas-linux-small-amd64
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
-  services:
-    # NOT proxied — see the Dependency Proxy note at the top of this file.
-    - name: docker:26-dind
-      alias: docker
   needs:
     - smoke-test
     - backend-tests
