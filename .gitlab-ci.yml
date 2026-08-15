@@ -10,6 +10,32 @@ stages:
 variables:
   DOCKER_TLS_CERTDIR: "/certs"
 
+# ---------------------------------------------------------------------------
+# Dependency Proxy
+#
+# Every public base image below is pulled through GitLab's Dependency Proxy
+# rather than straight from Docker Hub, so the pipeline stops burning anonymous
+# Docker Hub pull quota and gets a warm local cache instead.
+#
+# Two different mechanisms are involved, which is easy to trip over:
+#
+#   • Job `image:` and `services:` — the runner authenticates to the proxy on
+#     its own, so prefixing the name is all that is required.
+#   • `FROM` lines inside the Dockerfile — those are pulled by the dind daemon,
+#     which has no such credentials. That needs an explicit `docker login`
+#     (see .proxy-login) plus the prefix passed in as a build arg.
+#
+# The proxy only fronts Docker Hub. Anything pulled from $CI_REGISTRY keeps
+# using the registry login, which is why both logins appear in build-image.
+# ---------------------------------------------------------------------------
+
+.proxy-login: &proxy-login
+  - |
+    docker login \
+      -u "$CI_DEPENDENCY_PROXY_USER" \
+      -p "$CI_DEPENDENCY_PROXY_PASSWORD" \
+      "$CI_DEPENDENCY_PROXY_SERVER"
+
 .wait-for-docker: &wait-for-docker
   - |
     for i in $(seq 1 15); do
@@ -27,17 +53,24 @@ build-image:
   stage: build
   tags:
     - saas-linux-small-amd64
-  image: docker:26
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
   services:
-    - name: docker:26-dind
+    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26-dind
       alias: docker
   before_script:
     - *wait-for-docker
+    # Two registries, two logins: the proxy for the Dockerfile's public base
+    # images, $CI_REGISTRY for pulling the cache tag and pushing the result.
+    - *proxy-login
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
   script:
     - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" || true
+    # BASE_IMAGE_PREFIX defaults to empty in the Dockerfile so a plain
+    # `docker build .` still works off Docker Hub; CI supplies the proxy prefix.
+    # The trailing slash lives here, because the predefined variable has none.
     - |
       docker build \
+        --build-arg BASE_IMAGE_PREFIX="${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/" \
         --cache-from "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
@@ -59,7 +92,7 @@ backend-tests:
   stage: test
   tags:
     - saas-linux-small-amd64
-  image: python:3.13-slim
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.13-slim
   script:
     - cd backend
     - pip install --quiet -r requirements-dev.txt
@@ -75,7 +108,7 @@ frontend-tests:
   # Matches the Dockerfile's build stage; @sveltejs/vite-plugin-svelte 7 and
   # vitest 4 both require Node >= 20.19, and the image here should not drift
   # from the one that produces the release artifact.
-  image: node:24-alpine
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/node:24-alpine
   script:
     - cd frontend
     # `npm ci`, not `npm install`: CI should fail on lockfile drift rather than
@@ -91,9 +124,9 @@ smoke-test:
   stage: test
   tags:
     - saas-linux-small-amd64
-  image: docker:26
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
   services:
-    - name: docker:26-dind
+    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26-dind
       alias: docker
   needs:
     - build-image
@@ -133,9 +166,9 @@ tag-latest:
   stage: release
   tags:
     - saas-linux-small-amd64
-  image: docker:26
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26
   services:
-    - name: docker:26-dind
+    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:26-dind
       alias: docker
   needs:
     - smoke-test

@@ -75,7 +75,46 @@ async def test_auth_logout_accepts_post(client):
 async def test_auth_logout_rejects_get(client):
     # A GET logout can be triggered cross-site by any <img> tag, so it is gone.
     r = await client.get("/auth/logout", follow_redirects=False)
-    assert r.status_code == 405
+    assert r.status_code in (404, 405)
+    assert r.json() != {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# SPA fallback boundaries
+#
+# These tests exist because the assertion above once passed for the wrong
+# reason: the suite runs with no static directory, so the catch-all route was
+# never registered. In the real image it *is* registered, and it answered
+# `GET /auth/logout` with 200 + index.html — a GET to a POST-only route is only
+# a partial route match, so Starlette kept looking and the catch-all won.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("path", [
+    "api/jmap",
+    "api/anything",
+    "/api/jmap",
+    "auth/logout",
+    "auth/callback",
+    "/auth/login",
+])
+def test_server_paths_are_never_served_by_the_spa(path):
+    from app.main import is_spa_path
+    assert is_spa_path(path) is False
+
+
+@pytest.mark.parametrize("path", [
+    "",
+    "calendar",
+    "contacts",
+    "_app/immutable/entry/start.js",
+    "icons/icon-192.png",
+    # Not a reserved prefix — just a route that happens to start with the letters.
+    "apis-and-things",
+    "authors",
+])
+def test_app_routes_are_served_by_the_spa(path):
+    from app.main import is_spa_path
+    assert is_spa_path(path) is True
 
 
 async def test_callback_rejects_invalid_state(client):

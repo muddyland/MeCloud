@@ -403,6 +403,24 @@ async def sieve_put(request: Request, payload: SieveSaveRequest,
     )
 
 
+# Paths the single-page-app fallback must never answer for. Anything under these
+# prefixes is server API surface: an unmatched route there is a 404, not a
+# request for the app shell.
+_RESERVED_PREFIXES = ("api/", "auth/")
+
+
+def is_spa_path(path: str) -> bool:
+    """True when the SPA fallback may serve `path`.
+
+    Route ordering alone is not enough to get this right. A GET to a POST-only
+    endpoint (``/auth/logout``) is only a *partial* route match, so Starlette
+    keeps looking and the catch-all wins — answering 200 with index.html where
+    it should refuse. Deciding here rather than relying on registration order
+    makes that impossible.
+    """
+    return not path.lstrip("/").startswith(_RESERVED_PREFIXES)
+
+
 @app.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
                include_in_schema=False)
 async def api_not_found(rest: str):
@@ -419,6 +437,8 @@ if os.path.isdir(_static_dir):
 
     @app.get("/{full_path:path}", include_in_schema=False)
     async def serve_frontend(full_path: str = ""):
+        if not is_spa_path(full_path):
+            raise HTTPException(status_code=404, detail="Not found")
         if full_path:
             candidate = os.path.realpath(os.path.join(_static_dir, full_path))
             if candidate.startswith(_static_real + os.sep) and os.path.isfile(candidate):

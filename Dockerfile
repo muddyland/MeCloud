@@ -1,5 +1,17 @@
+# Registry prefix for the public base images below.
+#
+# Empty by default, so `docker build .` and `docker compose build` pull straight
+# from Docker Hub with no extra setup. CI passes GitLab's Dependency Proxy
+# prefix instead — including the trailing slash, since the predefined
+# CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX variable does not carry one:
+#
+#   docker build --build-arg BASE_IMAGE_PREFIX="${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/" .
+#
+# Declared before the first FROM so every stage below can interpolate it.
+ARG BASE_IMAGE_PREFIX=
+
 # ── Stage 1: Build SvelteKit frontend ────────────────────────────────────────
-FROM node:24-alpine AS frontend-builder
+FROM ${BASE_IMAGE_PREFIX}node:24-alpine AS frontend-builder
 
 WORKDIR /app
 
@@ -15,7 +27,7 @@ RUN node scripts/gen-icons.mjs && npm run build
 
 
 # ── Stage 2: Install Python dependencies ─────────────────────────────────────
-FROM python:3.13-slim AS python-deps
+FROM ${BASE_IMAGE_PREFIX}python:3.13-slim AS python-deps
 
 WORKDIR /deps
 
@@ -24,7 +36,7 @@ RUN pip install --no-cache-dir --prefix=/deps/install -r requirements.txt
 
 
 # ── Stage 3: Final image ──────────────────────────────────────────────────────
-FROM python:3.13-slim
+FROM ${BASE_IMAGE_PREFIX}python:3.13-slim
 
 RUN useradd -m -u 1000 appuser
 
