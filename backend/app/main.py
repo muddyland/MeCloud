@@ -59,22 +59,28 @@ _CSP = (
     "media-src 'self' data:; "
     "object-src 'none'; "
     "base-uri 'self'; "
-    "frame-ancestors 'none'; "               # clickjacking; supersedes X-Frame-Options
     "form-action 'self';"
 )
+
+
+def _csp() -> str:
+    """The app policy, with the configurable framing directive appended."""
+    return f"{_CSP} frame-ancestors {settings.frame_ancestors_value};"
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         response = await call_next(request)
         response.headers["X-Content-Type-Options"]  = "nosniff"
-        response.headers["X-Frame-Options"]          = "DENY"
+        xfo = settings.x_frame_options
+        if xfo:
+            response.headers["X-Frame-Options"] = xfo
         response.headers["Referrer-Policy"]          = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"]       = "camera=(), microphone=(), geolocation=()"
         # setdefault, not assignment: the blob download route sets its own
         # `sandbox` policy to neutralise user-supplied content, and this
         # middleware must not overwrite it with the permissive app policy.
-        response.headers.setdefault("Content-Security-Policy", _CSP)
+        response.headers.setdefault("Content-Security-Policy", _csp())
         response.headers["Cross-Origin-Opener-Policy"]   = "same-origin"
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
 

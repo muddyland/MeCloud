@@ -257,6 +257,15 @@ upstream download URL. Uploads have their own 64 MiB ceiling
 raising one limit for everything would have thrown away the protection the tight
 cap provides.
 
+**Embedding**
+
+Framing is denied outright by default (`X-Frame-Options: DENY` plus
+`frame-ancestors 'none'`) — a mail client that can be framed can be overlaid and
+click-jacked, and this one has destructive controls and shows private mail. To
+embed it in a dashboard you control, set `FRAME_ANCESTORS` to that exact origin;
+never a wildcard. Doing so also drops `X-Frame-Options`, which cannot express an
+allow-list and would otherwise keep blocking the frame regardless of the CSP.
+
 **Transport and abuse**
 
 - CSP, HSTS, `frame-ancestors 'none'`, `X-Content-Type-Options`, COOP/CORP on every response; `no-store` on everything under `/api` and `/auth`.

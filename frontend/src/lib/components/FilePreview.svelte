@@ -11,6 +11,10 @@
 
   $: node = $previewNode;
   $: kind = node ? fileKind(node) : 'file';
+  // Empty when the node carries no blobId. Every branch below guards on it:
+  // `<iframe src="">` loads the *parent* URL rather than nothing, and the app
+  // refuses to be framed, so an unguarded empty src surfaces as a confusing
+  // "Refused to display ... X-Frame-Options" error naming the app root.
   $: src  = node ? blobUrl(node, { inline: true }) : '';
 
   // Text previews are the only kind we have to fetch ourselves; the rest are
@@ -52,10 +56,10 @@
   <div class="flex items-center justify-center min-h-[16rem] bg-gray-50 dark:bg-gray-900/50">
     {#if !node}
       <!-- closed -->
-    {:else if kind === 'image'}
+    {:else if kind === 'image' && src}
       <img {src} alt={node.name}
            class="max-w-full max-h-[70vh] object-contain" />
-    {:else if kind === 'pdf'}
+    {:else if kind === 'pdf' && src}
       <!-- Deliberately not sandbox="": an empty sandbox disables plugins, and
            the browser's PDF viewer is one, so the frame rendered as "This
            content is blocked". Safety comes from the response instead — the
@@ -64,10 +68,10 @@
            per-response CSP. -->
       <iframe {src} title={node.name} referrerpolicy="no-referrer"
               class="w-full h-[70vh] border-0 bg-white"></iframe>
-    {:else if kind === 'video'}
+    {:else if kind === 'video' && src}
       <!-- svelte-ignore a11y-media-has-caption -->
       <video {src} controls class="max-w-full max-h-[70vh]"></video>
-    {:else if kind === 'audio'}
+    {:else if kind === 'audio' && src}
       <audio {src} controls class="w-full px-8"></audio>
     {:else if kind === 'text'}
       {#if loadingText}

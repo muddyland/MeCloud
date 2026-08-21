@@ -42,6 +42,18 @@ class Settings(BaseSettings):
     upstream_connect_timeout: float = 5.0
     upstream_read_timeout: float = 30.0
 
+    # Who may embed this app in a frame, as a CSP frame-ancestors source list.
+    #
+    # Defaults to 'none', which is right for a mail client: an app that can be
+    # framed can be overlaid and click-jacked, and this one has "delete
+    # everything" buttons and reads private mail. Relax it only for a specific
+    # origin you control — e.g. a dashboard:
+    #
+    #   FRAME_ANCESTORS=https://dashy.internal.example
+    #
+    # 'self' and 'none' are also accepted.
+    frame_ancestors: str = "'none'"
+
     # Rate limits, as slowapi strings. Exposed as settings because the right
     # values depend on how the deployment is used: a Drive-style file browser
     # legitimately bursts one upload per file when a folder is dropped, which is
@@ -85,6 +97,32 @@ class Settings(BaseSettings):
     @property
     def openid_config_url(self) -> str:
         return f"{self.stalwart_url}/.well-known/oauth-authorization-server"
+
+    @property
+    def frame_ancestors_value(self) -> str:
+        """Sanitised frame-ancestors list — this lands directly in a header."""
+        raw = " ".join(self.frame_ancestors.split())
+        # Strip anything that could terminate the directive or inject a header.
+        for bad in (";", "\n", "\r", ","):
+            raw = raw.replace(bad, " ")
+        return " ".join(raw.split()) or "'none'"
+
+    @property
+    def x_frame_options(self) -> str | None:
+        """The legacy equivalent, where one exists.
+
+        X-Frame-Options cannot express an allow-list — ALLOW-FROM was dropped by
+        every current browser — so when a specific origin is permitted the
+        header is omitted entirely and frame-ancestors governs alone. Sending
+        DENY alongside a permissive CSP would just block the frame anyway, which
+        is precisely the bug this replaces.
+        """
+        value = self.frame_ancestors_value
+        if value == "'none'":
+            return "DENY"
+        if value == "'self'":
+            return "SAMEORIGIN"
+        return None
 
     @property
     def allowed_hosts(self) -> list[str]:

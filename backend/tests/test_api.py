@@ -11,6 +11,15 @@ from pydantic import ValidationError
 from app.models import JMAPRequest
 from app.main import app, require_auth
 
+# The minimum a Settings() needs to construct in a test.
+_SETTINGS_STUB = dict(
+    environment="development",
+    stalwart_url="http://mail.test",
+    oauth_client_id="test-client",
+    oauth_client_secret="test-secret",
+    session_secret="a" * 32,
+)
+
 
 # ---------------------------------------------------------------------------
 # Health / config
@@ -348,3 +357,41 @@ async def test_rate_limited_response_carries_retry_after(client):
     assert "retry-after" in last.headers
     assert int(last.headers["retry-after"]) > 0
     assert last.json()["detail"].startswith("Too many requests")
+
+
+# ---------------------------------------------------------------------------
+# Framing policy
+#
+# X-Frame-Options: DENY blocks *all* framing, same-origin included, and it was
+# sent on every response — so it overrode the permissive frame-src added for
+# file previews and surfaced as "Refused to display ... in a frame".
+# ---------------------------------------------------------------------------
+
+async def test_framing_is_denied_by_default(client):
+    r = await client.get("/health")
+    assert r.headers["x-frame-options"] == "DENY"
+    assert "frame-ancestors 'none'" in r.headers["content-security-policy"]
+
+
+def test_frame_ancestors_self_downgrades_to_sameorigin():
+    from app.config import Settings
+    s = Settings(frame_ancestors="'self'", **_SETTINGS_STUB)
+    assert s.x_frame_options == "SAMEORIGIN"
+
+
+def test_an_explicit_origin_drops_x_frame_options():
+    """XFO cannot express an allow-list, and DENY alongside it would win."""
+    from app.config import Settings
+    s = Settings(frame_ancestors="https://dash.example", **_SETTINGS_STUB)
+    assert s.x_frame_options is None
+    assert s.frame_ancestors_value == "https://dash.example"
+
+
+@pytest.mark.parametrize("hostile,expected", [
+    ("'self'; script-src *", "'self' script-src *"),   # directive cannot be terminated
+    ("'self'\r\nX-Evil: 1", "'self' X-Evil: 1"),        # header cannot be injected
+    ("   ", "'none'"),                                  # empty falls back to the safe value
+])
+def test_frame_ancestors_is_sanitised(hostile, expected):
+    from app.config import Settings
+    assert Settings(frame_ancestors=hostile, **_SETTINGS_STUB).frame_ancestors_value == expected
