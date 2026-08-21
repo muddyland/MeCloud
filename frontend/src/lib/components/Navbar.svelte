@@ -48,7 +48,7 @@
 
 <svelte:window on:keydown={onKeydown} />
 
-<nav class="h-11 flex items-center gap-3 px-3 flex-shrink-0 z-20
+<nav class="app-navbar flex items-center gap-3 px-3 flex-shrink-0 z-20
             bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
 
   <!-- Drawer toggle. Only meaningful while the sidebar is an overlay. -->

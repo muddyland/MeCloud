@@ -4,6 +4,17 @@
 
 @layer base {
   :root {
+    /* Device safe areas. The app renders edge-to-edge (viewport-fit=cover plus
+       a translucent status bar), so without these the OS clock and battery draw
+       straight over the navbar. */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+    /* The navbar is 2.75rem of chrome *plus* whatever the status bar occupies.
+       Anything positioned below the navbar keys off this rather than a literal
+       top-11, which would sit under the status bar on a phone. */
+    --navbar-height: calc(2.75rem + var(--safe-top));
+
     --accent: theme('colors.blue.500');
     --scrollbar-thumb: rgba(0, 0, 0, 0.18);
     --scrollbar-thumb-hover: rgba(0, 0, 0, 0.32);
@@ -27,9 +38,13 @@
   body {
     @apply h-full overflow-hidden font-sans antialiased;
     text-rendering: optimizeLegibility;
-    /* Respect the iPhone notch/home indicator rather than drawing under them. */
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
+    /* Horizontal insets only. A vertical inset here would be ignored by the
+       full-height children, which size against the viewport rather than the
+       padding box — the top inset is applied to the navbar instead. */
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+    /* Paints the inset strips in landscape, so they are not bare white. */
+    @apply bg-gray-100 dark:bg-gray-950;
   }
 
   /* Kill the 300ms tap delay and the grey flash on touch. */
@@ -82,6 +97,40 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+}
+
+@layer components {
+  /*
+   * Full-viewport app shell.
+   *
+   * `dvh` rather than `vh`: on mobile browsers `100vh` is the viewport with the
+   * address bar *hidden*, so a `100vh` layout is taller than the visible area
+   * whenever the bar is showing and the bottom of the app sits off-screen.
+   */
+  .app-shell {
+    height: 100dvh;
+  }
+
+  /* The two-declaration fallback trick does not survive minification — the
+     build collapses duplicate properties and keeps only the last. @supports is
+     a separate rule, so it does. Without this, a browser that lacks dvh drops
+     the declaration entirely and the shell collapses to height:auto. */
+  @supports not (height: 100dvh) {
+    .app-shell {
+      height: 100vh;
+    }
+  }
+
+  /* Navbar grows by the status-bar inset instead of being overlapped by it. */
+  .app-navbar {
+    height: var(--navbar-height);
+    padding-top: var(--safe-top);
+  }
+
+  /* Clears the home indicator on gesture-navigation devices. */
+  .pb-safe {
+    padding-bottom: var(--safe-bottom);
   }
 }
 

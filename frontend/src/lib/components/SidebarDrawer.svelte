@@ -18,7 +18,7 @@
   <!-- Backdrop exists only while the drawer overlays, so it can never swallow
        clicks at desktop widths. -->
   <div
-    class="fixed inset-0 top-11 z-30 bg-gray-900/40 dark:bg-black/60 lg:hidden"
+    class="fixed inset-0 top-[var(--navbar-height)] z-30 bg-gray-900/40 dark:bg-black/60 lg:hidden"
     transition:fade={{ duration: 150 }}
     on:click={closeSidebar}
     role="presentation"
@@ -35,7 +35,7 @@
   style="--sidebar-width: {width}px"
   class="flex flex-col bg-gray-100 dark:bg-gray-900
          border-r border-gray-200 dark:border-gray-700 {cls}
-         fixed top-11 bottom-0 left-0 z-40 w-[85vw] max-w-xs shadow-2xl
+         fixed top-[var(--navbar-height)] bottom-0 left-0 z-40 w-[85vw] max-w-xs shadow-2xl pb-safe lg:pb-0
          transition-transform duration-200 ease-out
          {$sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
          lg:relative lg:top-auto lg:bottom-auto lg:z-auto

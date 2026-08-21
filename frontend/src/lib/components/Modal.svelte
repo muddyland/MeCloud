@@ -102,6 +102,7 @@
       class="w-full {widths[size] ?? widths.md} flex flex-col overflow-hidden
              max-h-[92vh] sm:max-h-[90vh]
              rounded-t-2xl sm:rounded-2xl bg-white dark:bg-gray-800
+             pb-safe sm:pb-0
              shadow-2xl shadow-gray-900/20 dark:shadow-black/50
              ring-1 ring-gray-900/5 dark:ring-white/10"
       role="dialog"

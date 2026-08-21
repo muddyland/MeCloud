@@ -362,7 +362,7 @@
 
 <svelte:window on:keydown={onKeydown} />
 
-<div class="flex flex-col h-screen bg-gray-100 dark:bg-gray-950">
+<div class="flex flex-col app-shell bg-gray-100 dark:bg-gray-950">
   <Navbar {stalwartUrl} />
 
   <div class="flex flex-1 min-h-0 overflow-hidden">

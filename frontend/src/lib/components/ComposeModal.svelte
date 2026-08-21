@@ -215,6 +215,7 @@
     <div
       transition:fly={{ y: 16, duration: 200 }}
       class="w-full max-w-2xl flex flex-col rounded-t-xl sm:rounded-xl shadow-2xl
+             pb-safe sm:pb-0
              bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700
              overflow-hidden max-h-[92vh] sm:max-h-[90vh]"
       role="dialog"

@@ -337,7 +337,7 @@
 <svelte:window on:keydown={onKeydown} />
 
 <div
-  class="flex flex-col h-screen bg-gray-100 dark:bg-gray-950"
+  class="flex flex-col app-shell bg-gray-100 dark:bg-gray-950"
   class:cursor-col-resize={dragging !== null}
 >
   <!-- Top navbar -->
