@@ -140,10 +140,19 @@ are needed beyond the defaults GitLab injects, with one optional exception.
 `backend/requirements.txt` and `frontend/package-lock.json`, failing the
 pipeline on a high or critical CVE and blocking promotion to `:latest`.
 
-It is **skipped until `MINIREG_TOKEN` is set** — add it under *Settings → CI/CD →
-Variables* (masked; `read` scope is sufficient). Skipping rather than failing is
-deliberate: a gate that hard-fails on a missing variable breaks every pipeline
-the day it lands, and one that quietly passes is worse than no gate at all.
+It is **off unless explicitly enabled.** Two CI/CD variables are needed under
+*Settings → CI/CD → Variables*:
+
+| Variable | Value | Notes |
+|---|---|---|
+| `MINIREG_ENABLED` | `true` | The opt-in switch — the job is skipped for any other value, including unset |
+| `MINIREG_TOKEN` | a read token | Mask it; `read` scope is sufficient |
+
+An explicit flag rather than inferring from the token's presence: whether a
+security gate is running should be a stated decision, not a side effect of which
+secrets happen to exist. If `MINIREG_ENABLED` is `true` but the token is
+missing, the job fails immediately and says so, rather than dying later with an
+opaque *not logged in*.
 
 To run the same scan locally:
 

@@ -150,11 +150,16 @@ frontend-tests:
 #   • CI containers cannot resolve the internal DNS zone, so the host is pinned.
 #   • python:*-slim ships no curl, so the CLI is fetched with stdlib urllib.
 #
-# The job is skipped entirely until MINIREG_TOKEN exists as a masked CI/CD
-# variable (Settings → CI/CD → Variables, `read` scope is enough). Skipping is
-# deliberate: a gate that hard-fails on a missing variable would break every
-# pipeline the moment this landed, and one that quietly passed would be worse
-# than not having it. An absent job is at least visibly absent.
+# The job runs only when MINIREG_ENABLED is exactly "true". Two CI/CD variables
+# are needed (Settings → CI/CD → Variables):
+#
+#   MINIREG_ENABLED = true          the opt-in switch
+#   MINIREG_TOKEN   = <read token>  masked; `read` scope is enough
+#
+# An explicit flag rather than inferring from the token's presence: whether a
+# security gate is active should be a stated decision, not a side effect of
+# which secrets happen to exist. Neither variable is declared here, so the
+# project settings are the only source and cannot be shadowed by this file.
 # ---------------------------------------------------------------------------
 dependency-audit:
   stage: test
@@ -168,6 +173,13 @@ dependency-audit:
     MINIREG_URL: https://minireg.dmz.mudhut.xyz
     MINIREG_HOST_IP: "10.12.0.185"
   before_script:
+    - |
+      if [ -z "${MINIREG_TOKEN:-}" ]; then
+        echo "ERROR: MINIREG_ENABLED is true but MINIREG_TOKEN is not set."
+        echo "Add it under Settings > CI/CD > Variables (masked, 'read' scope),"
+        echo "or set MINIREG_ENABLED to anything other than 'true' to skip this job."
+        exit 1
+      fi
     - |
       getent hosts minireg.dmz.mudhut.xyz >/dev/null 2>&1 \
         || echo "$MINIREG_HOST_IP minireg.dmz.mudhut.xyz" >> /etc/hosts
@@ -186,7 +198,8 @@ dependency-audit:
     - minireg audit backend  --fail-on high
     - minireg audit frontend --fail-on high
   rules:
-    - if: '$MINIREG_TOKEN == null || $MINIREG_TOKEN == ""'
+    # The sole enable switch. Everything below matches the other jobs.
+    - if: '$MINIREG_ENABLED != "true"'
       when: never
     - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
