@@ -245,3 +245,90 @@ export function downloadNode(node) {
   a.click();
   a.remove();
 }
+
+// ── Dropped directories ─────────────────────────────────────────────────────
+//
+// `DataTransfer.files` flattens a dropped folder into a single zero-byte entry
+// with no type — the contents are simply not there. Only the entries API
+// (`webkitGetAsEntry`) exposes the tree, and it has two sharp edges:
+//
+//   1. It must be read *synchronously* during the drop event. The DataTransfer
+//      is neutered as soon as the handler yields, so awaiting first loses it.
+//   2. `readEntries()` returns at most 100 children per call and must be
+//      drained in a loop — the usual cause of "only some files uploaded".
+
+/** Depth and count ceilings, so a pathological drop cannot hang the tab. */
+const MAX_TREE_DEPTH = 16;
+const MAX_TREE_FILES = 2000;
+
+/**
+ * Synchronously extract FileSystemEntry objects from a drop.
+ * Returns null when the browser has no entries API, so the caller can fall
+ * back to the flat `files` list.
+ */
+export function readDropEntries(dataTransfer) {
+  const items = dataTransfer?.items;
+  if (!items?.length) return null;
+
+  const entries = [];
+  for (const item of Array.from(items)) {
+    if (item.kind !== 'file') continue;
+    const getEntry = item.webkitGetAsEntry ?? item.getAsEntry;
+    if (typeof getEntry !== 'function') return null;
+    const entry = getEntry.call(item);
+    if (entry) entries.push(entry);
+  }
+  return entries.length ? entries : null;
+}
+
+function readAllChildren(reader) {
+  // readEntries yields in batches and signals completion with an empty batch.
+  return new Promise((resolve, reject) => {
+    const all = [];
+    const step = () => reader.readEntries((batch) => {
+      if (!batch.length) { resolve(all); return; }
+      all.push(...batch);
+      step();
+    }, reject);
+    step();
+  });
+}
+
+const entryFile = (entry) =>
+  new Promise((resolve, reject) => entry.file(resolve, reject));
+
+/**
+ * Turn dropped entries into a tree of
+ * `{ kind: 'file', name, file } | { kind: 'dir', name, children }`.
+ */
+export async function buildDropTree(entries, { depth = 0, budget = { files: 0 } } = {}) {
+  const nodes = [];
+  for (const entry of entries) {
+    if (entry.isFile) {
+      if (budget.files >= MAX_TREE_FILES) break;
+      budget.files += 1;
+      try {
+        nodes.push({ kind: 'file', name: entry.name, file: await entryFile(entry) });
+      } catch {
+        // Unreadable entry (permissions, a vanished file) — skip it rather than
+        // failing the whole drop.
+      }
+    } else if (entry.isDirectory && depth < MAX_TREE_DEPTH) {
+      const children = await readAllChildren(entry.createReader());
+      nodes.push({
+        kind: 'dir',
+        name: entry.name,
+        children: await buildDropTree(children, { depth: depth + 1, budget }),
+      });
+    }
+  }
+  return nodes;
+}
+
+/** Count the files in a drop tree, for progress reporting. */
+export function countTreeFiles(nodes) {
+  return nodes.reduce(
+    (n, node) => n + (node.kind === 'file' ? 1 : countTreeFiles(node.children ?? [])),
+    0,
+  );
+}

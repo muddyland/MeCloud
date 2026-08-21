@@ -1,11 +1,13 @@
 <script>
   import { onMount } from 'svelte';
   import {
-    appName, currentUser, darkMode, sieveOpen, appPasswordsOpen, shortcutsOpen
+    appName, currentUser, darkMode, sieveOpen, appPasswordsOpen, shortcutsOpen,
+    commandPaletteOpen
   } from '$lib/stores/mail.js';
   import { logout } from '$lib/api.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
+  import AppTabs from './AppTabs.svelte';
 
   export let stalwartUrl = '';
 
@@ -45,23 +47,44 @@
 
 <svelte:window on:keydown={onKeydown} />
 
-<nav class="h-11 grid grid-cols-3 items-center px-4 flex-shrink-0 z-20
+<nav class="h-11 flex items-center gap-3 px-3 flex-shrink-0 z-20
             bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
 
-  <!-- Left spacer (keeps center column truly centered) -->
-  <div></div>
-
-  <!-- App name — center -->
-  <span class="text-sm font-semibold text-gray-800 dark:text-gray-100 tracking-tight select-none
-               flex items-center justify-center gap-1.5">
+  <!-- Wordmark. Hidden on narrow windows so the tabs never get squeezed. -->
+  <span class="hidden md:flex items-center gap-1.5 flex-shrink-0 select-none
+               text-sm font-semibold text-gray-800 dark:text-gray-100 tracking-tight">
     <svg class="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
       <path d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
     </svg>
     {$appName}
   </span>
 
+  <!-- App switcher, in the space the centred title used to waste -->
+  <AppTabs />
+
+  <div class="flex-1"></div>
+
   <!-- Right controls -->
-  <div class="flex items-center justify-end gap-1">
+  <div class="flex items-center justify-end gap-1 flex-shrink-0">
+
+  <!-- Command palette -->
+  <button
+    on:click={() => commandPaletteOpen.set(true)}
+    title="Search and commands (Ctrl/Cmd + K)"
+    class="hidden sm:flex items-center gap-2 h-7 pl-2 pr-1.5 mr-1 rounded-lg
+           border border-gray-200 dark:border-gray-700
+           text-gray-400 dark:text-gray-500
+           hover:border-gray-300 dark:hover:border-gray-600
+           hover:text-gray-600 dark:hover:text-gray-300
+           transition-colors duration-150"
+  >
+    <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+    </svg>
+    <kbd class="text-[10px] font-sans px-1 py-0.5 rounded
+                bg-gray-100 dark:bg-gray-800 text-gray-400 dark:text-gray-500">⌘K</kbd>
+  </button>
 
   <!-- Notification bell -->
   {#if notifPerm !== 'unsupported' && notifPerm !== 'denied'}

@@ -1,7 +1,6 @@
 <script>
   import { onMount } from 'svelte';
   import Navbar from '$lib/components/Navbar.svelte';
-  import AppNav from '$lib/components/AppNav.svelte';
   import CalendarGrid from '$lib/components/CalendarGrid.svelte';
   import EventModal from '$lib/components/EventModal.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
@@ -171,7 +170,6 @@
         {/each}
       </div>
 
-      <AppNav />
     </div>
 
     <!-- Calendar grid -->

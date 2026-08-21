@@ -7,6 +7,7 @@
   import { getMe, getAppConfig } from '$lib/api.js';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
+  import CommandPalette from '$lib/components/CommandPalette.svelte';
 
   let checkingAuth = true;
 
@@ -57,4 +58,6 @@
   </div>
 {:else}
   <slot />
+  <!-- Global, so Ctrl/Cmd+K works from every route -->
+  <CommandPalette />
 {/if}

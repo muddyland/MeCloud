@@ -20,10 +20,11 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 - OAuth2 authentication via Stalwart's built-in OAuth2 server
 - Three-pane layout: mailboxes / message list / reading pane
 - Mailbox and Folders sections — system mailboxes (Inbox, Sent, Drafts…) separated from user folders
-- App switcher (bottom of the sidebar) to switch between Mail, Calendar, Contacts, and Files
+- App switcher in the top bar — Mail, Calendar, Contacts, Files
 - Dark mode (system preference + manual toggle, persisted)
 - Real-time push via JMAP EventSource (SSE), with an exponential-backoff reconnect and a polling fallback
 - **Remote images blocked by default** — tracking pixels do not load until you ask, per message or per sender
+- **Command palette** (`Ctrl`/`Cmd` + `K`) — fuzzy jump to any app, mailbox, contact, calendar or file, plus commands like compose and toggle theme
 - **Keyboard shortcuts** — `j`/`k` to move, `r`/`a`/`f` to reply, `c` to compose, `?` for the full list
 - Correct reply threading (`In-Reply-To` / `References`), Cc and Bcc
 - Loading indicators throughout — a global activity bar, skeleton lists, and a spinner on every action that talks to the server
@@ -149,6 +150,8 @@ jmap-mail/
 │       │   ├── sanitize.js              # DOMPurify config + remote-content blocking
 │       │   ├── files.js                 # JMAP FileNode calls + blob transfer
 │       │   ├── fileTypes.js             # File classification (pure, unit-tested)
+│       │   ├── fuzzy.js                 # Palette ranking (pure, unit-tested)
+│       │   ├── apps.js                  # The app list, shared by tabs + palette
 │       │   ├── urls.js                  # Remote-URL classification (pure, unit-tested)
 │       │   ├── trustedSenders.js        # "Always show images from…" list
 │       │   ├── stores/
@@ -161,6 +164,8 @@ jmap-mail/
 │       │       ├── Spinner.svelte        # Shared loading indicator
 │       │       ├── ProgressBar.svelte    # Global activity bar
 │       │       ├── ShortcutsHelp.svelte  # Keyboard shortcut reference
+│       │       ├── AppTabs.svelte        # Top-bar app switcher
+│       │       ├── CommandPalette.svelte # Ctrl/Cmd+K launcher
 │       │       ├── AppNav.svelte         # Bottom app switcher
 │       │       ├── CalendarGrid.svelte   # Month-view calendar grid
 │       │       ├── EventModal.svelte     # Create / edit calendar event

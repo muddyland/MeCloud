@@ -2,7 +2,6 @@
   import { onMount, onDestroy } from 'svelte';
   import { fly, fade } from 'svelte/transition';
   import Navbar from '$lib/components/Navbar.svelte';
-  import AppNav from '$lib/components/AppNav.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
   import FileIcon from '$lib/components/FileIcon.svelte';
@@ -18,6 +17,7 @@
   import {
     getFileNodes, createFolder, renameNode, moveNode, destroyNodes,
     uploadFile, downloadNode, supportsFiles, fileLimits,
+    readDropEntries, buildDropTree, countTreeFiles,
   } from '$lib/files.js';
   import {
     fileKind, formatBytes, isPreviewable, validateName, breadcrumbTrail, uniqueName,
@@ -207,29 +207,11 @@
     const taken = new Set(($childrenByParent.get(parentId ?? null) ?? []).map((n) => n.name));
 
     for (const file of files) {
-      const id = ++uploadSeq;
       // Uploading two files with the same name into one folder should not
       // silently produce two identical entries.
       const name = uniqueName(file.name, taken);
       taken.add(name);
-
-      uploads.update((u) => [...u, { id, name, progress: 0, error: '', done: false }]);
-      const patch = (fields) =>
-        uploads.update((u) => u.map((x) => (x.id === id ? { ...x, ...fields } : x)));
-
-      try {
-        const created = await uploadFile($jmapAccountId, $jmapSession, file, {
-          parentId,
-          name,
-          onProgress: (p) => patch({ progress: p }),
-        });
-        fileNodes.update((list) => [...list, created]);
-        patch({ progress: 1, done: true });
-        setTimeout(() => uploads.update((u) => u.filter((x) => x.id !== id)), 1200);
-      } catch (e) {
-        patch({ error: e?.message ?? 'Upload failed.', done: true });
-        toast(`${name}: ${e?.message ?? 'upload failed'}`, 'error');
-      }
+      await uploadOne(file, name, parentId);
     }
   }
 
@@ -247,9 +229,80 @@
   function onDragLeave() { dragDepth = Math.max(0, dragDepth - 1); }
   function onDrop(e) {
     dragDepth = 0;
-    if (!e.dataTransfer?.files?.length) return;
+    if (!e.dataTransfer) return;
     e.preventDefault();
-    uploadFiles(e.dataTransfer.files);
+
+    // Read the entries synchronously — the DataTransfer is neutered the moment
+    // this handler yields, so anything awaited first comes back empty. A
+    // dropped *folder* only exists in this list; dataTransfer.files flattens it
+    // to a single zero-byte entry with no contents.
+    const entries = readDropEntries(e.dataTransfer);
+    if (entries) uploadDropTree(entries);
+    else if (e.dataTransfer.files?.length) uploadFiles(e.dataTransfer.files);
+  }
+
+  /** Recreate a dropped directory tree, then upload its files into it. */
+  async function uploadDropTree(entries) {
+    let tree;
+    try {
+      tree = await buildDropTree(entries);
+    } catch (e) {
+      toast(e?.message ?? 'Could not read the dropped items.', 'error');
+      return;
+    }
+    if (!tree.length) return;
+
+    const total = countTreeFiles(tree);
+    if (total === 0 && !tree.some((n) => n.kind === 'dir')) return;
+
+    try {
+      await uploadInto(tree, $currentFolderId);
+    } catch (e) {
+      toast(e?.message ?? 'Upload failed.', 'error');
+    }
+  }
+
+  /**
+   * Depth-first: create each folder before uploading anything into it, so a
+   * child never references a parent that does not exist yet.
+   */
+  async function uploadInto(nodes, parentId) {
+    const siblings = new Set(
+      ($childrenByParent.get(parentId ?? null) ?? []).map((n) => n.name),
+    );
+
+    for (const node of nodes) {
+      const name = uniqueName(node.name, siblings);
+      siblings.add(name);
+
+      if (node.kind === 'dir') {
+        const created = await createFolder($jmapAccountId, $jmapSession, name, parentId);
+        fileNodes.update((list) => [...list, created]);
+        if (node.children?.length) await uploadInto(node.children, created.id);
+      } else {
+        await uploadOne(node.file, name, parentId);
+      }
+    }
+  }
+
+  /** Upload a single file with its own progress row. */
+  async function uploadOne(file, name, parentId) {
+    const id = ++uploadSeq;
+    uploads.update((u) => [...u, { id, name, progress: 0, error: '', done: false }]);
+    const patch = (fields) =>
+      uploads.update((u) => u.map((x) => (x.id === id ? { ...x, ...fields } : x)));
+
+    try {
+      const created = await uploadFile($jmapAccountId, $jmapSession, file, {
+        parentId, name, onProgress: (p) => patch({ progress: p }),
+      });
+      fileNodes.update((list) => [...list, created]);
+      patch({ progress: 1, done: true });
+      setTimeout(() => uploads.update((u) => u.filter((x) => x.id !== id)), 1200);
+    } catch (e) {
+      patch({ error: e?.message ?? 'Upload failed.', done: true });
+      toast(`${name}: ${e?.message ?? 'upload failed'}`, 'error');
+    }
   }
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
@@ -357,7 +410,6 @@
         </p>
       </div>
 
-      <AppNav />
     </div>
 
     <!-- ── Main pane ────────────────────────────────────────────────────── -->

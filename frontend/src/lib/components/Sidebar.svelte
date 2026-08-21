@@ -7,7 +7,6 @@
   import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
-  import AppNav from './AppNav.svelte';
   import Spinner from './Spinner.svelte';
 
   let dragOverId  = null;
@@ -361,6 +360,5 @@
 
   </nav>
 
-  <AppNav />
 
 </aside>

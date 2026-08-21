@@ -1,7 +1,6 @@
 <script>
   import { onMount } from 'svelte';
   import Navbar from '$lib/components/Navbar.svelte';
-  import AppNav from '$lib/components/AppNav.svelte';
   import ContactModal from '$lib/components/ContactModal.svelte';
   import ContactImportModal from '$lib/components/ContactImportModal.svelte';
   import ComposeModal from '$lib/components/ComposeModal.svelte';
@@ -220,7 +219,6 @@
         {/each}
       </div>
 
-      <AppNav />
     </div>
 
     <!-- Contact list -->

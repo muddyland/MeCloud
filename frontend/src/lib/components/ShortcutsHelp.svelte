@@ -25,6 +25,7 @@
     {
       title: 'Everything else',
       items: [
+        { keys: ['⌘', 'K'], label: 'Command palette — jump anywhere' },
         { keys: ['c'], label: 'Compose' },
         { keys: ['.'], label: 'Refresh' },
         { keys: ['?'], label: 'Show this help' },
