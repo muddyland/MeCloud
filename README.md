@@ -124,10 +124,35 @@ The included `.gitlab-ci.yml` pipeline:
 | Stage | Job | What it does |
 |---|---|---|
 | `build` | `build-image` | Builds and pushes `:sha` + `:branch` tags to the GitLab registry |
+| `test` | `backend-tests` | `pytest` |
+| `test` | `frontend-tests` | `npm ci`, `svelte-check`, `vitest` |
+| `test` | `dependency-audit` | CVE scan of both manifests via the internal registry |
 | `test` | `smoke-test` | Starts the container and asserts `/health` returns `{"status":"ok"}` |
 | `release` | `tag-latest` | Promotes `:sha` to `:latest` — only on `main` |
 
-Uses GitLab's built-in container registry (`$CI_REGISTRY_IMAGE`). No additional variables needed beyond the defaults GitLab injects.
+Uses GitLab's built-in container registry (`$CI_REGISTRY_IMAGE`), and pulls all
+public base images through the group Dependency Proxy. No additional variables
+are needed beyond the defaults GitLab injects, with one optional exception.
+
+### Enabling the dependency audit
+
+`dependency-audit` runs `minireg audit --fail-on high` against
+`backend/requirements.txt` and `frontend/package-lock.json`, failing the
+pipeline on a high or critical CVE and blocking promotion to `:latest`.
+
+It is **skipped until `MINIREG_TOKEN` is set** — add it under *Settings → CI/CD →
+Variables* (masked; `read` scope is sufficient). Skipping rather than failing is
+deliberate: a gate that hard-fails on a missing variable breaks every pipeline
+the day it lands, and one that quietly passes is worse than no gate at all.
+
+To run the same scan locally:
+
+```bash
+curl -fsSL https://minireg.dmz.mudhut.xyz/api/cli/install.sh | sh
+minireg login
+minireg audit backend
+minireg audit frontend
+```
 
 ## Project Structure
 

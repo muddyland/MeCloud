@@ -139,6 +139,58 @@ frontend-tests:
     - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
 
+# ---------------------------------------------------------------------------
+# Dependency audit — CVE scan of both manifests through the internal registry.
+#
+# The minireg CLI is a single stdlib-only Python script, and it parses
+# requirements.txt and package-lock.json itself, so one Python image audits both
+# projects with no Node and no npm install.
+#
+# Two environmental details, neither of them minireg's doing:
+#   • CI containers cannot resolve the internal DNS zone, so the host is pinned.
+#   • python:*-slim ships no curl, so the CLI is fetched with stdlib urllib.
+#
+# The job is skipped entirely until MINIREG_TOKEN exists as a masked CI/CD
+# variable (Settings → CI/CD → Variables, `read` scope is enough). Skipping is
+# deliberate: a gate that hard-fails on a missing variable would break every
+# pipeline the moment this landed, and one that quietly passed would be worse
+# than not having it. An absent job is at least visibly absent.
+# ---------------------------------------------------------------------------
+dependency-audit:
+  stage: test
+  tags:
+    - saas-linux-small-amd64
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.13-slim
+  # Reads no build artifact, so it can start immediately rather than waiting
+  # for the image build — security feedback arrives with the unit tests.
+  needs: []
+  variables:
+    MINIREG_URL: https://minireg.dmz.mudhut.xyz
+    MINIREG_HOST_IP: "10.12.0.185"
+  before_script:
+    - |
+      getent hosts minireg.dmz.mudhut.xyz >/dev/null 2>&1 \
+        || echo "$MINIREG_HOST_IP minireg.dmz.mudhut.xyz" >> /etc/hosts
+    - |
+      python3 - <<'PY'
+      import os, urllib.request
+      urllib.request.urlretrieve(
+          os.environ["MINIREG_URL"].rstrip("/") + "/api/cli/download",
+          "/usr/local/bin/minireg",
+      )
+      os.chmod("/usr/local/bin/minireg", 0o755)
+      PY
+  script:
+    # --fail-on high: exit 2 at high or critical. Lower-severity findings are
+    # printed and reviewed rather than blocking a release.
+    - minireg audit backend  --fail-on high
+    - minireg audit frontend --fail-on high
+  rules:
+    - if: '$MINIREG_TOKEN == null || $MINIREG_TOKEN == ""'
+      when: never
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
 smoke-test:
   extends: .docker_base
   stage: test
@@ -183,6 +235,10 @@ tag-latest:
     - smoke-test
     - backend-tests
     - frontend-tests
+    # Optional so tag-latest still runs before MINIREG_TOKEN is configured;
+    # once it is, a failing audit blocks promotion to :latest.
+    - job: dependency-audit
+      optional: true
   before_script:
     - *wait-for-docker
     - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
