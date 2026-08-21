@@ -18,7 +18,8 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 - **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio and video
 - Mail attachments are downloadable, through the same authenticated blob proxy
 - OAuth2 authentication via Stalwart's built-in OAuth2 server
-- Three-pane layout: mailboxes / message list / reading pane
+- Three-pane layout: mailboxes / message list / reading pane — collapsing to a
+  single pane with drill-down navigation and an off-canvas sidebar below 1024px
 - Mailbox and Folders sections — system mailboxes (Inbox, Sent, Drafts…) separated from user folders
 - App switcher in the top bar — Mail, Calendar, Contacts, Files
 - Dark mode (system preference + manual toggle, persisted)

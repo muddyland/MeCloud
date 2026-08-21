@@ -7,6 +7,8 @@
   import FileIcon from '$lib/components/FileIcon.svelte';
   import FolderTree from '$lib/components/FolderTree.svelte';
   import FilePreview from '$lib/components/FilePreview.svelte';
+  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
+  import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
   import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
   import { getJMAPSession, getAppConfig } from '$lib/api.js';
   import {
@@ -61,6 +63,7 @@
 
   function openFolder(id) {
     currentFolderId.set(id);
+    closeSidebar();
     selectedFileIds.set(new Set());
     fileSearch.set('');
   }
@@ -365,9 +368,7 @@
   <div class="flex flex-1 min-h-0 overflow-hidden">
 
     <!-- ── Sidebar: folder tree ─────────────────────────────────────────── -->
-    <div class="flex-shrink-0 h-full flex flex-col bg-gray-100 dark:bg-gray-900
-                border-r border-gray-200 dark:border-gray-700"
-         style="width: {$sidebarWidth}px">
+    <SidebarDrawer width={$sidebarWidth}>
       <div class="flex-1 overflow-y-auto px-2 py-2">
         <div class="px-1 pt-2 pb-1 flex items-center justify-between">
           <span class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider select-none">
@@ -413,7 +414,7 @@
         </p>
       </div>
 
-    </div>
+    </SidebarDrawer>
 
     <!-- ── Main pane ────────────────────────────────────────────────────── -->
     <!-- svelte-ignore a11y-no-static-element-interactions -->

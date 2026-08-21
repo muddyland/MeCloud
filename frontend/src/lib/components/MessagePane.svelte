@@ -15,6 +15,7 @@
   import { isTrustedSender, trustSender } from '$lib/trustedSenders.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
+  import { isCompact } from '$lib/stores/viewport.js';
 
   let email = null;
   let frameContent = '';    // sanitised content cached for dark-mode rebuilds
@@ -406,6 +407,21 @@
 
         <!-- Header -->
         <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+          {#if $isCompact}
+            <button
+              on:click={() => selectedEmailId.set(null)}
+              class="flex items-center gap-1 -ml-1 mb-2 px-1.5 py-1 rounded-lg text-xs font-medium
+                     text-blue-600 dark:text-blue-400
+                     hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors duration-150"
+            >
+              <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                   stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m15 18-6-6 6-6" />
+              </svg>
+              {$selectedMailbox?.name ?? 'Back'}
+            </button>
+          {/if}
+
           <!-- Top row: avatar + sender + date -->
           <div class="flex items-start justify-between gap-3 mb-3">
             <div class="flex items-center gap-3 min-w-0">

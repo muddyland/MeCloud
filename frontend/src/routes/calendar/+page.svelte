@@ -5,6 +5,8 @@
   import EventModal from '$lib/components/EventModal.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
+  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
+  import { closeSidebar } from '$lib/stores/viewport.js';
   import {
     calendars, calendarEvents, calendarLoading, selectedCalendar, calendarDate, calendarRefreshToken
   } from '$lib/stores/calendar.js';
@@ -98,8 +100,7 @@
   <div class="flex flex-1 min-h-0 overflow-hidden">
 
     <!-- Left panel -->
-    <div class="flex-shrink-0 h-full flex flex-col bg-gray-100 dark:bg-gray-900
-                border-r border-gray-200 dark:border-gray-700" style="width: {$sidebarWidth}px">
+    <SidebarDrawer width={$sidebarWidth}>
 
       <div class="flex-1 overflow-y-auto px-2 py-2">
 
@@ -134,7 +135,7 @@
         {/if}
 
         <!-- All Calendars -->
-        <button on:click={() => selectedCalendar.set(null)}
+        <button on:click={() => { selectedCalendar.set(null); closeSidebar(); }}
           class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150
                  {$selectedCalendar === null
                    ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-medium'
@@ -145,7 +146,7 @@
 
         {#each $calendars as cal}
           <div class="group relative">
-            <button on:click={() => selectedCalendar.set(cal.id)}
+            <button on:click={() => { selectedCalendar.set(cal.id); closeSidebar(); }}
               class="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors duration-150
                      {$selectedCalendar === cal.id
                        ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-medium'
@@ -170,7 +171,7 @@
         {/each}
       </div>
 
-    </div>
+    </SidebarDrawer>
 
     <!-- Calendar grid -->
     <div class="flex-1 min-w-0 h-full bg-white dark:bg-gray-900">

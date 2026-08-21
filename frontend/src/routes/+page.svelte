@@ -12,6 +12,8 @@
   import MailboxPicker from '$lib/components/MailboxPicker.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
   import ShortcutsHelp from '$lib/components/ShortcutsHelp.svelte';
+  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
+  import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
   import {
     mailboxes, selectedMailbox, emails, loading,
     jmapSession, jmapAccountId, selectedEmailId, sidebarWidth, messageListWidth, currentUser,
@@ -199,6 +201,9 @@
   $: if ($selectedMailbox && accountId && $selectedMailbox.id !== loadedMailboxId) {
     loadedMailboxId = $selectedMailbox.id;
     loadEmails($selectedMailbox.id);
+    // Picking a folder from the drawer should reveal its messages rather than
+    // leaving the overlay covering them.
+    closeSidebar();
   }
 
   // Sequence guard: switching folders quickly used to let a slow response for
@@ -358,15 +363,15 @@
   <!-- Three-pane area -->
   <div class="flex flex-1 min-h-0 overflow-hidden select-none">
 
-    <!-- Sidebar -->
-    <div class="flex-shrink-0 h-full overflow-hidden" style="width: {$sidebarWidth}px">
+    <!-- Sidebar: in-flow at desktop widths, an overlay drawer below lg -->
+    <SidebarDrawer width={$sidebarWidth} cls="overflow-hidden">
       <Sidebar />
-    </div>
+    </SidebarDrawer>
 
     <!-- Drag handle: sidebar ↔ message list -->
     <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
     <div
-      class="flex-shrink-0 h-full cursor-col-resize relative z-10 group"
+      class="flex-shrink-0 h-full cursor-col-resize relative z-10 group hidden lg:block"
       style="width: 5px"
       on:mousedown={(e) => startDrag(e, 'sidebar')}
       role="separator" aria-orientation="vertical" tabindex="0"
@@ -378,15 +383,21 @@
       <div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-gray-200 dark:bg-gray-700"></div>
     </div>
 
-    <!-- Message list -->
-    <div class="flex-shrink-0 h-full overflow-hidden" style="width: {$messageListWidth}px">
+    <!-- Message list. Full width when compact, and hidden entirely once a
+         message is open so the reading pane gets the whole screen. -->
+    <div
+      class="h-full overflow-hidden {$isCompact
+        ? ($selectedEmailId ? 'hidden' : 'flex-1 min-w-0')
+        : 'flex-shrink-0'}"
+      style={$isCompact ? '' : `width: ${$messageListWidth}px`}
+    >
       <MessageList />
     </div>
 
     <!-- Drag handle: message list ↔ reading pane -->
     <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
     <div
-      class="flex-shrink-0 h-full cursor-col-resize relative z-10 group"
+      class="flex-shrink-0 h-full cursor-col-resize relative z-10 group hidden lg:block"
       style="width: 5px"
       on:mousedown={(e) => startDrag(e, 'msglist')}
       role="separator" aria-orientation="vertical" tabindex="0"
@@ -398,8 +409,8 @@
       <div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-gray-200 dark:bg-gray-700"></div>
     </div>
 
-    <!-- Reading pane -->
-    <div class="flex-1 min-w-0 h-full">
+    <!-- Reading pane. Compact: only shown once something is selected. -->
+    <div class="flex-1 min-w-0 h-full {$isCompact && !$selectedEmailId ? 'hidden' : ''}">
       <MessagePane />
     </div>
 

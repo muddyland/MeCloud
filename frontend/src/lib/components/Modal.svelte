@@ -89,8 +89,8 @@
 
 {#if open}
   <div
-    class="fixed inset-0 z-50 flex items-center justify-center p-4
-           bg-gray-900/40 dark:bg-black/60 backdrop-blur-[2px]"
+    class="fixed inset-0 z-50 flex items-end sm:items-center justify-center
+           p-0 sm:p-4 bg-gray-900/40 dark:bg-black/60 backdrop-blur-[2px]"
     transition:fade={{ duration: 120 }}
     on:click|self={requestClose}
     role="presentation"
@@ -99,8 +99,9 @@
       bind:this={panel}
       use:trap
       transition:fly={{ y: 12, duration: 180 }}
-      class="w-full {widths[size] ?? widths.md} max-h-[90vh] flex flex-col overflow-hidden
-             rounded-2xl bg-white dark:bg-gray-800
+      class="w-full {widths[size] ?? widths.md} flex flex-col overflow-hidden
+             max-h-[92vh] sm:max-h-[90vh]
+             rounded-t-2xl sm:rounded-2xl bg-white dark:bg-gray-800
              shadow-2xl shadow-gray-900/20 dark:shadow-black/50
              ring-1 ring-gray-900/5 dark:ring-white/10"
       role="dialog"

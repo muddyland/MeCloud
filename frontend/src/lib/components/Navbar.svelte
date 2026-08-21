@@ -8,6 +8,7 @@
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
   import AppTabs from './AppTabs.svelte';
+  import { isCompact, toggleSidebar } from '$lib/stores/viewport.js';
 
   export let stalwartUrl = '';
 
@@ -49,6 +50,22 @@
 
 <nav class="h-11 flex items-center gap-3 px-3 flex-shrink-0 z-20
             bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
+
+  <!-- Drawer toggle. Only meaningful while the sidebar is an overlay. -->
+  {#if $isCompact}
+    <button
+      on:click={toggleSidebar}
+      aria-label="Toggle sidebar"
+      class="w-9 h-9 -ml-1 flex items-center justify-center rounded-lg flex-shrink-0
+             text-gray-600 dark:text-gray-300
+             hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
+    >
+      <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.75" stroke-linecap="round">
+        <path d="M3 6h18M3 12h18M3 18h18" />
+      </svg>
+    </button>
+  {/if}
 
   <!-- Wordmark. Hidden on narrow windows so the tabs never get squeezed. -->
   <span class="hidden md:flex items-center gap-1.5 flex-shrink-0 select-none
@@ -92,7 +109,7 @@
       on:click={requestNotifications}
       disabled={requestingNotif}
       title={notifPerm === 'granted' ? 'Notifications enabled' : 'Enable notifications'}
-      class="w-7 h-7 flex items-center justify-center rounded-lg transition-colors duration-150
+      class="hidden sm:flex w-8 h-8 items-center justify-center rounded-lg transition-colors duration-150
              disabled:opacity-50
              {notifPerm === 'granted'
                ? 'text-blue-500 dark:text-blue-400'
@@ -116,7 +133,7 @@
   <button
     on:click={() => shortcutsOpen.set(true)}
     title="Keyboard shortcuts ( ? )"
-    class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 dark:text-gray-400
+    class="hidden md:flex w-8 h-8 items-center justify-center rounded-lg text-gray-500 dark:text-gray-400
            hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
   >
     <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
@@ -130,7 +147,7 @@
   <button
     on:click={() => darkMode.toggle()}
     title="Toggle dark mode"
-    class="w-7 h-7 flex items-center justify-center rounded-lg text-gray-500 dark:text-gray-400
+    class="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 dark:text-gray-400
            hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
   >
     {#if $darkMode}
@@ -173,6 +190,31 @@
         </div>
 
         <div class="py-1">
+          <button
+            on:click={() => { shortcutsOpen.set(true); close(); }}
+            class="md:hidden flex items-center gap-3 w-full px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300
+                   hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors duration-100"
+          >
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <rect x="2" y="6" width="20" height="12" rx="2" />
+              <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M8 14h8" />
+            </svg>
+            Keyboard shortcuts
+          </button>
+
+          <button
+            on:click={() => { commandPaletteOpen.set(true); close(); }}
+            class="sm:hidden flex items-center gap-3 w-full px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300
+                   hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors duration-100"
+          >
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
+            </svg>
+            Search and commands
+          </button>
+
           <button
             on:click={() => { sieveOpen.set(true); close(); }}
             class="flex items-center gap-3 w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-300

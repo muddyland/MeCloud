@@ -27,6 +27,24 @@
   body {
     @apply h-full overflow-hidden font-sans antialiased;
     text-rendering: optimizeLegibility;
+    /* Respect the iPhone notch/home indicator rather than drawing under them. */
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
+  }
+
+  /* Kill the 300ms tap delay and the grey flash on touch. */
+  button, a, [role="button"] {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  /* iOS zooms the page when a focused input's font is under 16px. Several of
+     these fields are text-xs by design, so raise them only on touch devices,
+     where the zoom is the bigger problem. */
+  @media (pointer: coarse) {
+    input, select, textarea {
+      font-size: 16px;
+    }
   }
 
   /* A visible focus ring for keyboard users, and none for mouse users — the
