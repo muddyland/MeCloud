@@ -30,6 +30,13 @@ class Settings(BaseSettings):
     # small; anything larger is either a bug or an attempt to exhaust memory.
     max_request_bytes: int = 1_048_576             # 1 MiB
 
+    # File uploads get their own, much larger ceiling. Keeping these separate
+    # matters: the 1 MiB cap is what stops a hostile JMAP payload, and raising
+    # it everywhere just to allow file uploads would throw that away. Stalwart's
+    # own FileStorage.maxSize defaults to 25 MB, so this only needs to be
+    # generous enough not to be the binding constraint.
+    max_upload_bytes: int = 64 * 1024 * 1024       # 64 MiB
+
     # Upstream (Stalwart) HTTP timeouts, in seconds. Without these a hung
     # upstream pins a worker and its connection forever.
     upstream_connect_timeout: float = 5.0

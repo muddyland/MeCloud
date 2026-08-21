@@ -15,10 +15,12 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 - JMAP protocol for fast, efficient mail access (RFC 8620 / RFC 8621)
 - **Calendar** — month view, create / edit / delete events, per-calendar filtering (JMAP Calendars / RFC 8984)
 - **Contacts** — address book list, contact search, create / edit / delete (JMAP Contacts / RFC 9553)
+- **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio and video
+- Mail attachments are downloadable, through the same authenticated blob proxy
 - OAuth2 authentication via Stalwart's built-in OAuth2 server
 - Three-pane layout: mailboxes / message list / reading pane
 - Mailbox and Folders sections — system mailboxes (Inbox, Sent, Drafts…) separated from user folders
-- App switcher (bottom of the sidebar) to switch between Mail, Calendar, and Contacts
+- App switcher (bottom of the sidebar) to switch between Mail, Calendar, Contacts, and Files
 - Dark mode (system preference + manual toggle, persisted)
 - Real-time push via JMAP EventSource (SSE), with an exponential-backoff reconnect and a polling fallback
 - **Remote images blocked by default** — tracking pixels do not load until you ask, per message or per sender
@@ -36,7 +38,7 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 | Sanitisation | DOMPurify, plus a script-less sandboxed iframe |
 | Auth | OAuth2 authorization code flow with PKCE (S256) |
 | Session | Encrypted cookie (Fernet: AES-CBC + HMAC-SHA256) |
-| Protocol | JMAP (RFC 8620, RFC 8621, RFC 8984, RFC 9553) |
+| Protocol | JMAP (RFC 8620, RFC 8621, RFC 8984, RFC 9553, draft-ietf-jmap-filenode) |
 | Runtime | Single Docker image (multi-stage build) |
 
 ## Quick Start
@@ -133,6 +135,7 @@ jmap-mail/
 ├── backend/
 │   └── app/
 │       ├── main.py       # FastAPI app, security middleware, routes, static serving
+│       ├── blobs.py      # Authenticated blob upload/download proxy
 │       ├── auth.py       # OAuth2 authorization code flow (PKCE)
 │       ├── jmap.py       # JMAP session cache, request proxy, SSE stream
 │       ├── http.py       # Pooled upstream httpx clients + error mapping
@@ -144,6 +147,8 @@ jmap-mail/
 │       ├── lib/
 │       │   ├── api.js                   # JMAP API helpers (mail, calendar, contacts)
 │       │   ├── sanitize.js              # DOMPurify config + remote-content blocking
+│       │   ├── files.js                 # JMAP FileNode calls + blob transfer
+│       │   ├── fileTypes.js             # File classification (pure, unit-tested)
 │       │   ├── urls.js                  # Remote-URL classification (pure, unit-tested)
 │       │   ├── trustedSenders.js        # "Always show images from…" list
 │       │   ├── stores/
@@ -165,6 +170,7 @@ jmap-mail/
 │           ├── +layout.svelte            # Auth guard, dark mode, activity bar, tab badge
 │           ├── +page.svelte              # Mail three-pane view, realtime, shortcuts
 │           ├── calendar/+page.svelte     # Calendar view
+│           ├── files/+page.svelte        # Files (Drive) view
 │           └── contacts/+page.svelte     # Contacts view
 ├── Dockerfile
 ├── docker-compose.yml
@@ -188,6 +194,29 @@ jmap-mail/
 - Message bodies render inside an iframe whose `sandbox` omits `allow-scripts` and `allow-same-origin`. Script in an email cannot execute and cannot reach this origin — that is the actual boundary, not the sanitiser.
 - DOMPurify runs as defence in depth, and rewrites every link to `target="_blank" rel="noopener noreferrer nofollow"`.
 - Remote images, `srcset`, `poster`, `background`, and remote `url()` in inline CSS are stripped by default and restored only when the user clicks **Show images** (or trusts the sender). A remote image in an email is a read receipt the sender never asked permission for.
+
+**Serving stored files**
+
+Blob bytes are proxied by the backend rather than fetched directly, because the
+bearer token lives in the encrypted session and never reaches the browser. That
+makes this app the origin serving user-supplied content, which is the sharp edge:
+a stored HTML or SVG file rendered inline would execute as **first-party** script
+with access to everything on the origin. Three independent defences apply:
+
+- an allow-list of media types that may render inline — anything script-capable
+  (`text/html`, `image/svg+xml`, `application/xhtml+xml`, …) is not on it and is
+  forced to `application/octet-stream`;
+- `Content-Disposition: attachment` for everything outside that allow-list, with
+  an RFC 6266 `filename*` so a hostile filename cannot inject headers;
+- a per-response `Content-Security-Policy: sandbox; default-src 'none'`, which
+  strips script and same-origin privileges even if the first two were wrong.
+
+Blob ids are validated against a conservative character class and percent-encoded
+before interpolation, so they cannot add path segments or query parameters to the
+upstream download URL. Uploads have their own 64 MiB ceiling
+(`MAX_UPLOAD_BYTES`) kept deliberately separate from the 1 MiB JMAP body cap —
+raising one limit for everything would have thrown away the protection the tight
+cap provides.
 
 **Transport and abuse**
 

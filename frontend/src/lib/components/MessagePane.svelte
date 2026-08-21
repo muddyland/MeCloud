@@ -10,6 +10,8 @@
   import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
   import { toast } from '$lib/stores/toast.js';
   import { sanitizeEmailHtml, escapeText, decodeEntities } from '$lib/sanitize.js';
+  import { formatBytes } from '$lib/fileTypes.js';
+  import { downloadNode } from '$lib/files.js';
   import { isTrustedSender, trustSender } from '$lib/trustedSenders.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
@@ -327,15 +329,6 @@
     }
   }
 
-  function formatBytes(bytes) {
-    if (!bytes) return '';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let value = bytes;
-    let unit = 0;
-    while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit += 1; }
-    return `${value < 10 && unit > 0 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
-  }
-
   $: attachments = (email?.attachments ?? []).filter(a => a?.disposition !== 'inline');
 
   // Publish this message's actions so the page-level keyboard handler can drive
@@ -498,13 +491,25 @@
                 {attachments.length}
               </span>
               {#each attachments as att}
-                <span class="inline-flex items-center gap-1.5 max-w-[14rem] px-2 py-1 rounded-md
-                             bg-gray-100 dark:bg-gray-700/60 text-xs text-gray-600 dark:text-gray-300">
+                <button
+                  on:click={() => downloadNode({ blobId: att.blobId, name: att.name, type: att.type })}
+                  disabled={!att.blobId}
+                  title={att.blobId ? `Download ${att.name || 'attachment'}` : 'This attachment has no downloadable content'}
+                  class="inline-flex items-center gap-1.5 max-w-[14rem] px-2 py-1 rounded-md
+                         bg-gray-100 dark:bg-gray-700/60 text-xs text-gray-600 dark:text-gray-300
+                         hover:bg-gray-200 dark:hover:bg-gray-600
+                         disabled:opacity-50 disabled:cursor-not-allowed
+                         transition-colors duration-150"
+                >
+                  <svg class="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                       stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M12 3v12m0 0-4-4m4 4 4-4M5 19h14" />
+                  </svg>
                   <span class="truncate">{att.name || 'attachment'}</span>
                   {#if att.size}
                     <span class="text-gray-400 dark:text-gray-500 flex-shrink-0">{formatBytes(att.size)}</span>
                   {/if}
-                </span>
+                </button>
               {/each}
             </div>
           {/if}

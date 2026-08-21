@@ -39,7 +39,14 @@ async function apiFetch(url, options = {}) {
   return res;
 }
 
-async function post(methodCalls, using = ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail']) {
+/**
+ * Issue a JMAP request through the backend proxy.
+ *
+ * Exported as `jmapPost` so sibling modules (files.js) reuse this one
+ * transport — with its timeout, 401 handling, activity tracking and error
+ * message extraction — rather than reimplementing fetch against /api/jmap.
+ */
+export async function jmapPost(methodCalls, using = ['urn:ietf:params:jmap:core', 'urn:ietf:params:jmap:mail']) {
   const res = await apiFetch('/api/jmap', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -49,6 +56,9 @@ async function post(methodCalls, using = ['urn:ietf:params:jmap:core', 'urn:ietf
   if (!res.ok) throw new Error(await errorMessage(res, 'JMAP request failed'));
   return res.json();
 }
+
+// Internal alias — the rest of this module was written against `post`.
+const post = jmapPost;
 
 /** Prefer the server's `detail` over a bare status code — it is user-readable. */
 async function errorMessage(res, fallback) {

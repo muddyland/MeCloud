@@ -26,6 +26,9 @@ from .jmap import (
     get_jmap_session, jmap_request, jmap_event_stream,
     get_sieve_script, save_sieve_script, invalidate_session,
 )
+from .blobs import (
+    BlobStream, content_disposition, open_blob, safe_content_type, upload_blob,
+)
 from .models import JMAPRequest
 from .session import EncryptedSessionMiddleware
 
@@ -65,7 +68,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"]          = "DENY"
         response.headers["Referrer-Policy"]          = "strict-origin-when-cross-origin"
         response.headers["Permissions-Policy"]       = "camera=(), microphone=(), geolocation=()"
-        response.headers["Content-Security-Policy"]  = _CSP
+        # setdefault, not assignment: the blob download route sets its own
+        # `sandbox` policy to neutralise user-supplied content, and this
+        # middleware must not overwrite it with the permissive app policy.
+        response.headers.setdefault("Content-Security-Policy", _CSP)
         response.headers["Cross-Origin-Opener-Policy"]   = "same-origin"
         response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
 
@@ -81,6 +87,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# Declared here because the body-size middleware registration below needs it.
+UPLOAD_PATH = "/api/files/blob"
+
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 
 
@@ -93,21 +102,29 @@ class BodySizeLimitMiddleware:
     simply omit the header to bypass the check.
     """
 
-    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+    def __init__(self, app: ASGIApp, max_bytes: int, upload_max_bytes: int,
+                 upload_paths: tuple[str, ...] = ()) -> None:
         self.app = app
         self.max_bytes = max_bytes
+        self.upload_max_bytes = upload_max_bytes
+        self.upload_paths = upload_paths
+
+    def limit_for(self, path: str) -> int:
+        """Uploads get their own ceiling; everything else keeps the tight one."""
+        return self.upload_max_bytes if path.startswith(self.upload_paths) else self.max_bytes
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
+        max_bytes = self.limit_for(scope.get("path", ""))
         headers = dict(scope.get("headers") or [])
         declared = headers.get(b"content-length")
 
         if declared is not None:
             try:
-                too_big = int(declared) > self.max_bytes
+                too_big = int(declared) > max_bytes
             except ValueError:
                 too_big = True
             if too_big:
@@ -126,7 +143,7 @@ class BodySizeLimitMiddleware:
             if message["type"] != "http.request":
                 break
             body.extend(message.get("body", b""))
-            if len(body) > self.max_bytes:
+            if len(body) > max_bytes:
                 await self._too_large(scope, send)
                 return
             if not message.get("more_body", False):
@@ -186,9 +203,12 @@ async def _upstream_error_handler(request: Request, exc: UpstreamError):
     if exc.is_auth_failure:
         request.session.clear()
         return JSONResponse({"detail": "Session expired, please log in again"}, status_code=401)
+    # Pass through statuses the client can act on; collapse the rest to 502 so
+    # upstream internals are not echoed back.
+    if exc.status in (400, 404, 413, 503):
+        return JSONResponse({"detail": str(exc)}, status_code=exc.status)
     logger.error("Upstream error on %s: %s", request.url.path, exc)
-    status = 503 if exc.status == 503 else 502
-    return JSONResponse({"detail": "Upstream service error"}, status_code=status)
+    return JSONResponse({"detail": "Upstream service error"}, status_code=502)
 
 
 @app.exception_handler(httpx.HTTPError)
@@ -220,7 +240,12 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type"],
 )
-app.add_middleware(BodySizeLimitMiddleware, max_bytes=settings.max_request_bytes)
+app.add_middleware(
+    BodySizeLimitMiddleware,
+    max_bytes=settings.max_request_bytes,
+    upload_max_bytes=settings.max_upload_bytes,
+    upload_paths=(UPLOAD_PATH,),
+)
 app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
@@ -401,6 +426,67 @@ async def sieve_put(request: Request, payload: SieveSaveRequest,
     return await save_sieve_script(
         access_token, payload.id, payload.name, payload.content, payload.makeActive
     )
+
+
+# ── File storage blobs (JMAP for File Storage, urn:ietf:params:jmap:filenode) ──
+#
+# FileNode metadata rides the ordinary /api/jmap proxy. Only the bytes need
+# these routes, because the bearer token lives in the server-side session and
+# the browser therefore cannot reach the JMAP upload/download endpoints itself.
+
+@app.post(UPLOAD_PATH)
+@limiter.limit("60/minute")
+async def upload_file_blob(request: Request, access_token: str = Depends(require_auth)):
+    """Stream a request body up to the JMAP upload endpoint."""
+    result = await upload_blob(
+        access_token,
+        request.headers.get("content-type", "application/octet-stream"),
+        request.stream(),
+    )
+    return {
+        "blobId": result.get("blobId"),
+        "type": result.get("type"),
+        "size": result.get("size"),
+    }
+
+
+@app.get(UPLOAD_PATH + "/{blob_id}")
+@limiter.limit("240/minute")
+async def download_file_blob(
+    request: Request,
+    blob_id: str,
+    name: str = "",
+    type: str = "",
+    inline: bool = False,
+    access_token: str = Depends(require_auth),
+):
+    """Stream a blob back to the browser, defanged.
+
+    Serving user-supplied bytes from our own origin is the sharp edge here: an
+    HTML or SVG file rendered inline would execute as first-party script, with
+    access to everything on this origin. So the response is neutralised three
+    ways — an allow-list of types that may render inline (everything else is
+    forced to application/octet-stream), an attachment disposition unless the
+    type is on that list, and a per-response `sandbox` CSP that strips the
+    document of script and same-origin privileges even if the first two are
+    somehow wrong.
+    """
+    stream: BlobStream = await open_blob(access_token, blob_id, name, type)
+
+    resolved_type = safe_content_type(type or stream.response.headers.get("content-type"),
+                                      inline=inline)
+    render_inline = inline and resolved_type != "application/octet-stream"
+
+    headers = {
+        "Content-Disposition": content_disposition(name, inline=render_inline),
+        # Overrides the app-wide policy via setdefault in SecurityHeadersMiddleware.
+        "Content-Security-Policy": "sandbox; default-src 'none'; base-uri 'none'",
+        "X-Content-Type-Options": "nosniff",
+    }
+    if stream.upstream_size:
+        headers["Content-Length"] = stream.upstream_size
+
+    return StreamingResponse(stream.chunks(), media_type=resolved_type, headers=headers)
 
 
 # Paths the single-page-app fallback must never answer for. Anything under these
