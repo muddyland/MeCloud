@@ -244,7 +244,8 @@ async def test_security_headers_present(client):
     assert "content-security-policy" in r.headers
     csp = r.headers["content-security-policy"]
     assert "object-src 'none'" in csp
-    assert "frame-src 'none'" in csp
+    # 'self', not 'none' — the file preview frames same-origin blob responses.
+    assert "frame-src 'self'" in csp
     assert "base-uri 'self'" in csp
     assert "frame-ancestors 'none'" in csp
 
@@ -325,3 +326,25 @@ async def test_unknown_api_path_returns_json_404(client):
     r = await client.get("/api/does-not-exist")
     assert r.status_code == 404
     assert r.json()["detail"] == "Not found"
+
+
+# ---------------------------------------------------------------------------
+# Rate limiting
+#
+# A folder drop in the Files app fires one upload per file, so tripping a
+# per-minute limit is an ordinary consequence of ordinary use. The client waits
+# it out — which it can only do if the response says how long.
+# ---------------------------------------------------------------------------
+
+async def test_rate_limited_response_carries_retry_after(client):
+    """slowapi's stock handler sends no Retry-After, leaving callers guessing."""
+    last = None
+    for _ in range(25):                      # /auth/login is 20/minute
+        last = await client.get("/auth/login", follow_redirects=False)
+        if last.status_code == 429:
+            break
+
+    assert last.status_code == 429, "expected the login limiter to trip"
+    assert "retry-after" in last.headers
+    assert int(last.headers["retry-after"]) > 0
+    assert last.json()["detail"].startswith("Too many requests")

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
@@ -27,7 +27,8 @@ from .jmap import (
     get_sieve_script, save_sieve_script, invalidate_session,
 )
 from .blobs import (
-    BlobStream, content_disposition, open_blob, safe_content_type, upload_blob,
+    BlobStream, blob_csp, content_disposition, open_blob, safe_content_type,
+    upload_blob,
 )
 from .models import JMAPRequest
 from .session import EncryptedSessionMiddleware
@@ -49,8 +50,10 @@ _CSP = (
     "img-src 'self' data: blob: https:; "    # emails may contain external images
     "font-src 'self' data:; "
     "connect-src 'self'; "
-    "frame-src 'none'; "
-    "child-src 'none'; "
+    # 'self', not 'none': the file preview frames same-origin blob responses.
+    # Cross-origin framing stays impossible, and the framed response carries its
+    # own restrictive policy plus nosniff (see blobs.blob_csp).
+    "frame-src 'self'; "
     "worker-src 'self'; "                    # service worker
     "manifest-src 'self'; "
     "media-src 'self' data:; "
@@ -190,7 +193,31 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="JMAP Mail", lifespan=lifespan, docs_url=None, redoc_url=None)
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    """429 with a Retry-After the client can actually act on.
+
+    slowapi's stock handler sends none, which leaves a caller guessing. That
+    matters for file uploads: dropping a folder fires one request per file, so
+    hitting a per-minute limit is an ordinary consequence of ordinary use, and
+    the client waits the advised time rather than failing the upload.
+
+    The window length is a ceiling, not the exact reset, so the client may wait
+    slightly longer than strictly required — which is the right direction to err.
+    """
+    retry_after = 60
+    try:
+        retry_after = int(exc.limit.limit.get_expiry())
+    except Exception:      # noqa: BLE001 — never let telemetry break the response
+        logger.debug("Could not derive Retry-After from %r", exc.limit)
+
+    return JSONResponse(
+        {"detail": "Too many requests — please slow down."},
+        status_code=429,
+        headers={"Retry-After": str(retry_after)},
+    )
 
 
 @app.exception_handler(UpstreamError)
@@ -375,7 +402,7 @@ async def jmap_session(request: Request, access_token: str = Depends(require_aut
 
 
 @app.post("/api/jmap")
-@limiter.limit("300/minute")
+@limiter.limit(settings.rate_limit_jmap)
 async def jmap_proxy(request: Request, payload: JMAPRequest, access_token: str = Depends(require_auth)):
     return await jmap_request(access_token, payload.model_dump())
 
@@ -435,7 +462,7 @@ async def sieve_put(request: Request, payload: SieveSaveRequest,
 # the browser therefore cannot reach the JMAP upload/download endpoints itself.
 
 @app.post(UPLOAD_PATH)
-@limiter.limit("60/minute")
+@limiter.limit(settings.rate_limit_upload)
 async def upload_file_blob(request: Request, access_token: str = Depends(require_auth)):
     """Stream a request body up to the JMAP upload endpoint."""
     result = await upload_blob(
@@ -451,7 +478,7 @@ async def upload_file_blob(request: Request, access_token: str = Depends(require
 
 
 @app.get(UPLOAD_PATH + "/{blob_id}")
-@limiter.limit("240/minute")
+@limiter.limit(settings.rate_limit_download)
 async def download_file_blob(
     request: Request,
     blob_id: str,
@@ -480,7 +507,7 @@ async def download_file_blob(
     headers = {
         "Content-Disposition": content_disposition(name, inline=render_inline),
         # Overrides the app-wide policy via setdefault in SecurityHeadersMiddleware.
-        "Content-Security-Policy": "sandbox; default-src 'none'; base-uri 'none'",
+        "Content-Security-Policy": blob_csp(inline=render_inline),
         "X-Content-Type-Options": "nosniff",
     }
     if stream.upstream_size:

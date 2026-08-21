@@ -42,6 +42,14 @@ class Settings(BaseSettings):
     upstream_connect_timeout: float = 5.0
     upstream_read_timeout: float = 30.0
 
+    # Rate limits, as slowapi strings. Exposed as settings because the right
+    # values depend on how the deployment is used: a Drive-style file browser
+    # legitimately bursts one upload per file when a folder is dropped, which is
+    # nothing like the traffic a mail-only deployment produces.
+    rate_limit_jmap: str = "600/minute"
+    rate_limit_upload: str = "240/minute"
+    rate_limit_download: str = "240/minute"
+
     # Per-user cap on concurrent Server-Sent Event streams. Each stream holds an
     # upstream connection open, so an unbounded count is a self-inflicted DoS.
     max_event_streams: int = 64

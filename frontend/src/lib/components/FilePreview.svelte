@@ -3,7 +3,7 @@
   import Spinner from './Spinner.svelte';
   import { previewNode } from '$lib/stores/files.js';
   import { blobUrl, downloadNode, fetchTextBlob } from '$lib/files.js';
-  import { fileKind, formatBytes } from '$lib/fileTypes.js';
+  import { fileKind, formatBytes, isPreviewable } from '$lib/fileTypes.js';
 
   let textContent = '';
   let loadingText = false;
@@ -56,9 +56,13 @@
       <img {src} alt={node.name}
            class="max-w-full max-h-[70vh] object-contain" />
     {:else if kind === 'pdf'}
-      <!-- The backend serves this sandboxed and nosniff'd; the iframe adds a
-           second layer so a PDF that is really something else cannot act. -->
-      <iframe {src} title={node.name} sandbox=""
+      <!-- Deliberately not sandbox="": an empty sandbox disables plugins, and
+           the browser's PDF viewer is one, so the frame rendered as "This
+           content is blocked". Safety comes from the response instead — the
+           backend only ever serves inline types from a fixed allow-list that
+           excludes everything script-capable, with nosniff and a restrictive
+           per-response CSP. -->
+      <iframe {src} title={node.name} referrerpolicy="no-referrer"
               class="w-full h-[70vh] border-0 bg-white"></iframe>
     {:else if kind === 'video'}
       <!-- svelte-ignore a11y-media-has-caption -->
@@ -89,9 +93,27 @@
   </div>
 
   <svelte:fragment slot="footer">
-    <span class="text-xs text-gray-400 dark:text-gray-500 truncate">
+    <span class="text-xs text-gray-400 dark:text-gray-500 truncate min-w-0">
       {node?.modified ? new Date(node.modified).toLocaleString() : ''}
     </span>
+    <div class="flex items-center gap-1 flex-shrink-0">
+    {#if node && isPreviewable(node)}
+      <a
+        href={src}
+        target="_blank"
+        rel="noopener noreferrer"
+        class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg
+               text-gray-600 dark:text-gray-300
+               hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-150"
+      >
+        <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+          <path d="M15 3h6v6M10 14 21 3" />
+        </svg>
+        Open in new tab
+      </a>
+    {/if}
     <button
       on:click={() => node && downloadNode(node)}
       class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg
@@ -103,5 +125,6 @@
       </svg>
       Download
     </button>
+    </div>
   </svelte:fragment>
 </Modal>

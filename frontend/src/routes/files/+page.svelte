@@ -288,13 +288,16 @@
   /** Upload a single file with its own progress row. */
   async function uploadOne(file, name, parentId) {
     const id = ++uploadSeq;
-    uploads.update((u) => [...u, { id, name, progress: 0, error: '', done: false }]);
+    uploads.update((u) => [...u, { id, name, progress: 0, error: '', waiting: '', done: false }]);
     const patch = (fields) =>
       uploads.update((u) => u.map((x) => (x.id === id ? { ...x, ...fields } : x)));
 
     try {
       const created = await uploadFile($jmapAccountId, $jmapSession, file, {
-        parentId, name, onProgress: (p) => patch({ progress: p }),
+        parentId,
+        name,
+        onProgress: (p) => patch({ progress: p, waiting: '' }),
+        onWait: (ms) => patch({ waiting: `rate limited — retrying in ${Math.ceil(ms / 1000)}s` }),
       });
       fileNodes.update((list) => [...list, created]);
       patch({ progress: 1, done: true });
@@ -613,6 +616,10 @@
               <span class="text-xs text-gray-600 dark:text-gray-300 truncate flex-1 min-w-0">{up.name}</span>
               {#if up.error}
                 <span class="text-xs text-red-500 truncate max-w-[16rem]">{up.error}</span>
+              {:else if up.waiting}
+                <span class="text-xs text-amber-600 dark:text-amber-400 truncate max-w-[16rem]">
+                  {up.waiting}
+                </span>
               {:else}
                 <div class="w-32 h-1 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden flex-shrink-0">
                   <div class="h-full bg-blue-500 transition-all duration-150"

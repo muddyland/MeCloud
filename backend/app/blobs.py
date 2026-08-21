@@ -52,6 +52,33 @@ def safe_content_type(declared: str | None, *, inline: bool) -> str:
     return "application/octet-stream"
 
 
+def blob_csp(*, inline: bool) -> str:
+    """The Content-Security-Policy to serve a blob under.
+
+    Downloads get a blanket `sandbox`: nothing renders, so the strictest
+    possible policy is free.
+
+    Inline responses cannot use `sandbox`. A fully-restrictive sandbox disables
+    plugins, and the browser's built-in PDF viewer is one — it is why a PDF
+    preview came back as "This content is blocked" rather than rendering. The
+    protection that actually matters is unchanged and sits earlier: only types
+    on INLINE_SAFE_TYPES are ever served inline, and that list deliberately
+    excludes everything that can carry script (text/html, image/svg+xml,
+    application/xhtml+xml). Combined with `nosniff`, the browser cannot be
+    talked into treating these bytes as a document that executes.
+    """
+    if not inline:
+        return "sandbox; default-src 'none'; base-uri 'none'"
+    return (
+        "default-src 'none'; "
+        "img-src 'self' data: blob:; "
+        "media-src 'self' blob:; "
+        "object-src 'none'; "
+        "base-uri 'none'; "
+        "form-action 'none'"
+    )
+
+
 def content_disposition(name: str | None, *, inline: bool) -> str:
     """RFC 6266 disposition with an ASCII fallback and a UTF-8 filename*."""
     raw = (name or "download").strip() or "download"

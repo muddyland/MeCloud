@@ -15,6 +15,43 @@ export const FILENODE_CAPABILITY = 'urn:ietf:params:jmap:filenode';
 /** Blob transfer endpoints, served by the backend. */
 const BLOB_PATH = '/api/files/blob';
 
+/** Upload retry policy for rate limiting. */
+const MAX_UPLOAD_ATTEMPTS = 4;
+const MAX_RETRY_DELAY_MS = 30_000;
+
+/**
+ * Parse a Retry-After header: either delta-seconds or an HTTP date.
+ * Returns milliseconds, or null when absent or unparseable.
+ */
+export function parseRetryAfter(value, now = Date.now()) {
+  if (value === null || value === undefined || value === '') return null;
+  const raw = String(value).trim();
+
+  if (/^\d+$/.test(raw)) return Number(raw) * 1000;
+
+  const at = Date.parse(raw);
+  if (Number.isNaN(at)) return null;
+  return Math.max(0, at - now);
+}
+
+/**
+ * How long to wait before retrying a rate-limited upload.
+ *
+ * Dropping a folder legitimately fires one request per file, so hitting the
+ * per-minute limit is an expected outcome of normal use rather than abuse —
+ * the client waits it out instead of failing the upload. The server's
+ * Retry-After wins when present; otherwise exponential backoff with jitter so
+ * a batch does not resume in lockstep.
+ */
+export function retryDelayMs(attempt, retryAfter, { random = Math.random, now = Date.now() } = {}) {
+  const advised = parseRetryAfter(retryAfter, now);
+  if (advised !== null) return Math.min(advised, MAX_RETRY_DELAY_MS);
+  const backoff = Math.min(MAX_RETRY_DELAY_MS, 1000 * 2 ** attempt);
+  return Math.round(backoff + random() * 500);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 function fileUsing(session) {
   const caps = Object.keys(session?.capabilities ?? {});
   return caps.length ? caps : ['urn:ietf:params:jmap:core', FILENODE_CAPABILITY];
@@ -155,7 +192,7 @@ export function blobUrl(node, { inline = false } = {}) {
  *
  * @returns {Promise<{blobId: string, type: string, size: number}>}
  */
-export function uploadBlob(file, { onProgress, signal } = {}) {
+function uploadBlobOnce(file, { onProgress, signal } = {}) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     begin();
@@ -182,6 +219,15 @@ export function uploadBlob(file, { onProgress, signal } = {}) {
       }
       if (xhr.status === 413) {
         fail(new Error(`"${file.name}" is too large to upload.`));
+        return;
+      }
+      if (xhr.status === 429) {
+        // Surface the server's advice so the caller can wait exactly as long
+        // as it asked, rather than guessing.
+        const err = new Error('Rate limited');
+        err.rateLimited = true;
+        err.retryAfter = xhr.getResponseHeader('Retry-After');
+        fail(err);
         return;
       }
       if (xhr.status < 200 || xhr.status >= 300) {
@@ -213,9 +259,35 @@ export function uploadBlob(file, { onProgress, signal } = {}) {
   });
 }
 
+/**
+ * Upload one blob, waiting out rate limits rather than failing on them.
+ *
+ * @param {object} [opts.onWait] called with (ms, attempt) while backing off, so
+ *        the UI can say "waiting" instead of appearing to stall.
+ */
+export async function uploadBlob(file, { onProgress, signal, onWait } = {}) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await uploadBlobOnce(file, { onProgress, signal });
+    } catch (err) {
+      const canRetry = err?.rateLimited && attempt < MAX_UPLOAD_ATTEMPTS - 1;
+      if (!canRetry) {
+        if (err?.rateLimited) {
+          throw new Error('The server is rate limiting uploads — try again shortly.');
+        }
+        throw err;
+      }
+      const delay = retryDelayMs(attempt, err.retryAfter);
+      onWait?.(delay, attempt + 1);
+      await sleep(delay);
+      if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
+    }
+  }
+}
+
 /** Upload the bytes, then create the FileNode that points at them. */
-export async function uploadFile(accountId, session, file, { parentId = null, name, onProgress, signal } = {}) {
-  const blob = await uploadBlob(file, { onProgress, signal });
+export async function uploadFile(accountId, session, file, { parentId = null, name, onProgress, onWait, signal } = {}) {
+  const blob = await uploadBlob(file, { onProgress, onWait, signal });
   return createFile(accountId, session, {
     name: name ?? file.name,
     blobId: blob.blobId,

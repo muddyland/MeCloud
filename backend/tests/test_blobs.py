@@ -9,7 +9,8 @@ import pytest
 from unittest.mock import AsyncMock, patch
 
 from app.blobs import (
-    INLINE_SAFE_TYPES, content_disposition, safe_content_type, validate_blob_id,
+    INLINE_SAFE_TYPES, blob_csp, content_disposition, safe_content_type,
+    validate_blob_id,
 )
 from app.http import UpstreamError
 from app.main import BodySizeLimitMiddleware, UPLOAD_PATH
@@ -198,7 +199,13 @@ async def test_download_allows_inline_for_an_image(auth_client):
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("image/png")
     assert r.headers["content-disposition"].startswith("inline;")
-    assert "sandbox" in r.headers["content-security-policy"]
+    # Not sandboxed — a blanket sandbox disables the plugins that render an
+    # inline preview. The type allow-list is what keeps this safe, so assert
+    # the policy still grants no way to execute anything.
+    policy = r.headers["content-security-policy"]
+    assert "sandbox" not in policy
+    assert "default-src 'none'" in policy
+    assert "script-src" not in policy
 
 
 async def test_download_is_never_cached(auth_client):
@@ -206,3 +213,67 @@ async def test_download_is_never_cached(auth_client):
         m.return_value = _FakeStream(b"secret", "text/plain")
         r = await auth_client.get(f"{UPLOAD_PATH}/abc123", params={"name": "s.txt"})
     assert "no-store" in r.headers.get("cache-control", "")
+
+
+# ---------------------------------------------------------------------------
+# Response CSP
+#
+# A blanket `sandbox` is correct for a download and wrong for a preview: it
+# disables plugins, and the browser's PDF viewer is one, so a PDF preview came
+# back as "This content is blocked" instead of rendering.
+# ---------------------------------------------------------------------------
+
+def test_downloads_are_fully_sandboxed():
+    policy = blob_csp(inline=False)
+    assert "sandbox" in policy
+    assert "default-src 'none'" in policy
+
+
+def test_inline_previews_are_not_sandboxed():
+    policy = blob_csp(inline=True)
+    assert "sandbox" not in policy
+
+
+def test_inline_policy_still_forbids_active_content():
+    policy = blob_csp(inline=True)
+    # No script-src grant of any kind, and nothing may be embedded or submitted.
+    assert "default-src 'none'" in policy
+    assert "object-src 'none'" in policy
+    assert "form-action 'none'" in policy
+    assert "'unsafe-inline'" not in policy
+    assert "'unsafe-eval'" not in policy
+    assert "script-src" not in policy
+
+
+def test_inline_policy_permits_only_passive_resources():
+    policy = blob_csp(inline=True)
+    assert "img-src" in policy
+    assert "media-src" in policy
+
+
+async def test_pdf_preview_is_served_renderable(auth_client):
+    """The whole point of the change: a PDF preview must not be sandboxed."""
+    with patch("app.main.open_blob", new_callable=AsyncMock) as m:
+        m.return_value = _FakeStream(b"%PDF-1.7", "application/pdf")
+        r = await auth_client.get(
+            f"{UPLOAD_PATH}/abc123",
+            params={"name": "doc.pdf", "type": "application/pdf", "inline": "true"},
+        )
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("application/pdf")
+    assert r.headers["content-disposition"].startswith("inline;")
+    assert "sandbox" not in r.headers["content-security-policy"]
+    assert r.headers["x-content-type-options"] == "nosniff"
+
+
+async def test_html_is_still_sandboxed_even_when_inline_is_requested(auth_client):
+    """Relaxing the preview policy must not relax the type allow-list."""
+    with patch("app.main.open_blob", new_callable=AsyncMock) as m:
+        m.return_value = _FakeStream(b"<script>alert(1)</script>", "text/html")
+        r = await auth_client.get(
+            f"{UPLOAD_PATH}/abc123",
+            params={"name": "evil.html", "type": "text/html", "inline": "true"},
+        )
+    assert r.headers["content-type"].startswith("application/octet-stream")
+    assert r.headers["content-disposition"].startswith("attachment;")
+    assert "sandbox" in r.headers["content-security-policy"]
