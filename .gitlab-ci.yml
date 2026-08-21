@@ -147,19 +147,24 @@ frontend-tests:
 # projects with no Node and no npm install.
 #
 # Two environmental details, neither of them minireg's doing:
-#   • CI containers cannot resolve the internal DNS zone, so the host is pinned.
+#   • A CI container may not resolve the registry's DNS zone, so its host can be
+#     pinned into /etc/hosts when resolution fails.
 #   • python:*-slim ships no curl, so the CLI is fetched with stdlib urllib.
 #
-# The job runs only when MINIREG_ENABLED is exactly "true". Two CI/CD variables
-# are needed (Settings → CI/CD → Variables):
+# The job runs only when MINIREG_ENABLED is exactly "true". Everything it needs
+# comes from CI/CD variables (Settings → CI/CD → Variables) and nothing is
+# declared in this file — deliberately, so a public mirror of this repository
+# discloses no internal hostnames or addresses, and so project settings cannot
+# be shadowed here:
 #
-#   MINIREG_ENABLED = true          the opt-in switch
-#   MINIREG_TOKEN   = <read token>  masked; `read` scope is enough
+#   MINIREG_ENABLED = true              the opt-in switch
+#   MINIREG_URL     = <registry base>   e.g. https://registry.example.internal
+#   MINIREG_TOKEN   = <read token>      masked; `read` scope is enough
+#   MINIREG_HOST_IP = <ip>              optional; only if DNS cannot resolve it
 #
 # An explicit flag rather than inferring from the token's presence: whether a
 # security gate is active should be a stated decision, not a side effect of
-# which secrets happen to exist. Neither variable is declared here, so the
-# project settings are the only source and cannot be shadowed by this file.
+# which secrets happen to exist.
 # ---------------------------------------------------------------------------
 dependency-audit:
   stage: test
@@ -169,20 +174,28 @@ dependency-audit:
   # Reads no build artifact, so it can start immediately rather than waiting
   # for the image build — security feedback arrives with the unit tests.
   needs: []
-  variables:
-    MINIREG_URL: https://minireg.dmz.mudhut.xyz
-    MINIREG_HOST_IP: "10.12.0.185"
   before_script:
     - |
-      if [ -z "${MINIREG_TOKEN:-}" ]; then
-        echo "ERROR: MINIREG_ENABLED is true but MINIREG_TOKEN is not set."
-        echo "Add it under Settings > CI/CD > Variables (masked, 'read' scope),"
+      missing=""
+      [ -n "${MINIREG_URL:-}" ]   || missing="$missing MINIREG_URL"
+      [ -n "${MINIREG_TOKEN:-}" ] || missing="$missing MINIREG_TOKEN"
+      if [ -n "$missing" ]; then
+        echo "ERROR: MINIREG_ENABLED is true but these are not set:$missing"
+        echo "Add them under Settings > CI/CD > Variables (mask MINIREG_TOKEN),"
         echo "or set MINIREG_ENABLED to anything other than 'true' to skip this job."
         exit 1
       fi
     - |
-      getent hosts minireg.dmz.mudhut.xyz >/dev/null 2>&1 \
-        || echo "$MINIREG_HOST_IP minireg.dmz.mudhut.xyz" >> /etc/hosts
+      # Pin the registry host only if the runner cannot resolve it. The hostname
+      # is derived from MINIREG_URL so it never has to appear in this file.
+      registry_host=$(printf '%s' "$MINIREG_URL" | sed -E 's#^[a-zA-Z]+://##; s#[:/].*$##')
+      if ! getent hosts "$registry_host" >/dev/null 2>&1; then
+        if [ -n "${MINIREG_HOST_IP:-}" ]; then
+          echo "$MINIREG_HOST_IP $registry_host" >> /etc/hosts
+        else
+          echo "WARNING: cannot resolve the registry host and MINIREG_HOST_IP is unset."
+        fi
+      fi
     - |
       python3 - <<'PY'
       import os, urllib.request

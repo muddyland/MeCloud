@@ -147,7 +147,12 @@ It is **off unless explicitly enabled.** Two CI/CD variables are needed under
 | Variable | Value | Notes |
 |---|---|---|
 | `MINIREG_ENABLED` | `true` | The opt-in switch — the job is skipped for any other value, including unset |
+| `MINIREG_URL` | registry base URL | e.g. `https://registry.example.internal` |
 | `MINIREG_TOKEN` | a read token | Mask it; `read` scope is sufficient |
+| `MINIREG_HOST_IP` | registry IP | Optional — only if CI runners cannot resolve the hostname |
+
+None of these are committed. The pipeline reads them from project settings so
+that this repository discloses no internal hostnames or addresses.
 
 An explicit flag rather than inferring from the token's presence: whether a
 security gate is running should be a stated decision, not a side effect of which
@@ -158,8 +163,8 @@ opaque *not logged in*.
 To run the same scan locally:
 
 ```bash
-curl -fsSL https://minireg.dmz.mudhut.xyz/api/cli/install.sh | sh
-minireg login
+curl -fsSL "$MINIREG_URL/api/cli/install.sh" | sh
+minireg login --url "$MINIREG_URL"
 minireg audit backend
 minireg audit frontend
 ```
