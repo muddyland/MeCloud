@@ -108,7 +108,15 @@ export async function createFolder(accountId, session, name, parentId = null) {
   const resp = data?.methodResponses?.[0]?.[1];
   const err = firstSetError(resp, 'nf');
   if (err) throw new Error(err.description || 'Could not create the folder.');
-  return { name, parentId, blobId: null, ...(resp?.created?.nf ?? {}) };
+
+  const created = resp?.created?.nf;
+  // A create that returns neither `created` nor `notCreated` has not happened.
+  // Returning an id-less node here put a phantom row in the listing that looked
+  // saved until the next reload — fail loudly instead.
+  if (!created?.id) {
+    throw new Error('The server did not confirm the new folder was created.');
+  }
+  return { name, parentId, blobId: null, ...created };
 }
 
 /** Attach an already-uploaded blob to a new FileNode. */
@@ -123,7 +131,12 @@ export async function createFile(accountId, session, { name, blobId, type, size,
   const resp = data?.methodResponses?.[0]?.[1];
   const err = firstSetError(resp, 'nn');
   if (err) throw new Error(err.description || 'Could not save the file.');
-  return { name, parentId, blobId, type, size, ...(resp?.created?.nn ?? {}) };
+
+  const created = resp?.created?.nn;
+  if (!created?.id) {
+    throw new Error('The server did not confirm the file was saved.');
+  }
+  return { name, parentId, blobId, type, size, ...created };
 }
 
 export async function updateNode(accountId, session, id, patch) {

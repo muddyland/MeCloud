@@ -38,6 +38,7 @@
   let newFolderName  = '';
   let confirmingDelete = false;
   let deleting = false;
+  let uploadError = '';
 
   $: limits = fileLimits($jmapSession);
   $: trail  = breadcrumbTrail($nodesById, $currentFolderId);
@@ -97,13 +98,19 @@
     const name = newFolderName.trim();
     const problem = validateName(name, { maxLength: limits.maxNameLength });
     if (problem) { toast(problem, 'error'); return; }
+    if (!$currentFolderId && !limits.mayCreateTopLevel) {
+      toast('This server does not allow folders at the top level — open a folder first.', 'error');
+      return;
+    }
     creatingFolder = false;
     try {
       const created = await createFolder($jmapAccountId, $jmapSession, name, $currentFolderId);
       fileNodes.update((list) => [...list, created]);
       toast(`Folder "${name}" created`, 'success');
+      await reconcile();
     } catch (e) {
-      toast(e?.message ?? 'Could not create the folder.', 'error');
+      uploadError = e?.message ?? 'Could not create the folder.';
+      toast(uploadError, 'error');
     } finally {
       newFolderName = '';
     }
@@ -209,18 +216,49 @@
     const parentId = $currentFolderId;
     const taken = new Set(($childrenByParent.get(parentId ?? null) ?? []).map((n) => n.name));
 
+    let failures = 0;
     for (const file of files) {
       // Uploading two files with the same name into one folder should not
       // silently produce two identical entries.
       const name = uniqueName(file.name, taken);
       taken.add(name);
-      await uploadOne(file, name, parentId);
+      if (!(await uploadOne(file, name, parentId))) failures += 1;
+    }
+    await reconcile(failures);
+  }
+
+  /**
+   * Re-read the tree from the server after a batch of writes.
+   *
+   * Until now the listing was built purely from optimistic inserts, so it
+   * asserted success on its own authority: anything the server quietly declined
+   * still appeared in the UI and only vanished on the next reload — which is
+   * exactly what "uploads do not persist" looks like from the outside. Reading
+   * back makes the listing show what is actually stored.
+   */
+  async function reconcile(failures = 0) {
+    try {
+      const fresh = await getFileNodes($jmapAccountId, $jmapSession);
+      const before = $fileNodes.length;
+      fileNodes.set(fresh);
+      if (failures === 0 && fresh.length < before) {
+        toast('Some items were not saved by the server.', 'error');
+      }
+    } catch {
+      // Leave the optimistic view in place; the next navigation will refresh.
     }
   }
 
-  function onFilePicked(event) {
-    uploadFiles(event.currentTarget.files);
-    event.currentTarget.value = '';        // allow re-picking the same file
+  async function onFilePicked(event) {
+    const input = event.currentTarget;
+    // Deliberately not cleared until the uploads settle. On iOS the File
+    // objects are backed by the photo library, and resetting the input while
+    // one is still being read can invalidate it mid-request.
+    try {
+      await uploadFiles(input.files);
+    } finally {
+      input.value = '';                    // allow re-picking the same file
+    }
   }
 
   // dragenter/dragleave fire for every child element, so a boolean flag
@@ -261,7 +299,10 @@
     try {
       await uploadInto(tree, $currentFolderId);
     } catch (e) {
-      toast(e?.message ?? 'Upload failed.', 'error');
+      uploadError = e?.message ?? 'Upload failed.';
+      toast(uploadError, 'error');
+    } finally {
+      await reconcile();
     }
   }
 
@@ -288,7 +329,7 @@
     }
   }
 
-  /** Upload a single file with its own progress row. */
+  /** Upload a single file with its own progress row. @returns {boolean} ok */
   async function uploadOne(file, name, parentId) {
     const id = ++uploadSeq;
     uploads.update((u) => [...u, { id, name, progress: 0, error: '', waiting: '', done: false }]);
@@ -305,9 +346,14 @@
       fileNodes.update((list) => [...list, created]);
       patch({ progress: 1, done: true });
       setTimeout(() => uploads.update((u) => u.filter((x) => x.id !== id)), 1200);
+      return true;
     } catch (e) {
       patch({ error: e?.message ?? 'Upload failed.', done: true });
+      // A toast is easy to miss on a phone, so the failure also stays pinned in
+      // the upload list until dismissed.
+      uploadError = e?.message ?? 'Upload failed.';
       toast(`${name}: ${e?.message ?? 'upload failed'}`, 'error');
+      return false;
     }
   }
 
@@ -593,6 +639,24 @@
                   on:click={submitNewFolder}>Create</button>
           <button class="text-xs text-gray-400"
                   on:click={() => { creatingFolder = false; newFolderName = ''; }}>Cancel</button>
+        </div>
+      {/if}
+
+      <!-- Write failures stay on screen: a toast is far too easy to miss on a
+           phone, and a silently dropped upload is the worst outcome here. -->
+      {#if uploadError}
+        <div class="flex items-start gap-2 px-4 py-2.5 flex-shrink-0
+                    bg-red-50 dark:bg-red-900/25
+                    border-b border-red-200 dark:border-red-800/60">
+          <svg class="w-4 h-4 mt-0.5 flex-shrink-0 text-red-500" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5h.01" />
+          </svg>
+          <span class="text-xs text-red-800 dark:text-red-200 flex-1 min-w-0">{uploadError}</span>
+          <button on:click={() => (uploadError = '')} aria-label="Dismiss"
+            class="text-xs text-red-600 dark:text-red-300 hover:underline flex-shrink-0">
+            Dismiss
+          </button>
         </div>
       {/if}
 
