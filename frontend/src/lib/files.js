@@ -8,6 +8,7 @@
  * upload/download endpoints.
  */
 import { jmapPost } from './api.js';
+import { JmapSetError } from './jmapErrors.js';
 import { begin, end } from './stores/activity.js';
 
 export const FILENODE_CAPABILITY = 'urn:ietf:params:jmap:filenode';
@@ -124,7 +125,7 @@ export async function createFolder(accountId, session, name, parentId = null) {
     fileUsing(session),
   );
   const { node, error } = interpretCreate(data?.methodResponses?.[0]?.[1], 'nf');
-  if (error) throw new Error(error.description || 'Could not create the folder.');
+  if (error) throw new JmapSetError(error, 'Could not create the folder.');
   return node ? { name, parentId, blobId: null, ...node } : null;
 }
 
@@ -138,7 +139,7 @@ export async function createFile(accountId, session, { name, blobId, type, size,
     fileUsing(session),
   );
   const { node, error } = interpretCreate(data?.methodResponses?.[0]?.[1], 'nn');
-  if (error) throw new Error(error.description || 'Could not save the file.');
+  if (error) throw new JmapSetError(error, 'Could not save the file.');
   return node ? { name, parentId, blobId, type, size, ...node } : null;
 }
 
@@ -149,7 +150,7 @@ export async function updateNode(accountId, session, id, patch) {
   );
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notUpdated?.[id]) {
-    throw new Error(resp.notUpdated[id].description || 'Could not update the item.');
+    throw new JmapSetError(resp.notUpdated[id], 'Could not update the item.');
   }
 }
 
@@ -176,7 +177,7 @@ export async function destroyNodes(accountId, session, ids, { recursive = true }
   const failed = resp?.notDestroyed ? Object.keys(resp.notDestroyed) : [];
   if (failed.length) {
     const first = resp.notDestroyed[failed[0]];
-    throw new Error(first?.description || `Could not delete ${failed.length} item(s).`);
+    throw new JmapSetError(first, `Could not delete ${failed.length} item(s).`);
   }
   return resp?.destroyed ?? ids;
 }

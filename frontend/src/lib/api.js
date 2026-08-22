@@ -1,4 +1,5 @@
 import { begin, end } from '$lib/stores/activity.js';
+import { JmapSetError, findMethodError } from './jmapErrors.js';
 
 // A request that never settles leaves a spinner turning forever. Everything
 // except the event stream is bounded.
@@ -54,7 +55,14 @@ export async function jmapPost(methodCalls, using = ['urn:ietf:params:jmap:core'
   });
   if (!res) return null;
   if (!res.ok) throw new Error(await errorMessage(res, 'JMAP request failed'));
-  return res.json();
+
+  const data = await res.json();
+  // A method-level error (RFC 8620 §3.6.2) arrives with HTTP 200 and replaces
+  // the arguments a caller expects, so without this every such failure looked
+  // like an empty result and passed silently.
+  const methodError = findMethodError(data);
+  if (methodError) throw methodError;
+  return data;
 }
 
 // Internal alias — the rest of this module was written against `post`.
@@ -169,7 +177,7 @@ export async function sendEmail(accountId, identityId, {
 
   const emailResp = createData?.methodResponses?.[0]?.[1];
   if (emailResp?.notCreated?.draft) {
-    throw new Error(emailResp.notCreated.draft.description || 'Failed to create email');
+    throw new JmapSetError(emailResp.notCreated.draft, 'Failed to create email');
   }
 
   const emailId = emailResp?.created?.draft?.id;
@@ -183,7 +191,7 @@ export async function sendEmail(accountId, identityId, {
 
   const submitResp = submitData?.methodResponses?.[0]?.[1];
   if (submitResp?.notCreated?.send) {
-    throw new Error(submitResp.notCreated.send.description || 'Failed to submit email');
+    throw new JmapSetError(submitResp.notCreated.send, 'Failed to submit email');
   }
 
   return { emailId };
@@ -277,7 +285,7 @@ export async function destroyEmail(accountId, emailId) {
   ]);
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notDestroyed?.[emailId]) {
-    throw new Error(resp.notDestroyed[emailId].description || 'Delete failed');
+    throw new JmapSetError(resp.notDestroyed[emailId], 'Delete failed');
   }
 }
 
@@ -289,7 +297,7 @@ export async function moveEmail(accountId, emailId, toMailboxId, fromMailboxId) 
   ]);
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notUpdated?.[emailId]) {
-    throw new Error(resp.notUpdated[emailId].description || 'Move failed');
+    throw new JmapSetError(resp.notUpdated[emailId], 'Move failed');
   }
 }
 
@@ -299,7 +307,7 @@ export async function renameMailbox(accountId, mailboxId, newName) {
   ]);
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notUpdated?.[mailboxId]) {
-    throw new Error(resp.notUpdated[mailboxId].description || 'Rename failed');
+    throw new JmapSetError(resp.notUpdated[mailboxId], 'Rename failed');
   }
 }
 
@@ -309,7 +317,7 @@ export async function deleteMailbox(accountId, mailboxId) {
   ]);
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notDestroyed?.[mailboxId]) {
-    throw new Error(resp.notDestroyed[mailboxId].description || 'Delete failed');
+    throw new JmapSetError(resp.notDestroyed[mailboxId], 'Delete failed');
   }
 }
 
@@ -321,7 +329,7 @@ export async function createMailbox(accountId, name, parentId = null) {
   ]);
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notCreated?.newMailbox) {
-    throw new Error(resp.notCreated.newMailbox.description || 'Create failed');
+    throw new JmapSetError(resp.notCreated.newMailbox, 'Create failed');
   }
   const created = resp?.created?.newMailbox ?? null;
   if (!created) return null;
@@ -339,7 +347,7 @@ export async function bulkMarkSeen(accountId, emailIds, seen) {
   const failed = resp?.notUpdated ? Object.keys(resp.notUpdated) : [];
   if (failed.length > 0) {
     const first = resp.notUpdated[failed[0]];
-    throw new Error(first?.description || `Could not update ${failed.length} message(s)`);
+    throw new JmapSetError(first, `Could not update ${failed.length} message(s)`);
   }
 }
 
@@ -349,7 +357,7 @@ export async function bulkDestroy(accountId, emailIds) {
   const failed = resp?.notDestroyed ? Object.keys(resp.notDestroyed) : [];
   if (failed.length > 0) {
     const first = resp.notDestroyed[failed[0]];
-    throw new Error(first?.description || `Delete failed for ${failed.length} message(s)`);
+    throw new JmapSetError(first, `Delete failed for ${failed.length} message(s)`);
   }
 }
 
@@ -365,7 +373,7 @@ export async function bulkMove(accountId, emailIds, toMailboxId, fromMailboxId) 
   const failed = resp?.notUpdated ? Object.keys(resp.notUpdated) : [];
   if (failed.length > 0) {
     const first = resp.notUpdated[failed[0]];
-    throw new Error(first?.description || `Move failed for ${failed.length} message(s)`);
+    throw new JmapSetError(first, `Move failed for ${failed.length} message(s)`);
   }
 }
 
@@ -375,7 +383,7 @@ export async function markEmailSeen(accountId, emailId, seen) {
   ]);
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notUpdated?.[emailId]) {
-    throw new Error(resp.notUpdated[emailId].description || 'Mark failed');
+    throw new JmapSetError(resp.notUpdated[emailId], 'Mark failed');
   }
 }
 
@@ -408,7 +416,7 @@ export async function createAppPassword(accountId, description, session) {
   ], using);
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notCreated?.new) {
-    throw new Error(resp.notCreated.new.description || 'Failed to create app password');
+    throw new JmapSetError(resp.notCreated.new, 'Failed to create app password');
   }
   return resp?.created?.new ?? null; // { id, secret, ... }
 }
@@ -420,7 +428,7 @@ export async function deleteAppPassword(accountId, id, session) {
   ], using);
   const resp = data?.methodResponses?.[0]?.[1];
   if (resp?.notDestroyed?.[id]) {
-    throw new Error(resp.notDestroyed[id].description || 'Failed to delete app password');
+    throw new JmapSetError(resp.notDestroyed[id], 'Failed to delete app password');
   }
 }
 
@@ -461,7 +469,7 @@ export async function createCalendarEvent(accountId, session, event) {
     calUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notCreated?.new) throw new Error(resp.notCreated.new.description || 'Create failed');
+  if (resp?.notCreated?.new) throw new JmapSetError(resp.notCreated.new, 'Create failed');
   return resp?.created?.new ?? null;
 }
 
@@ -471,7 +479,7 @@ export async function updateCalendarEvent(accountId, session, eventId, patch) {
     calUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notUpdated?.[eventId]) throw new Error(resp.notUpdated[eventId].description || 'Update failed');
+  if (resp?.notUpdated?.[eventId]) throw new JmapSetError(resp.notUpdated[eventId], 'Update failed');
 }
 
 export async function deleteCalendarEvent(accountId, session, eventId) {
@@ -480,7 +488,7 @@ export async function deleteCalendarEvent(accountId, session, eventId) {
     calUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notDestroyed?.[eventId]) throw new Error(resp.notDestroyed[eventId].description || 'Delete failed');
+  if (resp?.notDestroyed?.[eventId]) throw new JmapSetError(resp.notDestroyed[eventId], 'Delete failed');
 }
 
 export async function createCalendar(accountId, session, name) {
@@ -489,7 +497,7 @@ export async function createCalendar(accountId, session, name) {
     calUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notCreated?.new) throw new Error(resp.notCreated.new.description || 'Create failed');
+  if (resp?.notCreated?.new) throw new JmapSetError(resp.notCreated.new, 'Create failed');
   return resp?.created?.new ?? null;
 }
 
@@ -499,7 +507,7 @@ export async function deleteCalendar(accountId, session, calendarId) {
     calUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notDestroyed?.[calendarId]) throw new Error(resp.notDestroyed[calendarId].description || 'Delete failed');
+  if (resp?.notDestroyed?.[calendarId]) throw new JmapSetError(resp.notDestroyed[calendarId], 'Delete failed');
 }
 
 // ── Contacts (RFC 9553 / urn:ietf:params:jmap:contacts) ─────────────────────
@@ -536,7 +544,7 @@ export async function createContact(accountId, session, contact, addressBookId) 
     contactUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notCreated?.new) throw new Error(resp.notCreated.new.description || 'Create failed');
+  if (resp?.notCreated?.new) throw new JmapSetError(resp.notCreated.new, 'Create failed');
   return resp?.created?.new ?? null;
 }
 
@@ -546,7 +554,7 @@ export async function updateContact(accountId, session, contactId, patch) {
     contactUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notUpdated?.[contactId]) throw new Error(resp.notUpdated[contactId].description || 'Update failed');
+  if (resp?.notUpdated?.[contactId]) throw new JmapSetError(resp.notUpdated[contactId], 'Update failed');
 }
 
 export async function deleteContact(accountId, session, contactId) {
@@ -555,7 +563,7 @@ export async function deleteContact(accountId, session, contactId) {
     contactUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notDestroyed?.[contactId]) throw new Error(resp.notDestroyed[contactId].description || 'Delete failed');
+  if (resp?.notDestroyed?.[contactId]) throw new JmapSetError(resp.notDestroyed[contactId], 'Delete failed');
 }
 
 export async function createAddressBook(accountId, session, name) {
@@ -564,7 +572,7 @@ export async function createAddressBook(accountId, session, name) {
     contactUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notCreated?.new) throw new Error(resp.notCreated.new.description || 'Create failed');
+  if (resp?.notCreated?.new) throw new JmapSetError(resp.notCreated.new, 'Create failed');
   return resp?.created?.new ?? null;
 }
 
@@ -574,7 +582,7 @@ export async function deleteAddressBook(accountId, session, addressBookId) {
     contactUsing(session)
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notDestroyed?.[addressBookId]) throw new Error(resp.notDestroyed[addressBookId].description || 'Delete failed');
+  if (resp?.notDestroyed?.[addressBookId]) throw new JmapSetError(resp.notDestroyed[addressBookId], 'Delete failed');
 }
 
 export async function getSieveScript() {

@@ -98,19 +98,36 @@
     const name = newFolderName.trim();
     const problem = validateName(name, { maxLength: limits.maxNameLength });
     if (problem) { toast(problem, 'error'); return; }
+    // The server is the authority on what it accepts, so there is no
+    // capability pre-flight here. This check is different: it is about the
+    // name, which we can see, and it turns a round trip into an instant answer.
+    const siblings = $childrenByParent.get($currentFolderId ?? null) ?? [];
+    const clash = siblings.find(
+      (n) => String(n.name ?? '').toLowerCase() === name.toLowerCase(),
+    );
+    if (clash) {
+      toast(`"${clash.name}" already exists here.`, 'error');
+      return;
+    }
+
     creatingFolder = false;
     try {
-      // No pre-flight capability check here. An earlier version refused to
-      // create at the top level when mayCreateTopLevelFileNode was not exactly
-      // true, which blocked something that already worked. The server is the
-      // authority on what it will accept, and it now reports refusals visibly.
       const created = await createFolder($jmapAccountId, $jmapSession, name, $currentFolderId);
       if (created) fileNodes.update((list) => [...list, created]);
       toast(`Folder "${name}" created`, 'success');
       await reconcile();
     } catch (e) {
-      uploadError = e?.message ?? 'Could not create the folder.';
-      toast(uploadError, 'error');
+      if (e?.type === 'alreadyExists') {
+        // The server hands back existingId, so the useful response is to show
+        // the folder that is already there rather than only report a clash —
+        // it is very likely the one the user meant.
+        toast(`"${name}" already exists here.`, 'info');
+        await reconcile();
+        if (e.existingId) openFolder(e.existingId);
+      } else {
+        uploadError = e?.message ?? 'Could not create the folder.';
+        toast(uploadError, 'error');
+      }
     } finally {
       newFolderName = '';
     }
