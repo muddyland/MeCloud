@@ -9,6 +9,8 @@
   import { contacts, selectedContact } from '$lib/stores/contacts.js';
   import { calendars, selectedCalendar } from '$lib/stores/calendar.js';
   import { fileNodes, currentFolderId, fileSearch } from '$lib/stores/files.js';
+  import { noteNodes, selectedNoteId } from '$lib/stores/notes.js';
+  import { noteName } from '$lib/markdown.js';
   import { fileKind } from '$lib/fileTypes.js';
   import { rankItems, highlightRuns } from '$lib/fuzzy.js';
   import { logout } from '$lib/api.js';
@@ -120,8 +122,17 @@
       run: () => { fileSearch.set(n.name); currentFolderId.set(n.parentId ?? null); goto('/files'); },
     }));
 
+  $: noteItems = $noteNodes.map((n) => ({
+    id: `note:${n.id}`,
+    label: noteName(n.name),
+    group: 'Notes',
+    keywords: ['note', 'markdown'],
+    icon: 'file',
+    run: () => { selectedNoteId.set(n.id); goto('/notes'); },
+  }));
+
   $: allItems = [
-    ...appItems, ...actionItems, ...mailboxItems,
+    ...appItems, ...actionItems, ...mailboxItems, ...noteItems,
     ...folderItems, ...contactItems, ...calendarItems, ...fileItems,
   ];
 

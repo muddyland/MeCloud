@@ -8,6 +8,7 @@ export const APPS = [
   { id: 'mail',     label: 'Mail',     href: '/' },
   { id: 'calendar', label: 'Calendar', href: '/calendar' },
   { id: 'contacts', label: 'Contacts', href: '/contacts' },
+  { id: 'notes',    label: 'Notes',    href: '/notes' },
   { id: 'files',    label: 'Files',    href: '/files' },
 ];
 
@@ -15,6 +16,7 @@ export const APPS = [
 export function activeApp(pathname) {
   if (pathname === '/calendar') return 'calendar';
   if (pathname === '/contacts') return 'contacts';
+  if (pathname === '/notes') return 'notes';
   if (pathname === '/files') return 'files';
   return 'mail';
 }

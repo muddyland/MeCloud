@@ -297,6 +297,41 @@ export async function uploadFile(accountId, session, file, { parentId = null, na
   });
 }
 
+/**
+ * Replace a file's contents with `text`, keeping the same FileNode.
+ *
+ * Two steps, because JMAP separates bytes from metadata: upload a new blob,
+ * then repoint the node at it. The node id is stable across saves, so anything
+ * holding a reference (an open editor, the notes list) stays valid.
+ *
+ * Shared by the Notes app and the Files preview's edit mode — both are "save
+ * this text back over that node", and having one implementation means the
+ * blob/metadata ordering only has to be right once.
+ */
+export async function saveTextFile(accountId, session, node, text, { type } = {}) {
+  if (!node?.id) throw new Error('Cannot save: this item has no id.');
+  const mediaType = type || node.type || 'text/markdown';
+
+  // A File rather than a Blob: the upload path reads `.name`, and the server
+  // is happier with a filename attached.
+  const payload = new File([text ?? ''], node.name ?? 'note.md', { type: mediaType });
+  const blob = await uploadBlob(payload);
+
+  await updateNode(accountId, session, node.id, {
+    blobId: blob.blobId,
+    size: blob.size ?? payload.size,
+    type: blob.type || mediaType,
+  });
+
+  return {
+    ...node,
+    blobId: blob.blobId,
+    size: blob.size ?? payload.size,
+    type: blob.type || mediaType,
+    modified: new Date().toISOString(),
+  };
+}
+
 /** Fetch a text blob's contents, for the inline preview. */
 export async function fetchTextBlob(node, { maxBytes = 512 * 1024 } = {}) {
   const res = await fetch(blobUrl(node, { inline: true }), { credentials: 'include' });

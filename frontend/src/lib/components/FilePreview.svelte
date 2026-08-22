@@ -2,12 +2,26 @@
   import Modal from './Modal.svelte';
   import Spinner from './Spinner.svelte';
   import { previewNode } from '$lib/stores/files.js';
-  import { blobUrl, downloadNode, fetchTextBlob } from '$lib/files.js';
+  import { blobUrl, downloadNode, fetchTextBlob, saveTextFile } from '$lib/files.js';
   import { fileKind, formatBytes, isPreviewable } from '$lib/fileTypes.js';
+  import { isMarkdown, renderMarkdown } from '$lib/markdown.js';
+  import { fileNodes } from '$lib/stores/files.js';
+  import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
+  import { toast } from '$lib/stores/toast.js';
 
   let textContent = '';
   let loadingText = false;
   let textError   = '';
+
+  // Editing, for text and Markdown files. Same save path the Notes app uses —
+  // upload a new blob, then repoint the FileNode at it.
+  let editing = false;
+  let draft   = '';
+  let saving  = false;
+
+  $: markdown = node ? isMarkdown(node) : false;
+  $: editable = node ? (kind === 'text' || markdown) : false;
+  $: renderedMd = markdown && !editing ? renderMarkdown(textContent) : '';
 
   $: node = $previewNode;
   $: kind = node ? fileKind(node) : 'file';
@@ -22,6 +36,8 @@
   let loadedFor = null;
   $: if (node && kind === 'text' && node.id !== loadedFor) {
     loadedFor = node.id;
+    editing = false;
+    draft = '';
     loadText(node);
   }
 
@@ -39,9 +55,43 @@
     }
   }
 
+  function startEdit() {
+    draft = textContent;
+    editing = true;
+  }
+
+  function cancelEdit() {
+    editing = false;
+    draft = '';
+  }
+
+  async function saveEdit() {
+    if (!node || saving) return;
+    saving = true;
+    try {
+      const updated = await saveTextFile($jmapAccountId, $jmapSession, node, draft);
+      textContent = draft;
+      // Keep the Files listing's size/modified in step with what was just written.
+      fileNodes.update((list) => list.map((n) => (n.id === node.id ? { ...n, ...updated } : n)));
+      previewNode.set({ ...node, ...updated });
+      editing = false;
+      toast('Saved', 'success');
+    } catch (e) {
+      toast(e?.message ?? 'Could not save this file.', 'error');
+    } finally {
+      saving = false;
+    }
+  }
+
   function close() {
+    // Closing mid-edit would silently discard the change.
+    if (editing && draft !== textContent) {
+      if (!confirm('Discard unsaved changes to this file?')) return;
+    }
     previewNode.set(null);
     textContent = '';
+    draft = '';
+    editing = false;
     loadedFor = null;
   }
 </script>
@@ -80,6 +130,20 @@
         </div>
       {:else if textError}
         <p class="text-sm text-red-500 py-12">{textError}</p>
+      {:else if editing}
+        <textarea
+          bind:value={draft}
+          spellcheck={markdown}
+          class="w-full h-[60vh] resize-none p-4 font-mono text-xs leading-relaxed
+                 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200
+                 focus:outline-none"
+        ></textarea>
+      {:else if markdown}
+        <!-- Sanitised in renderMarkdown(); this renders in the parent document,
+             so that call is the only boundary. -->
+        <div class="w-full max-h-[70vh] overflow-auto p-5 bg-white dark:bg-gray-800">
+          <article class="note-prose">{@html renderedMd}</article>
+        </div>
       {:else}
         <pre class="w-full max-h-[70vh] overflow-auto p-4 text-xs leading-relaxed
                     font-mono text-gray-800 dark:text-gray-200 whitespace-pre-wrap
@@ -101,7 +165,45 @@
       {node?.modified ? new Date(node.modified).toLocaleString() : ''}
     </span>
     <div class="flex items-center gap-1 flex-shrink-0">
-    {#if node && isPreviewable(node)}
+    {#if editable && !loadingText && !textError}
+      {#if editing}
+        <button
+          on:click={saveEdit}
+          disabled={saving}
+          class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg
+                 bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-60
+                 transition-colors duration-150"
+        >
+          {#if saving}
+            <Spinner size="xs" label="" accent="border-t-white" cls="border-white/40" />
+            Saving…
+          {:else}
+            Save
+          {/if}
+        </button>
+        <button on:click={cancelEdit} disabled={saving}
+          class="px-3 py-1.5 text-sm text-gray-500 dark:text-gray-400
+                 hover:text-gray-700 dark:hover:text-gray-200 disabled:opacity-40
+                 transition-colors duration-150">
+          Cancel
+        </button>
+      {:else}
+        <button
+          on:click={startEdit}
+          class="inline-flex items-center gap-2 px-3 py-1.5 text-sm font-medium rounded-lg
+                 text-gray-600 dark:text-gray-300
+                 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-150"
+        >
+          <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" />
+          </svg>
+          Edit
+        </button>
+      {/if}
+    {/if}
+
+    {#if node && isPreviewable(node) && !editing}
       <a
         href={src}
         target="_blank"

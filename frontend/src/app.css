@@ -134,6 +134,98 @@
   }
 }
 
+/*
+ * Rendered Markdown.
+ *
+ * Tailwind's preflight removes every default element style, so without this a
+ * note renders as one undifferentiated wall of text. Written out rather than
+ * pulling in @tailwindcss/typography: this is the only place prose appears, and
+ * the plugin is considerably larger than the rules actually needed.
+ */
+@layer components {
+  .note-prose {
+    @apply text-sm leading-relaxed text-gray-800 dark:text-gray-200 break-words;
+  }
+
+  .note-prose > :first-child { @apply mt-0; }
+
+  .note-prose h1 { @apply text-2xl font-semibold mt-6 mb-3 text-gray-900 dark:text-gray-50; }
+  .note-prose h2 { @apply text-xl font-semibold mt-6 mb-2.5 text-gray-900 dark:text-gray-50; }
+  .note-prose h3 { @apply text-lg font-semibold mt-5 mb-2 text-gray-900 dark:text-gray-100; }
+  .note-prose h4,
+  .note-prose h5,
+  .note-prose h6 { @apply text-base font-semibold mt-4 mb-2 text-gray-900 dark:text-gray-100; }
+
+  .note-prose p { @apply my-3; }
+  .note-prose a { @apply text-blue-600 dark:text-blue-400 underline underline-offset-2; }
+  .note-prose strong { @apply font-semibold text-gray-900 dark:text-gray-50; }
+  .note-prose em { @apply italic; }
+  .note-prose del { @apply line-through opacity-70; }
+  .note-prose hr { @apply my-6 border-gray-200 dark:border-gray-700; }
+
+  .note-prose ul { @apply my-3 pl-6 list-disc; }
+  .note-prose ol { @apply my-3 pl-6 list-decimal; }
+  .note-prose li { @apply my-1; }
+  .note-prose li > ul,
+  .note-prose li > ol { @apply my-1; }
+
+  /* GFM task list markers. Drawn rather than form controls — see markdown.js
+     for why the sanitiser never lets a real checkbox through. */
+  .note-prose li:has(> .task-check) { @apply list-none -ml-6; }
+
+  .note-prose .task-check {
+    @apply inline-block w-3.5 h-3.5 mr-2 align-[-2px] rounded-[3px]
+           border border-gray-300 dark:border-gray-500;
+  }
+
+  .note-prose .task-check--done {
+    @apply bg-blue-500 border-blue-500 relative;
+  }
+
+  /* The tick, drawn with a rotated bottom/right border. */
+  .note-prose .task-check--done::after {
+    content: '';
+    @apply absolute left-[4px] top-[0.5px] w-[4px] h-[8px]
+           border-white border-r-2 border-b-2;
+    transform: rotate(45deg);
+  }
+
+  .note-prose blockquote {
+    @apply my-4 pl-4 border-l-4 border-gray-200 dark:border-gray-600
+           text-gray-600 dark:text-gray-400 italic;
+  }
+
+  .note-prose code {
+    @apply px-1.5 py-0.5 rounded text-[0.85em] font-mono
+           bg-gray-100 dark:bg-gray-800 text-pink-600 dark:text-pink-400;
+  }
+
+  .note-prose pre {
+    @apply my-4 p-4 rounded-lg overflow-x-auto
+           bg-gray-50 dark:bg-gray-800/80 border border-gray-200 dark:border-gray-700;
+  }
+
+  /* Inside a fence the inline-code pill would be wrong. */
+  .note-prose pre code {
+    @apply p-0 bg-transparent text-gray-800 dark:text-gray-200 text-xs leading-relaxed;
+  }
+
+  .note-prose img { @apply max-w-full h-auto rounded-lg my-4; }
+
+  /* Tables can be far wider than the pane; scroll them rather than letting one
+     push the whole layout sideways. */
+  .note-prose table {
+    @apply my-4 w-full text-left border-collapse block overflow-x-auto;
+  }
+  .note-prose th {
+    @apply px-3 py-2 font-semibold border-b-2 border-gray-200 dark:border-gray-600
+           text-gray-900 dark:text-gray-100 whitespace-nowrap;
+  }
+  .note-prose td {
+    @apply px-3 py-2 border-b border-gray-100 dark:border-gray-700/60 align-top;
+  }
+}
+
 /* Respect the OS "reduce motion" setting: spinners keep turning (they carry
    information) but everything decorative stops moving. */
 @media (prefers-reduced-motion: reduce) {

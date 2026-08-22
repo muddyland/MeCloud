@@ -15,6 +15,10 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 - JMAP protocol for fast, efficient mail access (RFC 8620 / RFC 8621)
 - **Calendar** — month view, create / edit / delete events, per-calendar filtering (JMAP Calendars / RFC 8984)
 - **Contacts** — address book list, contact search, create / edit / delete (JMAP Contacts / RFC 9553)
+- **Notes** — Markdown notes stored as `.md` files in a `Notes` folder in file
+  storage, so an existing folder of Markdown works untouched and the same
+  documents stay reachable over WebDAV or any sync tool. Live preview, split
+  view, autosave, full-text search, and front-matter aware titles
 - **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio and video
 - Mail attachments are downloadable, through the same authenticated blob proxy
 - OAuth2 authentication via Stalwart's built-in OAuth2 server
@@ -40,6 +44,7 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 | Sanitisation | DOMPurify, plus a script-less sandboxed iframe |
 | Auth | OAuth2 authorization code flow with PKCE (S256) |
 | Session | Encrypted cookie (Fernet: AES-CBC + HMAC-SHA256) |
+| Markdown | marked (GFM), sanitised through DOMPurify |
 | Protocol | JMAP (RFC 8620, RFC 8621, RFC 8984, RFC 9553, draft-ietf-jmap-filenode) |
 | Runtime | Single Docker image (multi-stage build) |
 
@@ -189,6 +194,8 @@ jmap-mail/
 │       │   ├── api.js                   # JMAP API helpers (mail, calendar, contacts)
 │       │   ├── sanitize.js              # DOMPurify config + remote-content blocking
 │       │   ├── files.js                 # JMAP FileNode calls + blob transfer
+│       │   ├── notes.js                 # Notes over FileNode (.md in a Notes folder)
+│       │   ├── markdown.js              # Markdown render + sanitise
 │       │   ├── fileTypes.js             # File classification (pure, unit-tested)
 │       │   ├── fuzzy.js                 # Palette ranking (pure, unit-tested)
 │       │   ├── apps.js                  # The app list, shared by tabs + palette
@@ -216,6 +223,7 @@ jmap-mail/
 │           ├── +page.svelte              # Mail three-pane view, realtime, shortcuts
 │           ├── calendar/+page.svelte     # Calendar view
 │           ├── files/+page.svelte        # Files (Drive) view
+│           ├── notes/+page.svelte        # Notes (Markdown) view
 │           └── contacts/+page.svelte     # Contacts view
 ├── Dockerfile
 ├── docker-compose.yml
@@ -239,6 +247,18 @@ jmap-mail/
 - Message bodies render inside an iframe whose `sandbox` omits `allow-scripts` and `allow-same-origin`. Script in an email cannot execute and cannot reach this origin — that is the actual boundary, not the sanitiser.
 - DOMPurify runs as defence in depth, and rewrites every link to `target="_blank" rel="noopener noreferrer nofollow"`.
 - Remote images, `srcset`, `poster`, `background`, and remote `url()` in inline CSS are stripped by default and restored only when the user clicks **Show images** (or trusts the sender). A remote image in an email is a read receipt the sender never asked permission for.
+
+**Rendering notes**
+
+Notes are the one place message- or file-derived markup renders in the *parent*
+document rather than a sandboxed iframe, so the sanitiser is the only boundary
+rather than defence in depth. Every render path goes through it — there is no
+"trusted" note, since a `.md` file can arrive from any sync tool with write
+access to the account. Script tags, inline event handlers, `javascript:` URLs,
+iframes, objects and form controls are all removed, and surviving links get
+`target="_blank" rel="noopener noreferrer nofollow"`. GFM task lists are
+rendered as styled spans rather than real checkboxes, so no form control has to
+be allowed through for them.
 
 **Serving stored files**
 
