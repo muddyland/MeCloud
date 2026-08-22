@@ -92,6 +92,47 @@ export async function getFileNodes(accountId, session) {
   return data?.methodResponses?.[0]?.[1]?.list ?? [];
 }
 
+/**
+ * The cap on how many objects one /get may return, per RFC 8620 section 5.1.
+ *
+ * `ids: null` means "every record" only while the total stays under this
+ * limit; past it the server is meant to answer `requestTooLarge` instead of a
+ * listing. A server that quietly truncates instead produces the worst possible
+ * symptom -- a listing that looks complete but is not, so an item can be
+ * absent from the tree while still blocking its own name on create.
+ */
+export function maxObjectsInGet(session) {
+  const n = session?.capabilities?.['urn:ietf:params:jmap:core']?.maxObjectsInGet;
+  return Number.isFinite(n) ? n : null;
+}
+
+/** True when a listing is suspiciously exactly the server's per-call ceiling. */
+export function looksTruncated(list, session) {
+  const cap = maxObjectsInGet(session);
+  return cap !== null && Array.isArray(list) && list.length >= cap;
+}
+
+/**
+ * Fetch specific nodes by id.
+ *
+ * Deliberately separate from getFileNodes: that one enumerates, this one asks
+ * a direct question. When the server refuses a create with `alreadyExists` but
+ * the node is nowhere in the enumerated tree, those two disagree, and only an
+ * explicit by-id fetch says which is right. Per draft-ietf-jmap-filenode §4 a
+ * node that is not "discoverable" returns notFound here and is omitted from
+ * FileNode/query, so a node can legitimately exist, block a name, and never
+ * appear in a listing.
+ */
+export async function getFileNodesByIds(accountId, session, ids) {
+  if (!ids?.length) return { list: [], notFound: [] };
+  const data = await jmapPost(
+    [['FileNode/get', { accountId, ids }, 'f']],
+    fileUsing(session),
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  return { list: resp?.list ?? [], notFound: resp?.notFound ?? [] };
+}
+
 // ── Mutating ────────────────────────────────────────────────────────────────
 
 function firstSetError(resp, key) {

@@ -17,9 +17,9 @@
     uploads, nodesById, childrenByParent, visibleNodes, totalUsage,
   } from '$lib/stores/files.js';
   import {
-    getFileNodes, createFolder, renameNode, moveNode, destroyNodes,
+    getFileNodes, getFileNodesByIds, createFolder, renameNode, moveNode, destroyNodes,
     uploadFile, downloadNode, supportsFiles, fileLimits,
-    readDropEntries, buildDropTree, countTreeFiles,
+    readDropEntries, buildDropTree, countTreeFiles, looksTruncated,
   } from '$lib/files.js';
   import {
     fileKind, formatBytes, isPreviewable, validateName, breadcrumbTrail, uniqueName,
@@ -106,7 +106,11 @@
       (n) => String(n.name ?? '').toLowerCase() === name.toLowerCase(),
     );
     if (clash) {
-      toast(`"${clash.name}" already exists here.`, 'error');
+      // Worded differently from the server's alreadyExists on purpose: when a
+      // clash is reported, the first thing worth knowing is whether the app or
+      // the server said so, because only one of them can be looking at a stale
+      // picture of the folder.
+      toast(`"${clash.name}" is already in this folder.`, 'error');
       return;
     }
 
@@ -118,12 +122,8 @@
       await reconcile();
     } catch (e) {
       if (e?.type === 'alreadyExists') {
-        // The server hands back existingId, so the useful response is to show
-        // the folder that is already there rather than only report a clash —
-        // it is very likely the one the user meant.
-        toast(`"${name}" already exists here.`, 'info');
         await reconcile();
-        if (e.existingId) openFolder(e.existingId);
+        await resolveNameClash(name, e.existingId);
       } else {
         uploadError = e?.message ?? 'Could not create the folder.';
         toast(uploadError, 'error');
@@ -131,6 +131,59 @@
     } finally {
       newFolderName = '';
     }
+  }
+
+  /**
+   * The server refused the name because something already holds it.
+   *
+   * Normally that something is right there in the listing, and the useful
+   * response is to open it. When it is *not* in the listing the old code still
+   * navigated to it, which dropped the user into an empty folder with a broken
+   * breadcrumb — indistinguishable from "the folder does not exist".
+   *
+   * So when the listing and the create disagree, ask the server directly
+   * instead of believing either one. draft-ietf-jmap-filenode section 4 makes
+   * this a real case rather than a paranoid one: a node that is not
+   * "discoverable" is omitted from FileNode/query and returns notFound from
+   * FileNode/get, yet still occupies its name against its siblings.
+   */
+  async function resolveNameClash(name, existingId) {
+    if (!existingId) {
+      uploadError = `The server says "${name}" already exists here but did not say which item holds the name.`;
+      toast(uploadError, 'error');
+      return;
+    }
+
+    if ($nodesById.has(existingId)) {
+      toast(`"${name}" already exists here.`, 'info');
+      openFolder(existingId);
+      return;
+    }
+
+    try {
+      const { list, notFound } = await getFileNodesByIds($jmapAccountId, $jmapSession, [existingId]);
+      const node = list[0];
+      if (node) {
+        const parent = node.parentId ? $nodesById.get(node.parentId) : null;
+        const where = node.parentId
+          ? (parent ? `inside "${parent.name}"` : 'inside a folder the listing did not return')
+          : 'at the top level';
+        uploadError =
+          `"${name}" already exists ${where}, but it is missing from the folder listing. ` +
+          `The item is on the server (id ${existingId}) — so the listing is incomplete, not the create.`;
+      } else if (notFound.includes(existingId)) {
+        uploadError =
+          `The server refused "${name}" because id ${existingId} holds that name, then reported ` +
+          `that id as not found. Something this account cannot read is holding the name.`;
+      } else {
+        uploadError = `"${name}" already exists here, but the server would not describe id ${existingId}.`;
+      }
+    } catch (err) {
+      uploadError =
+        `"${name}" already exists here, but id ${existingId} could not be looked up: ` +
+        `${err?.message ?? 'the request failed'}.`;
+    }
+    toast(uploadError, 'error');
   }
 
   function startRename(node) {
@@ -258,6 +311,15 @@
       const fresh = await getFileNodes($jmapAccountId, $jmapSession);
       const before = $fileNodes.length;
       fileNodes.set(fresh);
+      if (looksTruncated(fresh, $jmapSession)) {
+        // Exactly at the ceiling is not a coincidence worth ignoring: it means
+        // the listing is probably cut short, and anything past the cut is
+        // invisible here while still existing on the server.
+        uploadError =
+          `The server returned exactly ${fresh.length} items, its per-request maximum, ` +
+          `so this listing is probably incomplete. Items beyond that limit will not appear ` +
+          `here even though they exist.`;
+      }
       if (failures === 0 && fresh.length < before) {
         toast('Some items were not saved by the server.', 'error');
       }
