@@ -9,6 +9,7 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
   import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
+  import { listPaneClass, detailPaneClass } from '$lib/layout.js';
   import {
     addressBooks, contacts, selectedAddressBook, selectedContact,
     contactsLoading, contactSearch, contactModalOpen, editingContact,
@@ -225,7 +226,7 @@
     <!-- Contact list -->
     <div class="h-full flex flex-col bg-white dark:bg-gray-900
                 border-r border-gray-200 dark:border-gray-700
-                {$isCompact ? ($selectedContact ? 'hidden' : 'flex-1 min-w-0') : 'flex-shrink-0 w-72'}">
+                {listPaneClass($isCompact, !!$selectedContact)} {$isCompact ? '' : 'w-72'}">
 
       <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 flex items-center justify-between">
         <h2 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Contacts</h2>
@@ -312,8 +313,8 @@
     </div>
 
     <!-- Contact detail -->
-    <div class="flex-1 min-w-0 h-full bg-white dark:bg-gray-900 overflow-y-auto
-                {$isCompact && !$selectedContact ? 'hidden' : ''}">
+    <div class="h-full bg-white dark:bg-gray-900 overflow-y-auto
+                {detailPaneClass($isCompact, !!$selectedContact)}">
       {#if $selectedContact}
         {@const c = $selectedContact}
         <div class="max-w-xl mx-auto px-8 py-10">

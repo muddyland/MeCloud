@@ -10,7 +10,7 @@
   import AppTabs from './AppTabs.svelte';
   import AppMenu from './AppMenu.svelte';
   import BrandMark from './BrandMark.svelte';
-  import { isCompact, toggleSidebar } from '$lib/stores/viewport.js';
+  import { isCompact, hasSidebar, toggleSidebar } from '$lib/stores/viewport.js';
 
   export let stalwartUrl = '';
 
@@ -53,8 +53,9 @@
 <nav class="app-navbar flex items-center gap-3 px-3 flex-shrink-0 z-20
             bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
 
-  <!-- Drawer toggle. Only meaningful while the sidebar is an overlay. -->
-  {#if $isCompact}
+  <!-- Drawer toggle. Only while the sidebar is an overlay *and* the current
+       page actually has one. -->
+  {#if $isCompact && $hasSidebar}
     <button
       on:click={toggleSidebar}
       aria-label="Toggle sidebar"

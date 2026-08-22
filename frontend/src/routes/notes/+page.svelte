@@ -4,7 +4,6 @@
   import Navbar from '$lib/components/Navbar.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
-  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
   import MarkdownToolbar from '$lib/components/MarkdownToolbar.svelte';
   import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
   import { getJMAPSession, getAppConfig } from '$lib/api.js';
@@ -20,7 +19,8 @@
     selectedNote, noteSearch, noteCache, noteView, saveState, saveError, visibleNotes,
     cacheNote, forgetNote,
   } from '$lib/stores/notes.js';
-  import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
+  import { isCompact } from '$lib/stores/viewport.js';
+  import { listPaneClass, detailPaneClass } from '$lib/layout.js';
   import { toast } from '$lib/stores/toast.js';
 
   let stalwartUrl = '';
@@ -99,7 +99,6 @@
     if (!node || node.id === loadedId) return;
     await flushSave();                       // never lose the outgoing note
     selectedNoteId.set(node.id);
-    closeSidebar();
 
     const cached = $noteCache.get(node.id);
     if (cached !== undefined) {
@@ -190,7 +189,6 @@
       draft = text;
       loadedId = node.id;
       saveState.set('idle');
-      closeSidebar();
       noteView.set('edit');
       await tick();
       textarea?.focus();
@@ -297,7 +295,20 @@
   <div class="flex flex-1 min-h-0 overflow-hidden">
 
     <!-- ── Note list ─────────────────────────────────────────────────────── -->
-    <SidebarDrawer width={$sidebarWidth} cls="bg-white dark:bg-gray-900">
+    <!--
+      The note list is this app's primary content, not a sidebar. Putting it in
+      the off-canvas drawer meant that on a phone the list was hidden behind the
+      hamburger *and* the editor was hidden for want of a selection — so the
+      page rendered completely blank until a note was chosen from elsewhere.
+      It now behaves like the message list in Mail: visible by default, replaced
+      by the editor on drill-down.
+    -->
+    <aside
+      class="h-full flex flex-col bg-white dark:bg-gray-900
+             border-r border-gray-200 dark:border-gray-700
+             {listPaneClass($isCompact, !!$selectedNoteId)}"
+      style={$isCompact ? '' : `width: ${$sidebarWidth}px`}
+    >
       <div class="px-3 py-2.5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0
                   flex items-center justify-between gap-2">
         <h2 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
@@ -394,11 +405,11 @@
           {/each}
         {/if}
       </div>
-    </SidebarDrawer>
+    </aside>
 
     <!-- ── Editor / preview ──────────────────────────────────────────────── -->
-    <div class="flex-1 min-w-0 h-full flex flex-col bg-white dark:bg-gray-900
-                {$isCompact && !$selectedNoteId ? 'hidden' : ''}">
+    <div class="h-full flex flex-col bg-white dark:bg-gray-900
+                {detailPaneClass($isCompact, !!$selectedNoteId)}">
 
       {#if !supported}
         <div class="flex flex-col items-center justify-center h-full gap-3 px-6 text-center

@@ -14,6 +14,7 @@
   import ShortcutsHelp from '$lib/components/ShortcutsHelp.svelte';
   import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
   import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
+  import { listPaneClass, detailPaneClass } from '$lib/layout.js';
   import {
     mailboxes, selectedMailbox, emails, loading,
     jmapSession, jmapAccountId, selectedEmailId, sidebarWidth, messageListWidth, currentUser,
@@ -386,9 +387,7 @@
     <!-- Message list. Full width when compact, and hidden entirely once a
          message is open so the reading pane gets the whole screen. -->
     <div
-      class="h-full overflow-hidden {$isCompact
-        ? ($selectedEmailId ? 'hidden' : 'flex-1 min-w-0')
-        : 'flex-shrink-0'}"
+      class="h-full overflow-hidden {listPaneClass($isCompact, !!$selectedEmailId)}"
       style={$isCompact ? '' : `width: ${$messageListWidth}px`}
     >
       <MessageList />
@@ -410,7 +409,7 @@
     </div>
 
     <!-- Reading pane. Compact: only shown once something is selected. -->
-    <div class="flex-1 min-w-0 h-full {$isCompact && !$selectedEmailId ? 'hidden' : ''}">
+    <div class="h-full {detailPaneClass($isCompact, !!$selectedEmailId)}">
       <MessagePane />
     </div>
 

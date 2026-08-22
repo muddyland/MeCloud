@@ -34,6 +34,21 @@ export const isCoarsePointer = mediaQuery('(pointer: coarse)');
 /** Whether the off-canvas sidebar is showing. Only meaningful when compact. */
 export const sidebarOpen = writable(false);
 
+/**
+ * How many drawers are mounted. Pages register their own, so the navbar can
+ * offer the toggle only where it does something — Notes and the dashboard have
+ * no drawer, and a control that visibly does nothing is worse than no control.
+ */
+const sidebarCount = writable(0);
+
+export const hasSidebar = derived(sidebarCount, ($n) => $n > 0);
+
+/** Call on mount; the returned function unregisters on destroy. */
+export function registerSidebar() {
+  sidebarCount.update((n) => n + 1);
+  return () => sidebarCount.update((n) => Math.max(0, n - 1));
+}
+
 export function openSidebar()  { sidebarOpen.set(true); }
 export function closeSidebar() { sidebarOpen.set(false); }
 export function toggleSidebar() { sidebarOpen.update((v) => !v); }
