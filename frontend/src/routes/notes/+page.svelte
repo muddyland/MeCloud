@@ -10,12 +10,13 @@
   import { supportsFiles } from '$lib/files.js';
   import {
     loadNotes, ensureNotesFolder, readNote, writeNote, createNote,
-    renameNote, deleteNote, NOTES_FOLDER,
+    renameNote, deleteNote, resolvePath, NOTES_FOLDER,
   } from '$lib/notes.js';
-  import { renderMarkdown, noteTitle, noteName } from '$lib/markdown.js';
+  import { renderMarkdown, imageResolver, noteTitle, noteName } from '$lib/markdown.js';
+  import { blobUrl } from '$lib/files.js';
   import {
-    noteNodes, notesFolder, notesLoading, notesError, selectedNoteId, selectedNote,
-    noteSearch, noteCache, noteView, saveState, saveError, visibleNotes,
+    noteNodes, allFileNodes, notesFolder, notesLoading, notesError, selectedNoteId,
+    selectedNote, noteSearch, noteCache, noteView, saveState, saveError, visibleNotes,
     cacheNote, forgetNote,
   } from '$lib/stores/notes.js';
   import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
@@ -36,7 +37,18 @@
   const AUTOSAVE_MS = 1200;
   let saveTimer;
 
-  $: rendered = renderMarkdown(draft);
+  /*
+   * Relative image links are resolved against the folder the note lives in, so
+   * an attachments folder beside the note works the way its author intended.
+   */
+  $: resolveImage = imageResolver((path) => {
+    const node = resolvePath($allFileNodes, $selectedNote?.parentId ?? null, path, {
+      rootFolderId: $notesFolder?.id ?? null,
+    });
+    return node ? blobUrl(node, { inline: true }) : null;
+  });
+
+  $: rendered = renderMarkdown(draft, { resolveImage });
   $: currentTitle = $selectedNote ? noteTitle($selectedNote.name, draft) : '';
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -46,7 +58,8 @@
     notesLoading.set(true);
     notesError.set('');
     try {
-      const { folder, notes } = await loadNotes($jmapAccountId, $jmapSession);
+      const { nodes, folder, notes } = await loadNotes($jmapAccountId, $jmapSession);
+      allFileNodes.set(nodes);
       notesFolder.set(folder);
       noteNodes.set(notes);
       // Pre-load the bodies so search and previews work across the collection

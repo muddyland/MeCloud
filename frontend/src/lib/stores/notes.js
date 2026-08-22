@@ -3,6 +3,9 @@ import { noteTitle, excerpt } from '$lib/markdown.js';
 
 /** Markdown FileNodes under the Notes folder. */
 export const noteNodes     = writable([]);
+/** Every node in the account — needed to resolve relative image paths, which
+    point at attachment folders that hold no Markdown of their own. */
+export const allFileNodes  = writable([]);
 export const notesFolder   = writable(null);
 export const notesLoading  = writable(false);
 export const notesError    = writable('');
@@ -78,6 +81,7 @@ export function forgetNote(id) {
 
 export function resetNotesState() {
   noteNodes.set([]);
+  allFileNodes.set([]);
   notesFolder.set(null);
   selectedNoteId.set(null);
   noteSearch.set('');

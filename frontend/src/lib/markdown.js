@@ -30,6 +30,43 @@ renderer.checkbox = (token) => {
   const checked = typeof token === 'object' ? token?.checked : token;
   return `<span class="task-check${checked ? ' task-check--done' : ''}"></span>`;
 };
+
+/*
+ * Images.
+ *
+ * Notes written by other tools reference images by relative path — an Azure
+ * DevOps wiki emits `.attachments.<id>/image%20(4).png`, Obsidian uses an
+ * attachments folder, and so on. The browser resolves those against the page
+ * URL and gets nothing, so a resolver is given the chance to turn the path into
+ * a real blob URL first.
+ *
+ * Set for the duration of a single render rather than passed through marked,
+ * which has no way to thread per-call context into a renderer.
+ */
+let currentResolver = null;
+
+const escapeAttr = (value) => String(value ?? '')
+  .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+  .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+renderer.image = (token) => {
+  const href = typeof token === 'object' ? token?.href : token;
+  const text = (typeof token === 'object' ? token?.text : '') ?? '';
+  const title = (typeof token === 'object' ? token?.title : '') ?? '';
+  const titleAttr = title ? ` title="${escapeAttr(title)}"` : '';
+
+  const resolved = currentResolver ? currentResolver(String(href ?? '')) : href;
+
+  if (!resolved) {
+    // Saying so beats a broken-image icon: the note is fine, the attachment
+    // just is not in the file store where the link says it should be.
+    return `<span class="note-missing-image" role="img" aria-label="${escapeAttr(text || 'Missing image')}">`
+      + `${escapeAttr(text || href || 'Missing image')}</span>`;
+  }
+
+  return `<img src="${escapeAttr(resolved)}" alt="${escapeAttr(text)}"${titleAttr} loading="lazy">`;
+};
+
 marked.use({ renderer });
 
 /**
@@ -110,10 +147,34 @@ export function excerpt(text, length = 120) {
  * user's own notes rather than something a stranger sent, and blocking images
  * in your own document would be surprising.
  */
-export function renderMarkdown(text) {
+export function renderMarkdown(text, { resolveImage = null } = {}) {
   const { body } = splitFrontMatter(text);
-  const raw = marked.parse(body ?? '');
-  return sanitizeEmailHtml(raw, { allowRemote: true }).html;
+  currentResolver = resolveImage;
+  try {
+    const raw = marked.parse(body ?? '');
+    return sanitizeEmailHtml(raw, { allowRemote: true }).html;
+  } finally {
+    currentResolver = null;
+  }
+}
+
+/**
+ * Build an image resolver for a note.
+ *
+ * Absolute URLs and inline data are passed through untouched — only paths that
+ * would otherwise resolve against the page URL get looked up in the file tree.
+ *
+ * @param {(path: string) => (string|null)} lookup resolves a relative path to a URL
+ */
+export function imageResolver(lookup) {
+  return (href) => {
+    const raw = String(href ?? '').trim();
+    if (!raw) return null;
+    // Already addressable: remote, inline, or already one of our blob URLs.
+    if (/^(https?:|data:|blob:)/i.test(raw) || raw.startsWith('//')) return raw;
+    if (raw.startsWith('/api/files/blob/')) return raw;
+    return lookup(raw);
+  };
 }
 
 /** True when a FileNode looks like a Markdown document. */

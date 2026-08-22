@@ -212,6 +212,22 @@
 
   .note-prose img { @apply max-w-full h-auto rounded-lg my-4; }
 
+  /* An attachment the link points at but the file store does not have. Saying
+     so is more useful than a broken-image icon, which reads as a bug in the
+     viewer rather than a missing file. */
+  .note-prose .note-missing-image {
+    @apply inline-flex items-center gap-1.5 my-2 px-2.5 py-1.5 rounded-lg
+           text-xs italic
+           bg-amber-50 dark:bg-amber-900/20
+           text-amber-700 dark:text-amber-300
+           border border-amber-200 dark:border-amber-800/60;
+  }
+
+  .note-prose .note-missing-image::before {
+    content: '⚠';
+    @apply not-italic opacity-70;
+  }
+
   /* Tables can be far wider than the pane; scroll them rather than letting one
      push the whole layout sideways. */
   .note-prose table {

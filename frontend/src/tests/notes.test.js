@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findNotesFolder, collectNotes, noteFilename, NOTES_FOLDER } from '$lib/notes.js';
+import { findNotesFolder, collectNotes, noteFilename, resolvePath, NOTES_FOLDER } from '$lib/notes.js';
 
 const folder = (id, name, parentId = null) => ({ id, name, parentId, blobId: null });
 const file = (id, name, parentId = null) => ({ id, name, parentId, blobId: `b${id}`, type: 'text/markdown' });
@@ -100,5 +100,88 @@ describe('noteFilename', () => {
 
   it('caps very long titles', () => {
     expect(noteFilename('x'.repeat(400), []).length).toBeLessThanOrEqual(124);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePath
+//
+// Notes written elsewhere link attachments by relative path — an Azure DevOps
+// wiki emits `.attachments.<id>/image%20(4).png`. The browser resolves those
+// against the page URL and finds nothing, so they are looked up in the tree.
+// ---------------------------------------------------------------------------
+
+describe('resolvePath', () => {
+  //  Notes/
+  //    note.md
+  //    .attachments.248538/
+  //      image (4).png
+  //    Sub/
+  //      nested.md
+  const tree = [
+    folder('notes', 'Notes'),
+    file('note', 'note.md', 'notes'),
+    folder('att', '.attachments.248538', 'notes'),
+    file('img', 'image (4).png', 'att'),
+    folder('sub', 'Sub', 'notes'),
+    file('nested', 'nested.md', 'sub'),
+  ];
+
+  it('resolves a percent-encoded path into an attachments folder', () => {
+    const hit = resolvePath(tree, 'notes', '.attachments.248538/image%20%284%29.png');
+    expect(hit?.id).toBe('img');
+  });
+
+  it('resolves the same path unencoded', () => {
+    expect(resolvePath(tree, 'notes', '.attachments.248538/image (4).png')?.id).toBe('img');
+  });
+
+  it('handles a leading ./', () => {
+    expect(resolvePath(tree, 'notes', './.attachments.248538/image (4).png')?.id).toBe('img');
+  });
+
+  it('walks up with ..', () => {
+    // From inside Sub, ../ gets back to Notes and then into the attachments.
+    expect(resolvePath(tree, 'sub', '../.attachments.248538/image (4).png')?.id).toBe('img');
+  });
+
+  it('resolves an absolute path from the given root', () => {
+    expect(resolvePath(tree, 'sub', '/.attachments.248538/image (4).png',
+      { rootFolderId: 'notes' })?.id).toBe('img');
+  });
+
+  it('matches case-insensitively when an exact match fails', () => {
+    expect(resolvePath(tree, 'notes', '.ATTACHMENTS.248538/IMAGE (4).PNG')?.id).toBe('img');
+  });
+
+  it('prefers an exact match over a case-insensitive one', () => {
+    const both = [
+      folder('f', 'F'),
+      file('lower', 'a.png', 'f'),
+      file('upper', 'A.png', 'f'),
+    ];
+    expect(resolvePath(both, 'f', 'A.png')?.id).toBe('upper');
+    expect(resolvePath(both, 'f', 'a.png')?.id).toBe('lower');
+  });
+
+  it('ignores a query string or fragment', () => {
+    expect(resolvePath(tree, 'notes', '.attachments.248538/image (4).png?v=2')?.id).toBe('img');
+    expect(resolvePath(tree, 'notes', '.attachments.248538/image (4).png#x')?.id).toBe('img');
+  });
+
+  it('returns null for a path that does not exist', () => {
+    expect(resolvePath(tree, 'notes', 'missing/nope.png')).toBeNull();
+    expect(resolvePath(tree, 'notes', '.attachments.248538/absent.png')).toBeNull();
+  });
+
+  it('refuses to treat a file as a directory', () => {
+    expect(resolvePath(tree, 'notes', 'note.md/inner.png')).toBeNull();
+  });
+
+  it('handles empty and malformed input', () => {
+    expect(resolvePath(tree, 'notes', '')).toBeNull();
+    expect(resolvePath(tree, 'notes', null)).toBeNull();
+    // A stray % is not a valid escape; the literal segment is used instead.
+    expect(resolvePath(tree, 'notes', '100%.png')).toBeNull();
   });
 });

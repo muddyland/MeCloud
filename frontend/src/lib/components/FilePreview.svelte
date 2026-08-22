@@ -4,7 +4,8 @@
   import { previewNode } from '$lib/stores/files.js';
   import { blobUrl, downloadNode, fetchTextBlob, saveTextFile } from '$lib/files.js';
   import { fileKind, formatBytes, isPreviewable } from '$lib/fileTypes.js';
-  import { isMarkdown, renderMarkdown } from '$lib/markdown.js';
+  import { isMarkdown, renderMarkdown, imageResolver } from '$lib/markdown.js';
+  import { resolvePath } from '$lib/notes.js';
   import { fileNodes } from '$lib/stores/files.js';
   import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
   import { toast } from '$lib/stores/toast.js';
@@ -21,7 +22,16 @@
 
   $: markdown = node ? isMarkdown(node) : false;
   $: editable = node ? (kind === 'text' || markdown) : false;
-  $: renderedMd = markdown && !editing ? renderMarkdown(textContent) : '';
+  // Same relative-path resolution the Notes app uses, so a wiki-style note
+  // renders identically whichever app opened it.
+  $: mdResolver = imageResolver((path) => {
+    const found = resolvePath($fileNodes, node?.parentId ?? null, path);
+    return found ? blobUrl(found, { inline: true }) : null;
+  });
+
+  $: renderedMd = markdown && !editing
+    ? renderMarkdown(textContent, { resolveImage: mdResolver })
+    : '';
 
   $: node = $previewNode;
   $: kind = node ? fileKind(node) : 'file';

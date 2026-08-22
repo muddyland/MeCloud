@@ -18,7 +18,9 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 - **Notes** — Markdown notes stored as `.md` files in a `Notes` folder in file
   storage, so an existing folder of Markdown works untouched and the same
   documents stay reachable over WebDAV or any sync tool. Live preview, split
-  view, autosave, full-text search, and front-matter aware titles
+  view, autosave, full-text search, and front-matter aware titles. Relative
+  image links are resolved against the note's own folder, so wiki-style
+  attachment paths (`.attachments.NNN/image%20(4).png`) render
 - **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio and video
 - Mail attachments are downloadable, through the same authenticated blob proxy
 - OAuth2 authentication via Stalwart's built-in OAuth2 server
