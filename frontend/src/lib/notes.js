@@ -113,6 +113,9 @@ export async function createNote(accountId, session, folderId, { title = 'Untitl
     size: blob.size ?? payload.size,
     parentId: folderId,
   });
+  // The editor needs a node id to save against, so an unconfirmed create is a
+  // genuine failure here rather than something to reconcile later.
+  if (!node?.id) throw new Error('The server did not return the new note.');
   return { node, text: initial };
 }
 

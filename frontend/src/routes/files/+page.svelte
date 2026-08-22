@@ -98,14 +98,14 @@
     const name = newFolderName.trim();
     const problem = validateName(name, { maxLength: limits.maxNameLength });
     if (problem) { toast(problem, 'error'); return; }
-    if (!$currentFolderId && !limits.mayCreateTopLevel) {
-      toast('This server does not allow folders at the top level — open a folder first.', 'error');
-      return;
-    }
     creatingFolder = false;
     try {
+      // No pre-flight capability check here. An earlier version refused to
+      // create at the top level when mayCreateTopLevelFileNode was not exactly
+      // true, which blocked something that already worked. The server is the
+      // authority on what it will accept, and it now reports refusals visibly.
       const created = await createFolder($jmapAccountId, $jmapSession, name, $currentFolderId);
-      fileNodes.update((list) => [...list, created]);
+      if (created) fileNodes.update((list) => [...list, created]);
       toast(`Folder "${name}" created`, 'success');
       await reconcile();
     } catch (e) {
@@ -321,6 +321,12 @@
 
       if (node.kind === 'dir') {
         const created = await createFolder($jmapAccountId, $jmapSession, name, parentId);
+        if (!created?.id) {
+          // Children have to be created against a known parent id, so an
+          // unconfirmed folder stops this branch rather than silently
+          // flattening its contents into the parent.
+          throw new Error(`Could not confirm the folder "${name}" — its contents were not uploaded.`);
+        }
         fileNodes.update((list) => [...list, created]);
         if (node.children?.length) await uploadInto(node.children, created.id);
       } else {
@@ -343,7 +349,9 @@
         onProgress: (p) => patch({ progress: p, waiting: '' }),
         onWait: (ms) => patch({ waiting: `rate limited — retrying in ${Math.ceil(ms / 1000)}s` }),
       });
-      fileNodes.update((list) => [...list, created]);
+      // Null means the server did not echo the new node. reconcile() reads the
+      // real state back, so nothing needs inventing here.
+      if (created) fileNodes.update((list) => [...list, created]);
       patch({ progress: 1, done: true });
       setTimeout(() => uploads.update((u) => u.filter((x) => x.id !== id)), 1200);
       return true;

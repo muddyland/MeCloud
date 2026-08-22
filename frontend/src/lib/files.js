@@ -100,23 +100,32 @@ function firstSetError(resp, key) {
   return null;
 }
 
+/**
+ * Interpret a `/set` response for a single creation id.
+ *
+ * The distinction this draws is the one that matters, and getting it wrong
+ * broke folder creation outright: a `notCreated` entry means the server
+ * refused, while the *absence* of a `created` entry means only that it did not
+ * echo the new object back. Treating the second as a failure rejects writes
+ * that actually succeeded.
+ *
+ * @returns {{ node: object|null, error: object|null }}
+ */
+export function interpretCreate(resp, key) {
+  const error = firstSetError(resp, key);
+  if (error) return { node: null, error };
+  const created = resp?.created?.[key];
+  return { node: created?.id ? created : null, error: null };
+}
+
 export async function createFolder(accountId, session, name, parentId = null) {
   const data = await jmapPost(
     [['FileNode/set', { accountId, create: { nf: { name, parentId } } }, 'f']],
     fileUsing(session),
   );
-  const resp = data?.methodResponses?.[0]?.[1];
-  const err = firstSetError(resp, 'nf');
-  if (err) throw new Error(err.description || 'Could not create the folder.');
-
-  const created = resp?.created?.nf;
-  // A create that returns neither `created` nor `notCreated` has not happened.
-  // Returning an id-less node here put a phantom row in the listing that looked
-  // saved until the next reload — fail loudly instead.
-  if (!created?.id) {
-    throw new Error('The server did not confirm the new folder was created.');
-  }
-  return { name, parentId, blobId: null, ...created };
+  const { node, error } = interpretCreate(data?.methodResponses?.[0]?.[1], 'nf');
+  if (error) throw new Error(error.description || 'Could not create the folder.');
+  return node ? { name, parentId, blobId: null, ...node } : null;
 }
 
 /** Attach an already-uploaded blob to a new FileNode. */
@@ -128,15 +137,9 @@ export async function createFile(accountId, session, { name, blobId, type, size,
     }, 'f']],
     fileUsing(session),
   );
-  const resp = data?.methodResponses?.[0]?.[1];
-  const err = firstSetError(resp, 'nn');
-  if (err) throw new Error(err.description || 'Could not save the file.');
-
-  const created = resp?.created?.nn;
-  if (!created?.id) {
-    throw new Error('The server did not confirm the file was saved.');
-  }
-  return { name, parentId, blobId, type, size, ...created };
+  const { node, error } = interpretCreate(data?.methodResponses?.[0]?.[1], 'nn');
+  if (error) throw new Error(error.description || 'Could not save the file.');
+  return node ? { name, parentId, blobId, type, size, ...node } : null;
 }
 
 export async function updateNode(accountId, session, id, patch) {
