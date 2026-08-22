@@ -26,7 +26,9 @@ self.addEventListener('notificationclick', e => {
     clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => {
       const existing = list.find(c => c.url.startsWith(self.location.origin));
       if (existing) return existing.focus();
-      return clients.openWindow('/');
+      // These notifications are about new mail, so open Mail rather than the
+      // dashboard that now lives at the root.
+      return clients.openWindow('/mail');
     })
   );
 });

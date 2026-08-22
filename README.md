@@ -12,7 +12,10 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 
 ## Features
 
-- JMAP protocol for fast, efficient mail access (RFC 8620 / RFC 8621)
+- **Dashboard** at `/` — unread count, storage used, contacts, today's agenda
+  and quick actions, gathered in a single batched JMAP request
+- JMAP protocol for fast, efficient mail access (RFC 8620 / RFC 8621) — Mail
+  lives at `/mail`
 - **Calendar** — month view, create / edit / delete events, per-calendar filtering (JMAP Calendars / RFC 8984)
 - **Contacts** — address book list, contact search, create / edit / delete (JMAP Contacts / RFC 9553)
 - **Notes** — Markdown notes stored as `.md` files in a `Notes` folder in file
@@ -28,7 +31,7 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 - Three-pane layout: mailboxes / message list / reading pane — collapsing to a
   single pane with drill-down navigation and an off-canvas sidebar below 1024px
 - Mailbox and Folders sections — system mailboxes (Inbox, Sent, Drafts…) separated from user folders
-- App switcher in the top bar — Mail, Calendar, Contacts, Files
+- App switcher — tabs in the top bar on desktop, a sheet menu on mobile
 - Dark mode (system preference + manual toggle, persisted)
 - Real-time push via JMAP EventSource (SSE), with an exponential-backoff reconnect and a polling fallback
 - **Remote images blocked by default** — tracking pixels do not load until you ask, per message or per sender
@@ -196,6 +199,7 @@ jmap-mail/
 │       ├── lib/
 │       │   ├── api.js                   # JMAP API helpers (mail, calendar, contacts)
 │       │   ├── sanitize.js              # DOMPurify config + remote-content blocking
+│       │   ├── dashboard.js             # Batched overview query + summarising
 │       │   ├── files.js                 # JMAP FileNode calls + blob transfer
 │       │   ├── notes.js                 # Notes over FileNode (.md in a Notes folder)
 │       │   ├── markdown.js              # Markdown render + sanitise
@@ -223,7 +227,8 @@ jmap-mail/
 │       │       └── ...                  # Sidebar, MessageList, MessagePane, …
 │       └── routes/
 │           ├── +layout.svelte            # Auth guard, dark mode, activity bar, tab badge
-│           ├── +page.svelte              # Mail three-pane view, realtime, shortcuts
+│           ├── +page.svelte              # Dashboard
+│           ├── mail/+page.svelte         # Mail three-pane view, realtime, shortcuts
 │           ├── calendar/+page.svelte     # Calendar view
 │           ├── files/+page.svelte        # Files (Drive) view
 │           ├── notes/+page.svelte        # Notes (Markdown) view

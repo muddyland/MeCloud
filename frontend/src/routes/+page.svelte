@@ -1,427 +1,318 @@
 <script>
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount } from 'svelte';
+  import { fade } from 'svelte/transition';
+  import { goto } from '$app/navigation';
   import Navbar from '$lib/components/Navbar.svelte';
-  import Sidebar from '$lib/components/Sidebar.svelte';
-  import MessageList from '$lib/components/MessageList.svelte';
-  import MessagePane from '$lib/components/MessagePane.svelte';
-  import ComposeModal from '$lib/components/ComposeModal.svelte';
-  import ContextMenu from '$lib/components/ContextMenu.svelte';
-  import NewFolderModal from '$lib/components/NewFolderModal.svelte';
-  import SieveEditor from '$lib/components/SieveEditor.svelte';
-  import AppPasswordsModal from '$lib/components/AppPasswordsModal.svelte';
-  import MailboxPicker from '$lib/components/MailboxPicker.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
-  import ShortcutsHelp from '$lib/components/ShortcutsHelp.svelte';
-  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
-  import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
+  import Spinner from '$lib/components/Spinner.svelte';
+  import AppIcon from '$lib/components/AppIcon.svelte';
+  import ComposeModal from '$lib/components/ComposeModal.svelte';
   import {
-    mailboxes, selectedMailbox, emails, loading,
-    jmapSession, jmapAccountId, selectedEmailId, sidebarWidth, messageListWidth, currentUser,
-    composeOpen, composeContext, anyModalOpen, visibleEmails, messageActions,
-    shortcutsOpen, selectedEmailIds, mailRefresher
+    jmapSession, jmapAccountId, currentUser, appName,
+    composeOpen, composeContext, selectedMailbox, mailboxes,
   } from '$lib/stores/mail.js';
-  import { getJMAPSession, getMailboxes, getMailboxCounts, getEmails, getAppConfig } from '$lib/api.js';
-  import { toast } from '$lib/stores/toast.js';
+  import { getJMAPSession, getAppConfig } from '$lib/api.js';
+  import { getDashboardSummary, eventEnd } from '$lib/dashboard.js';
+  import { formatBytes } from '$lib/fileTypes.js';
 
-  const MIN_SIDEBAR  = 180;  const MAX_SIDEBAR  = 380;
-  const MIN_MSGLIST  = 220;  const MAX_MSGLIST  = 520;
+  let stalwartUrl = '';
+  let summary = null;
+  let loading = true;
+  let error   = '';
 
-  const PAGE = 50;
+  $: greeting = (() => {
+    const h = new Date().getHours();
+    if (h < 12) return 'Good morning';
+    if (h < 18) return 'Good afternoon';
+    return 'Good evening';
+  })();
 
-  let dragging       = null;
-  let dragStartX     = 0;
-  let dragStartWidth = 0;
-  let stalwartUrl    = '';
-  let initError      = '';
+  $: firstName = String($currentUser ?? '').split('@')[0].split(/[.\s_-]/)[0];
+  $: displayName = firstName ? firstName.charAt(0).toUpperCase() + firstName.slice(1) : '';
 
-  function startDrag(e, panel) {
-    dragging       = panel;
-    dragStartX     = e.clientX;
-    dragStartWidth = panel === 'sidebar' ? $sidebarWidth : $messageListWidth;
-    e.preventDefault();
-  }
-
-  function onMouseMove(e) {
-    if (!dragging) return;
-    const newWidth = dragStartWidth + (e.clientX - dragStartX);
-    if (dragging === 'sidebar') {
-      sidebarWidth.set(Math.max(MIN_SIDEBAR, Math.min(MAX_SIDEBAR, newWidth)));
-    } else {
-      messageListWidth.set(Math.max(MIN_MSGLIST, Math.min(MAX_MSGLIST, newWidth)));
-    }
-  }
-
-  function stopDrag() { dragging = null; }
-
-  onMount(() => {
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup',   stopDrag);
-  });
-  onDestroy(() => {
-    window.removeEventListener('mousemove', onMouseMove);
-    window.removeEventListener('mouseup',   stopDrag);
-    teardownRealtime();
-  });
-
-  // ── Real-time event stream + polling fallback ────────────────────────────
-  let es          = null;
-  let esTimer     = null;
-  let pollTimer   = null;
-  let esRetries   = 0;
-  let streamLive  = false;
-
-  function teardownRealtime() {
-    clearTimeout(esTimer);
-    clearInterval(pollTimer);
-    esTimer = pollTimer = null;
-    try { es?.close(); } catch {}
-    es = null;
-    streamLive = false;
-  }
-
-  function connectStream() {
-    if (es?.readyState === 0 || es?.readyState === 1) return; // CONNECTING or OPEN
-    clearTimeout(esTimer);
-    esTimer = null;
-    es = new EventSource('/api/jmap/events');
-
-    const onData = ({ data }) => {
-      try {
-        const msg = JSON.parse(data);
-        // Trigger on any state change for our account, not just Email
-        if (msg?.['@type'] === 'StateChange' && msg.changed?.[accountId]) {
-          silentRefresh();
-        }
-      } catch {}
-    };
-
-    es.onopen = () => { streamLive = true; esRetries = 0; };
-    es.addEventListener('state', onData);
-    es.onmessage = onData;
-    es.onerror = () => {
-      streamLive = false;
-      try { es?.close(); } catch {}
-      es = null;
-      // Exponential backoff with jitter. A fixed 10s retry means every tab in
-      // every browser reconnects in lockstep after an outage, which is exactly
-      // the thundering herd the server least needs while recovering.
-      const base = Math.min(60_000, 2_000 * 2 ** Math.min(esRetries, 5));
-      esRetries += 1;
-      clearTimeout(esTimer);
-      esTimer = setTimeout(connectStream, base + Math.random() * 1_000);
-    };
-  }
-
-  // Polling exists only to cover the case where SSE cannot connect at all
-  // (a proxy that buffers event streams, say). Running it *alongside* a healthy
-  // stream just doubles the request load for no new information.
-  function startPolling() {
-    clearInterval(pollTimer);
-    pollTimer = setInterval(() => {
-      if (streamLive) return;
-      if (typeof document !== 'undefined' && document.hidden) return;
-      silentRefresh();
-    }, 30_000);
-  }
-
-  function onVisibilityChange() {
-    if (document.hidden) return;
-    // Coming back to the tab: catch up immediately rather than waiting out the
-    // rest of the poll interval, and re-establish the stream if it dropped.
-    if (!streamLive) connectStream();
-    silentRefresh();
-  }
-
-  let refreshing = false;
-
-  async function silentRefresh() {
-    const mid = $selectedMailbox?.id;
-    if (!mid || !accountId || refreshing) return;
-    refreshing = true;
+  async function load() {
+    if (!$jmapAccountId) return;
+    loading = true;
+    error = '';
     try {
-      // Refetch exactly as many messages as the user has scrolled into view.
-      // Refetching a flat 50 used to silently discard everything past the first
-      // page, so an infinite-scrolled list jumped back to the top on every tick.
-      const want = Math.min(Math.max($emails.length, PAGE), 500);
-      const [fresh, counts] = await Promise.all([
-        getEmails(accountId, mid, 0, want),
-        getMailboxCounts(accountId),
-      ]);
-      if ($selectedMailbox?.id !== mid) return;      // user moved on mid-flight
-
-      const prevIds = new Set($emails.map(e => e.id));
-      emails.set(fresh);
-
-      // Preserve sidebar sort order; only update server-owned counters.
-      const byId = new Map(counts.map(c => [c.id, c]));
-      mailboxes.update(existing => existing.map(mb => {
-        const update = byId.get(mb.id);
-        return update ? { ...mb, unreadEmails: update.unreadEmails ?? 0 } : mb;
-      }));
-
-      // Only notify about emails with IDs not previously in the store AND recently received.
-      // Comparing IDs (not lengths) avoids false positives when moves/deletes cause other
-      // emails to slide into the fetch window.
-      const fiveMinAgo = Date.now() - 5 * 60 * 1000;
-      const reallyNew = fresh.filter(
-        e => !prevIds.has(e.id) && new Date(e.receivedAt).getTime() > fiveMinAgo
-      );
-      if (reallyNew.length > 0) notify(reallyNew.length, reallyNew[0].subject ?? '');
-    } catch {
-      // Background refresh — a failure here is not worth interrupting the user.
-    } finally {
-      refreshing = false;
-    }
-  }
-
-
-  async function notify(count, subject) {
-    if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-    const title = count === 1 ? 'New message' : `${count} new messages`;
-    const opts  = { body: subject, icon: '/icons/icon-192.png', tag: 'jmap-mail', renotify: true };
-    try {
-      // Prefer SW notification — required in Chrome when a service worker is active
-      if ('serviceWorker' in navigator) {
-        const reg = await navigator.serviceWorker.ready;
-        await reg.showNotification(title, opts);
-      } else {
-        new Notification(title, opts);
-      }
-    } catch {
-      try { new Notification(title, opts); } catch {}
-    }
-  }
-
-  // ── Mail loading ────────────────────────────────────────────────────────────
-  let accountId = null;
-
-  // Track the id, not the object: renaming a folder produces a new object and
-  // used to trigger a pointless full reload of its message list.
-  let loadedMailboxId = null;
-  $: if ($selectedMailbox && accountId && $selectedMailbox.id !== loadedMailboxId) {
-    loadedMailboxId = $selectedMailbox.id;
-    loadEmails($selectedMailbox.id);
-    // Picking a folder from the drawer should reveal its messages rather than
-    // leaving the overlay covering them.
-    closeSidebar();
-  }
-
-  // Sequence guard: switching folders quickly used to let a slow response for
-  // the previous folder land last and paint the wrong messages.
-  let loadSeq = 0;
-
-  async function loadEmails(mailboxId) {
-    const seq = ++loadSeq;
-    loading.set(true);
-    selectedEmailId.set(null);
-    try {
-      const list = await getEmails(accountId, mailboxId, 0, PAGE);
-      if (seq !== loadSeq) return;
-      emails.set(list);
+      summary = await getDashboardSummary($jmapAccountId, $jmapSession);
     } catch (e) {
-      if (seq === loadSeq) {
-        emails.set([]);
-        toast(e?.message ?? 'Could not load messages', 'error');
-      }
+      error = e?.message ?? 'Could not load your overview.';
     } finally {
-      if (seq === loadSeq) loading.set(false);
+      loading = false;
     }
   }
 
-  // ── Keyboard shortcuts ──────────────────────────────────────────────────────
-  function isTyping(target) {
-    if (!target) return false;
-    const tag = target.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+  function openInbox() {
+    const inbox = $mailboxes.find((m) => m.role === 'inbox');
+    if (inbox) selectedMailbox.set(inbox);
+    goto('/mail');
   }
 
-  function step(delta) {
-    const list = $visibleEmails;
-    if (!list.length) return;
-    const current = list.findIndex(e => e.id === $selectedEmailId);
-    const next = current === -1
-      ? (delta > 0 ? 0 : list.length - 1)
-      : Math.min(list.length - 1, Math.max(0, current + delta));
-    selectedEmailId.set(list[next].id);
-    document.getElementById(`email-row-${list[next].id}`)
-      ?.scrollIntoView({ block: 'nearest' });
+  function compose() {
+    composeContext.set(null);
+    composeOpen.set(true);
   }
 
-  function onKeydown(e) {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (isTyping(e.target)) return;
+  function eventTime(event) {
+    if (event.showWithoutTime) return 'All day';
+    const start = new Date(event.start);
+    const end = eventEnd(event);
+    const fmt = (d) => d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    return end && end.getTime() !== start.getTime() ? `${fmt(start)} – ${fmt(end)}` : fmt(start);
+  }
 
-    // `?` opens help even while a modal is up; everything else stands down.
-    if (e.key === '?') { e.preventDefault(); shortcutsOpen.update(v => !v); return; }
-    if ($anyModalOpen) return;
-
-    const actions = $messageActions;
-
-    switch (e.key) {
-      case 'j': case 'ArrowDown':  e.preventDefault(); step(1);  break;
-      case 'k': case 'ArrowUp':    e.preventDefault(); step(-1); break;
-      case 'Escape':
-        if ($selectedEmailIds.size) selectedEmailIds.set(new Set());
-        else selectedEmailId.set(null);
-        break;
-      case 'c':
-        e.preventDefault();
-        composeContext.set(null);
-        composeOpen.set(true);
-        break;
-      case '.':
-        e.preventDefault();
-        silentRefresh();
-        break;
-      case 'r': if (actions) { e.preventDefault(); actions.reply(); }      break;
-      case 'a': if (actions) { e.preventDefault(); actions.replyAll(); }   break;
-      case 'f': if (actions) { e.preventDefault(); actions.forward(); }    break;
-      case 'u': if (actions) { e.preventDefault(); actions.toggleSeen(); } break;
-      case '#':
-      case 'Delete':
-        if (actions) { e.preventDefault(); actions.remove(); }
-        break;
-    }
+  function eventLocation(event) {
+    const first = Object.values(event?.locations ?? {})[0];
+    return first?.name ?? '';
   }
 
   onMount(async () => {
-    mailRefresher.set(silentRefresh);
-
-    // Grab stalwartUrl from config for the navbar link
     const config = await getAppConfig();
     stalwartUrl = config.stalwartUrl ?? '';
 
-    try {
-      const session = await getJMAPSession();
-      if (!session) return;                 // apiFetch already redirected to login
-      jmapSession.set(session);
-      accountId = Object.keys(session.accounts ?? {})[0];
-      if (!accountId) throw new Error('This account has no mail access.');
-      jmapAccountId.set(accountId);
-
-      // Populate the username shown in the navbar
-      currentUser.set(session.username || session.accounts[accountId]?.name || '');
-
-      const mboxList = await getMailboxes(accountId);
-      const roleOrder = ['inbox', 'sent', 'drafts', 'junk', 'trash', 'archive'];
-      mboxList.sort((a, b) => {
-        const ai = roleOrder.indexOf(a.role ?? '');
-        const bi = roleOrder.indexOf(b.role ?? '');
-        if (ai === -1 && bi === -1) return (a.name ?? '').localeCompare(b.name ?? '');
-        if (ai === -1) return 1;
-        if (bi === -1) return -1;
-        return ai - bi;
-      });
-      mailboxes.set(mboxList);
-
-      const inbox = mboxList.find((m) => m.role === 'inbox') ?? mboxList[0];
-      if (inbox) selectedMailbox.set(inbox);
-
-      connectStream();
-      startPolling();
-      document.addEventListener('visibilitychange', onVisibilityChange);
-    } catch (err) {
-      console.error('Failed to initialise JMAP session:', err);
-      initError = err?.message ?? 'Could not reach the mail server.';
+    if (!$jmapAccountId) {
+      try {
+        const session = await getJMAPSession();
+        if (!session) return;
+        jmapSession.set(session);
+        const accountId = Object.keys(session.accounts ?? {})[0];
+        jmapAccountId.set(accountId);
+        currentUser.set(session.username || session.accounts?.[accountId]?.name || '');
+      } catch (e) {
+        error = e?.message ?? 'Could not reach the server.';
+        loading = false;
+        return;
+      }
     }
+    await load();
   });
 
-  onDestroy(() => {
-    mailRefresher.set(null);
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', onVisibilityChange);
-    }
-  });
+  const card =
+    'flex flex-col rounded-2xl bg-white dark:bg-gray-900 ' +
+    'ring-1 ring-gray-900/5 dark:ring-white/10 overflow-hidden';
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
-<div
-  class="flex flex-col app-shell bg-gray-100 dark:bg-gray-950"
-  class:cursor-col-resize={dragging !== null}
->
-  <!-- Top navbar -->
+<div class="flex flex-col app-shell bg-gray-100 dark:bg-gray-950">
   <Navbar {stalwartUrl} />
 
-  {#if initError}
-    <div class="flex items-center gap-3 px-4 py-2 flex-shrink-0
-                bg-red-50 dark:bg-red-900/25 border-b border-red-200 dark:border-red-800/60">
-      <svg class="w-4 h-4 flex-shrink-0 text-red-500" viewBox="0 0 24 24" fill="none"
-           stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-        <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5h.01" />
-      </svg>
-      <span class="text-xs text-red-800 dark:text-red-200 flex-1">{initError}</span>
-      <button on:click={() => location.reload()}
-        class="text-xs font-medium px-2.5 py-1 rounded-md
-               bg-red-100 dark:bg-red-800/60 hover:bg-red-200 dark:hover:bg-red-800
-               text-red-900 dark:text-red-100 transition-colors duration-150">
-        Reload
-      </button>
+  <main class="flex-1 min-h-0 overflow-y-auto">
+    <div class="max-w-5xl mx-auto px-4 sm:px-6 py-6 sm:py-8 pb-safe">
+
+      <!-- Greeting -->
+      <header class="mb-6">
+        <h1 class="text-xl sm:text-2xl font-semibold text-gray-900 dark:text-gray-50">
+          {greeting}{displayName ? `, ${displayName}` : ''}
+        </h1>
+        <p class="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          {new Date().toLocaleDateString([], {
+            weekday: 'long', day: 'numeric', month: 'long',
+          })}
+        </p>
+      </header>
+
+      {#if error}
+        <div class="{card} p-6 items-center text-center gap-3">
+          <p class="text-sm text-gray-500 dark:text-gray-400">{error}</p>
+          <button on:click={load}
+            class="text-xs font-medium px-3 py-1.5 rounded-lg bg-gray-100 dark:bg-gray-700
+                   hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-200
+                   transition-colors duration-150">Try again</button>
+        </div>
+
+      {:else if loading}
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          {#each Array(4) as _}
+            <div class="{card} p-4 gap-3">
+              <div class="h-4 w-4 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+              <div class="h-7 w-16 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+              <div class="h-3 w-20 rounded bg-gray-100 dark:bg-gray-700/60 animate-pulse"></div>
+            </div>
+          {/each}
+        </div>
+
+      {:else if summary}
+        <div in:fade={{ duration: 150 }}>
+
+          <!-- ── Stat tiles ─────────────────────────────────────────────── -->
+          <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+            <button on:click={openInbox} class="{card} p-4 text-left
+                    hover:ring-blue-300 dark:hover:ring-blue-700 transition-shadow duration-150">
+              <AppIcon id="mail" cls="w-4 h-4 text-blue-500 dark:text-blue-400" />
+              <span class="mt-2 text-2xl font-semibold text-gray-900 dark:text-gray-50 tabular-nums">
+                {summary.mail.unread}
+              </span>
+              <span class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                unread in Inbox
+              </span>
+              <span class="text-[11px] text-gray-400 dark:text-gray-600 mt-1">
+                {summary.mail.inboxTotal.toLocaleString()} message{summary.mail.inboxTotal === 1 ? '' : 's'}
+              </span>
+            </button>
+
+            {#if summary.files}
+              <button on:click={() => goto('/files')} class="{card} p-4 text-left
+                      hover:ring-blue-300 dark:hover:ring-blue-700 transition-shadow duration-150">
+                <AppIcon id="files" cls="w-4 h-4 text-amber-500 dark:text-amber-400" />
+                <span class="mt-2 text-2xl font-semibold text-gray-900 dark:text-gray-50 tabular-nums">
+                  {formatBytes(summary.files.bytes)}
+                </span>
+                <span class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">stored in Files</span>
+                <span class="text-[11px] text-gray-400 dark:text-gray-600 mt-1">
+                  {summary.files.files.toLocaleString()} file{summary.files.files === 1 ? '' : 's'}
+                  · {summary.files.folders} folder{summary.files.folders === 1 ? '' : 's'}
+                </span>
+              </button>
+            {/if}
+
+            {#if summary.contacts !== null}
+              <button on:click={() => goto('/contacts')} class="{card} p-4 text-left
+                      hover:ring-blue-300 dark:hover:ring-blue-700 transition-shadow duration-150">
+                <AppIcon id="contacts" cls="w-4 h-4 text-green-500 dark:text-green-400" />
+                <span class="mt-2 text-2xl font-semibold text-gray-900 dark:text-gray-50 tabular-nums">
+                  {summary.contacts.toLocaleString()}
+                </span>
+                <span class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  contact{summary.contacts === 1 ? '' : 's'}
+                </span>
+              </button>
+            {/if}
+
+            {#if summary.events !== null}
+              <button on:click={() => goto('/calendar')} class="{card} p-4 text-left
+                      hover:ring-blue-300 dark:hover:ring-blue-700 transition-shadow duration-150">
+                <AppIcon id="calendar" cls="w-4 h-4 text-purple-500 dark:text-purple-400" />
+                <span class="mt-2 text-2xl font-semibold text-gray-900 dark:text-gray-50 tabular-nums">
+                  {summary.events.length}
+                </span>
+                <span class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  event{summary.events.length === 1 ? '' : 's'} today
+                </span>
+              </button>
+            {/if}
+          </div>
+
+          <!-- ── Today + quick actions ──────────────────────────────────── -->
+          <div class="grid lg:grid-cols-3 gap-3 sm:gap-4 mt-3 sm:mt-4">
+
+            {#if summary.events !== null}
+              <section class="{card} lg:col-span-2">
+                <div class="flex items-center justify-between px-4 py-3
+                            border-b border-gray-100 dark:border-gray-800">
+                  <h2 class="text-xs font-semibold uppercase tracking-wider
+                             text-gray-500 dark:text-gray-400">Today</h2>
+                  <button on:click={() => goto('/calendar')}
+                    class="text-xs text-blue-600 dark:text-blue-400 hover:underline">
+                    Calendar
+                  </button>
+                </div>
+
+                {#if summary.events.length === 0}
+                  <div class="flex flex-col items-center justify-center gap-2 py-10
+                              text-gray-400 dark:text-gray-500">
+                    <AppIcon id="calendar" cls="w-8 h-8 opacity-40" />
+                    <p class="text-sm">Nothing scheduled today</p>
+                  </div>
+                {:else}
+                  <ul class="divide-y divide-gray-100 dark:divide-gray-800">
+                    {#each summary.events as event (event.id)}
+                      <li class="flex items-start gap-3 px-4 py-3">
+                        <span class="w-24 flex-shrink-0 text-xs tabular-nums
+                                     text-gray-500 dark:text-gray-400 pt-0.5">
+                          {eventTime(event)}
+                        </span>
+                        <span class="w-1 self-stretch rounded-full bg-purple-400 dark:bg-purple-500
+                                     flex-shrink-0"></span>
+                        <div class="min-w-0 flex-1">
+                          <p class="text-sm text-gray-800 dark:text-gray-100 truncate">
+                            {event.title || '(no title)'}
+                          </p>
+                          {#if eventLocation(event)}
+                            <p class="text-xs text-gray-400 dark:text-gray-500 truncate mt-0.5">
+                              {eventLocation(event)}
+                            </p>
+                          {/if}
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </section>
+            {/if}
+
+            <section class="{card}">
+              <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-800">
+                <h2 class="text-xs font-semibold uppercase tracking-wider
+                           text-gray-500 dark:text-gray-400">Quick actions</h2>
+              </div>
+              <div class="p-2 grid grid-cols-2 lg:grid-cols-1 gap-1">
+                <button on:click={compose}
+                  class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left
+                         text-gray-700 dark:text-gray-200
+                         hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150">
+                  <AppIcon id="mail" cls="w-4 h-4 text-blue-500 flex-shrink-0" />
+                  Compose
+                </button>
+                <button on:click={() => goto('/notes')}
+                  class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left
+                         text-gray-700 dark:text-gray-200
+                         hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150">
+                  <AppIcon id="notes" cls="w-4 h-4 text-teal-500 flex-shrink-0" />
+                  Notes{summary.files ? ` (${summary.files.notes})` : ''}
+                </button>
+                <button on:click={() => goto('/files')}
+                  class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left
+                         text-gray-700 dark:text-gray-200
+                         hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150">
+                  <AppIcon id="files" cls="w-4 h-4 text-amber-500 flex-shrink-0" />
+                  Upload a file
+                </button>
+                <button on:click={() => goto('/calendar')}
+                  class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left
+                         text-gray-700 dark:text-gray-200
+                         hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150">
+                  <AppIcon id="calendar" cls="w-4 h-4 text-purple-500 flex-shrink-0" />
+                  New event
+                </button>
+              </div>
+            </section>
+          </div>
+
+          <!-- ── Mail breakdown ─────────────────────────────────────────── -->
+          <section class="{card} mt-3 sm:mt-4">
+            <div class="flex items-center justify-between px-4 py-3
+                        border-b border-gray-100 dark:border-gray-800">
+              <h2 class="text-xs font-semibold uppercase tracking-wider
+                         text-gray-500 dark:text-gray-400">Mail</h2>
+              <button on:click={openInbox}
+                class="text-xs text-blue-600 dark:text-blue-400 hover:underline">Open</button>
+            </div>
+            <dl class="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y sm:divide-y-0
+                       divide-gray-100 dark:divide-gray-800">
+              {#each [
+                ['Unread', summary.mail.unreadAll],
+                ['Total messages', summary.mail.total],
+                ['Drafts', summary.mail.drafts],
+                ['Folders', summary.mail.mailboxes],
+              ] as [label, value]}
+                <div class="px-4 py-3">
+                  <dt class="text-[11px] text-gray-400 dark:text-gray-500">{label}</dt>
+                  <dd class="text-lg font-semibold text-gray-900 dark:text-gray-100 tabular-nums">
+                    {Number(value).toLocaleString()}
+                  </dd>
+                </div>
+              {/each}
+            </dl>
+          </section>
+
+          <p class="text-center text-[11px] text-gray-400 dark:text-gray-600 mt-6">
+            {$appName}
+          </p>
+        </div>
+      {/if}
     </div>
-  {/if}
-
-  <!-- Three-pane area -->
-  <div class="flex flex-1 min-h-0 overflow-hidden select-none">
-
-    <!-- Sidebar: in-flow at desktop widths, an overlay drawer below lg -->
-    <SidebarDrawer width={$sidebarWidth} cls="overflow-hidden">
-      <Sidebar />
-    </SidebarDrawer>
-
-    <!-- Drag handle: sidebar ↔ message list -->
-    <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-    <div
-      class="flex-shrink-0 h-full cursor-col-resize relative z-10 group hidden lg:block"
-      style="width: 5px"
-      on:mousedown={(e) => startDrag(e, 'sidebar')}
-      role="separator" aria-orientation="vertical" tabindex="0"
-      aria-valuenow={$sidebarWidth} aria-valuemin={180} aria-valuemax={380}
-    >
-      <div class="absolute inset-y-0 -left-1 -right-1
-                  group-hover:bg-blue-400/30 dark:group-hover:bg-blue-500/30
-                  transition-colors duration-150"></div>
-      <div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-gray-200 dark:bg-gray-700"></div>
-    </div>
-
-    <!-- Message list. Full width when compact, and hidden entirely once a
-         message is open so the reading pane gets the whole screen. -->
-    <div
-      class="h-full overflow-hidden {$isCompact
-        ? ($selectedEmailId ? 'hidden' : 'flex-1 min-w-0')
-        : 'flex-shrink-0'}"
-      style={$isCompact ? '' : `width: ${$messageListWidth}px`}
-    >
-      <MessageList />
-    </div>
-
-    <!-- Drag handle: message list ↔ reading pane -->
-    <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
-    <div
-      class="flex-shrink-0 h-full cursor-col-resize relative z-10 group hidden lg:block"
-      style="width: 5px"
-      on:mousedown={(e) => startDrag(e, 'msglist')}
-      role="separator" aria-orientation="vertical" tabindex="0"
-      aria-valuenow={$messageListWidth} aria-valuemin={220} aria-valuemax={520}
-    >
-      <div class="absolute inset-y-0 -left-1 -right-1
-                  group-hover:bg-blue-400/30 dark:group-hover:bg-blue-500/30
-                  transition-colors duration-150"></div>
-      <div class="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-gray-200 dark:bg-gray-700"></div>
-    </div>
-
-    <!-- Reading pane. Compact: only shown once something is selected. -->
-    <div class="flex-1 min-w-0 h-full {$isCompact && !$selectedEmailId ? 'hidden' : ''}">
-      <MessagePane />
-    </div>
-
-  </div>
+  </main>
 </div>
 
 <ComposeModal />
-<ContextMenu />
-<MailboxPicker />
-<NewFolderModal />
-<SieveEditor />
-<AppPasswordsModal />
-<ShortcutsHelp />
 <Toasts />

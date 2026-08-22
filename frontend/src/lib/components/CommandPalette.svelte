@@ -74,7 +74,7 @@
     keywords: ['folder', 'mailbox', mb.role ?? ''].filter(Boolean),
     icon: 'mailbox',
     hint: mb.unreadEmails ? `${mb.unreadEmails} unread` : '',
-    run: () => { searchQuery.set(''); selectedMailbox.set(mb); goto('/'); },
+    run: () => { searchQuery.set(''); selectedMailbox.set(mb); goto('/mail'); },
   }));
 
   $: contactItems = $contacts.map((c) => {
