@@ -14,7 +14,7 @@
   import {
     fileNodes, filesLoading, filesError, currentFolderId, selectedFileIds,
     previewNode, fileSearch, viewMode, sortKey, sortAsc,
-    uploads, nodesById, childrenByParent, visibleNodes, totalUsage,
+    uploads, nodesById, childrenByParent, visibleNodes, totalUsage, rootNodeId, activeParentId,
   } from '$lib/stores/files.js';
   import {
     getFileNodes, getFileNodesByIds, createFolder, renameNode, moveNode, destroyNodes,
@@ -41,7 +41,7 @@
   let uploadError = '';
 
   $: limits = fileLimits($jmapSession);
-  $: trail  = breadcrumbTrail($nodesById, $currentFolderId);
+  $: trail  = breadcrumbTrail($nodesById, $currentFolderId).filter((n) => n.id !== $rootNodeId);
   $: searching = $fileSearch.trim().length > 0;
   $: selectionCount = $selectedFileIds.size;
 
@@ -101,7 +101,7 @@
     // The server is the authority on what it accepts, so there is no
     // capability pre-flight here. This check is different: it is about the
     // name, which we can see, and it turns a round trip into an instant answer.
-    const siblings = $childrenByParent.get($currentFolderId ?? null) ?? [];
+    const siblings = $childrenByParent.get($activeParentId) ?? [];
     const clash = siblings.find(
       (n) => String(n.name ?? '').toLowerCase() === name.toLowerCase(),
     );
@@ -116,7 +116,7 @@
 
     creatingFolder = false;
     try {
-      const created = await createFolder($jmapAccountId, $jmapSession, name, $currentFolderId);
+      const created = await createFolder($jmapAccountId, $jmapSession, name, $activeParentId);
       if (created) fileNodes.update((list) => [...list, created]);
       toast(`Folder "${name}" created`, 'success');
       await reconcile();
@@ -283,7 +283,7 @@
     const files = [...(fileList ?? [])];
     if (!files.length) return;
 
-    const parentId = $currentFolderId;
+    const parentId = $activeParentId;
     const taken = new Set(($childrenByParent.get(parentId ?? null) ?? []).map((n) => n.name));
 
     let failures = 0;
@@ -376,7 +376,7 @@
     if (total === 0 && !tree.some((n) => n.kind === 'dir')) return;
 
     try {
-      await uploadInto(tree, $currentFolderId);
+      await uploadInto(tree, $activeParentId);
     } catch (e) {
       uploadError = e?.message ?? 'Upload failed.';
       toast(uploadError, 'error');
