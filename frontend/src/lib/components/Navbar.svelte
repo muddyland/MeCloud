@@ -9,6 +9,7 @@
   import Spinner from './Spinner.svelte';
   import AppTabs from './AppTabs.svelte';
   import AppMenu from './AppMenu.svelte';
+  import BrandMark from './BrandMark.svelte';
   import { isCompact, toggleSidebar } from '$lib/stores/viewport.js';
 
   export let stalwartUrl = '';
@@ -72,9 +73,7 @@
        are, and two labels competing for the same row is what made this cramped. -->
   <span class="hidden lg:flex items-center gap-1.5 flex-shrink-0 select-none
                text-sm font-semibold text-gray-800 dark:text-gray-100 tracking-tight">
-    <svg class="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
-      <path d="M21.75 6.75v10.5a2.25 2.25 0 01-2.25 2.25h-15a2.25 2.25 0 01-2.25-2.25V6.75m19.5 0A2.25 2.25 0 0019.5 4.5h-15a2.25 2.25 0 00-2.25 2.25m19.5 0v.243a2.25 2.25 0 01-1.07 1.916l-7.5 4.615a2.25 2.25 0 01-2.36 0L3.32 8.91a2.25 2.25 0 01-1.07-1.916V6.75"/>
-    </svg>
+    <BrandMark cls="w-4 h-4 opacity-80" />
     {$appName}
   </span>
 

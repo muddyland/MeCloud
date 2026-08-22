@@ -7,6 +7,7 @@
   import { getMe, getAppConfig } from '$lib/api.js';
   import ProgressBar from '$lib/components/ProgressBar.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
+  import BrandMark from '$lib/components/BrandMark.svelte';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
 
   let checkingAuth = true;
@@ -53,8 +54,9 @@
 {#if checkingAuth}
   <div class="fixed inset-0 flex flex-col items-center justify-center gap-3
               bg-gray-100 dark:bg-gray-950">
-    <Spinner size="lg" label="Signing in" />
-    <p class="text-sm text-gray-500 dark:text-gray-400">Opening your mailbox…</p>
+    <BrandMark cls="w-10 h-10 text-blue-500 dark:text-blue-400" />
+    <Spinner size="md" label="Signing in" />
+    <p class="text-sm text-gray-500 dark:text-gray-400">Opening your account…</p>
   </div>
 {:else}
   <slot />
