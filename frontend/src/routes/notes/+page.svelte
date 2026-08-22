@@ -5,6 +5,7 @@
   import Toasts from '$lib/components/Toasts.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
   import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
+  import MarkdownToolbar from '$lib/components/MarkdownToolbar.svelte';
   import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
   import { getJMAPSession, getAppConfig } from '$lib/api.js';
   import { supportsFiles } from '$lib/files.js';
@@ -33,6 +34,7 @@
   let renaming    = false;
   let renameValue = '';
   let textarea;
+  let toolbar;
 
   const AUTOSAVE_MS = 1200;
   let saveTimer;
@@ -243,6 +245,8 @@
   // ── Keyboard ──────────────────────────────────────────────────────────────
 
   function onKeydown(event) {
+    // Only while the editor has focus — Ctrl/Cmd+B anywhere else is not ours.
+    if (document.activeElement === textarea && toolbar?.handleShortcut(event)) return;
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
       event.preventDefault();
       save();
@@ -518,7 +522,12 @@
             <Spinner size="sm" label="" /> Loading note…
           </div>
         {:else}
-          <div class="flex-1 min-h-0 flex" in:fade={{ duration: 120 }}>
+          <div class="flex-1 min-h-0 flex flex-col" in:fade={{ duration: 120 }}>
+            {#if $noteView === 'edit' || $noteView === 'split'}
+              <MarkdownToolbar bind:this={toolbar} bind:value={draft} {textarea} />
+            {/if}
+
+            <div class="flex-1 min-h-0 flex">
             {#if $noteView === 'edit' || $noteView === 'split'}
               <textarea
                 bind:this={textarea}
@@ -542,6 +551,7 @@
                 <article class="note-prose">{@html rendered}</article>
               </div>
             {/if}
+            </div>
           </div>
         {/if}
       {/if}

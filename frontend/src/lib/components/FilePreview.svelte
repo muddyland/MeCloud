@@ -1,6 +1,7 @@
 <script>
   import Modal from './Modal.svelte';
   import Spinner from './Spinner.svelte';
+  import MarkdownToolbar from './MarkdownToolbar.svelte';
   import { previewNode } from '$lib/stores/files.js';
   import { blobUrl, downloadNode, fetchTextBlob, saveTextFile } from '$lib/files.js';
   import { fileKind, formatBytes, isPreviewable } from '$lib/fileTypes.js';
@@ -19,6 +20,12 @@
   let editing = false;
   let draft   = '';
   let saving  = false;
+  let editArea;
+  let editToolbar;
+
+  function onEditKeydown(event) {
+    editToolbar?.handleShortcut(event);
+  }
 
   $: markdown = node ? isMarkdown(node) : false;
   $: editable = node ? (kind === 'text' || markdown) : false;
@@ -141,13 +148,21 @@
       {:else if textError}
         <p class="text-sm text-red-500 py-12">{textError}</p>
       {:else if editing}
-        <textarea
-          bind:value={draft}
-          spellcheck={markdown}
-          class="w-full h-[60vh] resize-none p-4 font-mono text-xs leading-relaxed
-                 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200
-                 focus:outline-none"
-        ></textarea>
+        <div class="w-full flex flex-col">
+          {#if markdown}
+            <MarkdownToolbar bind:this={editToolbar} bind:value={draft}
+                             textarea={editArea} compact />
+          {/if}
+          <textarea
+            bind:this={editArea}
+            bind:value={draft}
+            on:keydown={onEditKeydown}
+            spellcheck={markdown}
+            class="w-full h-[60vh] resize-none p-4 font-mono text-xs leading-relaxed
+                   bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200
+                   focus:outline-none"
+          ></textarea>
+        </div>
       {:else if markdown}
         <!-- Sanitised in renderMarkdown(); this renders in the parent document,
              so that call is the only boundary. -->
