@@ -17,14 +17,19 @@
     uploads, nodesById, childrenByParent, visibleNodes, totalUsage,
   } from '$lib/stores/files.js';
   import {
-    getFileNodes, getFileNodesByIds, createFolder, renameNode, moveNode, destroyNodes,
+    fetchFileNodes, getFileNodesByIds, createFolder, renameNode, moveNode, destroyNodes,
     uploadFile, downloadNode, supportsFiles, fileLimits,
-    readDropEntries, buildDropTree, countTreeFiles, looksTruncated,
+    readDropEntries, buildDropTree, countTreeFiles,
   } from '$lib/files.js';
   import {
     fileKind, formatBytes, isPreviewable, validateName, breadcrumbTrail, uniqueName,
   } from '$lib/fileTypes.js';
   import { toast } from '$lib/stores/toast.js';
+
+  const INCOMPLETE_LISTING =
+    'This server cannot list the whole drive in one request and does not support paging '
+    + 'through it, so some items are missing from this view. They still exist, and their '
+    + 'names are still taken.';
 
   let stalwartUrl = '';
   let supported   = true;
@@ -52,7 +57,9 @@
     filesLoading.set(true);
     filesError.set('');
     try {
-      fileNodes.set(await getFileNodes($jmapAccountId, $jmapSession));
+      const first = await fetchFileNodes($jmapAccountId, $jmapSession);
+      fileNodes.set(first.nodes);
+      if (first.incomplete) uploadError = INCOMPLETE_LISTING;
     } catch (e) {
       filesError.set(e?.message ?? 'Could not load your files.');
     } finally {
@@ -308,18 +315,10 @@
    */
   async function reconcile(failures = 0) {
     try {
-      const fresh = await getFileNodes($jmapAccountId, $jmapSession);
+      const { nodes: fresh, incomplete } = await fetchFileNodes($jmapAccountId, $jmapSession);
       const before = $fileNodes.length;
       fileNodes.set(fresh);
-      if (looksTruncated(fresh, $jmapSession)) {
-        // Exactly at the ceiling is not a coincidence worth ignoring: it means
-        // the listing is probably cut short, and anything past the cut is
-        // invisible here while still existing on the server.
-        uploadError =
-          `The server returned exactly ${fresh.length} items, its per-request maximum, ` +
-          `so this listing is probably incomplete. Items beyond that limit will not appear ` +
-          `here even though they exist.`;
-      }
+      if (incomplete) uploadError = INCOMPLETE_LISTING;
       if (failures === 0 && fresh.length < before) {
         toast('Some items were not saved by the server.', 'error');
       }

@@ -84,53 +84,95 @@ export function fileLimits(session) {
  * return. Fetching once and indexing in memory also makes navigation instant.
  * This matches how the app already loads Mailboxes and Calendars.
  */
-export async function getFileNodes(accountId, session) {
-  const data = await jmapPost(
-    [['FileNode/get', { accountId, ids: null }, 'f']],
-    fileUsing(session),
-  );
-  return data?.methodResponses?.[0]?.[1]?.list ?? [];
-}
+const MAX_PAGES = 200;
 
 /**
  * The cap on how many objects one /get may return, per RFC 8620 section 5.1.
  *
  * `ids: null` means "every record" only while the total stays under this
- * limit; past it the server is meant to answer `requestTooLarge` instead of a
- * listing. A server that quietly truncates instead produces the worst possible
- * symptom -- a listing that looks complete but is not, so an item can be
- * absent from the tree while still blocking its own name on create.
+ * limit. Past it the server is supposed to answer `requestTooLarge`; Stalwart
+ * silently truncates instead, which is worse — the listing looks complete and
+ * is not, so a node past the cut is invisible while still blocking its name.
  */
 export function maxObjectsInGet(session) {
   const n = session?.capabilities?.['urn:ietf:params:jmap:core']?.maxObjectsInGet;
   return Number.isFinite(n) ? n : null;
 }
 
-/** True when a listing is suspiciously exactly the server's per-call ceiling. */
-export function looksTruncated(list, session) {
-  const cap = maxObjectsInGet(session);
-  return cap !== null && Array.isArray(list) && list.length >= cap;
+/**
+ * Page through the whole tree with query + a back-reference to get.
+ *
+ * This is the enumeration RFC 8620 actually provides for a set larger than one
+ * call can carry: /query pages by position, and the result reference feeds
+ * those ids straight into /get so each page costs one round trip.
+ */
+async function queryAllNodes(accountId, session, pageSize) {
+  const nodes = [];
+  const seen = new Set();
+  let position = 0;
+
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const data = await jmapPost(
+      [
+        ['FileNode/query', { accountId, position, limit: pageSize }, 'q'],
+        ['FileNode/get', {
+          accountId,
+          '#ids': { resultOf: 'q', name: 'FileNode/query', path: '/ids' },
+        }, 'g'],
+      ],
+      fileUsing(session),
+    );
+
+    const ids = data?.methodResponses?.[0]?.[1]?.ids ?? [];
+    if (!ids.length) break;
+
+    let added = 0;
+    for (const node of data?.methodResponses?.[1]?.[1]?.list ?? []) {
+      if (seen.has(node.id)) continue;
+      seen.add(node.id);
+      nodes.push(node);
+      added += 1;
+    }
+    // A server that ignores `position` would otherwise return page one forever.
+    if (added === 0) break;
+
+    // Advance by what the server actually returned, not by what was asked for:
+    // it is free to cap `limit` below pageSize, and stepping by pageSize would
+    // then skip everything in between.
+    position += ids.length;
+  }
+
+  return nodes;
 }
 
 /**
- * Fetch specific nodes by id.
+ * Every node in the account, and whether that is actually all of them.
  *
- * Deliberately separate from getFileNodes: that one enumerates, this one asks
- * a direct question. When the server refuses a create with `alreadyExists` but
- * the node is nowhere in the enumerated tree, those two disagree, and only an
- * explicit by-id fetch says which is right. Per draft-ietf-jmap-filenode §4 a
- * node that is not "discoverable" returns notFound here and is omitted from
- * FileNode/query, so a node can legitimately exist, block a name, and never
- * appear in a listing.
+ * @returns {Promise<{nodes: object[], incomplete: boolean}>}
  */
-export async function getFileNodesByIds(accountId, session, ids) {
-  if (!ids?.length) return { list: [], notFound: [] };
-  const data = await jmapPost(
-    [['FileNode/get', { accountId, ids }, 'f']],
-    fileUsing(session),
-  );
-  const resp = data?.methodResponses?.[0]?.[1];
-  return { list: resp?.list ?? [], notFound: resp?.notFound ?? [] };
+export async function fetchFileNodes(accountId, session) {
+  const pageSize = maxObjectsInGet(session) ?? 256;
+
+  try {
+    return { nodes: await queryAllNodes(accountId, session, pageSize), incomplete: false };
+  } catch {
+    // FileNode/query is newer than FileNode/get and a server may not have it.
+    // Falling back keeps a small drive working rather than failing outright,
+    // but a fallback landing on the ceiling is the truncation case and says so
+    // instead of pretending the listing is whole.
+    const data = await jmapPost(
+      [['FileNode/get', { accountId, ids: null }, 'f']],
+      fileUsing(session),
+    );
+    const nodes = data?.methodResponses?.[0]?.[1]?.list ?? [];
+    return { nodes, incomplete: nodes.length >= pageSize };
+  }
+}
+
+/** Every node in the account, for callers that cannot act on incompleteness. */
+export async function getFileNodes(accountId, session) {
+  const { nodes } = await fetchFileNodes(accountId, session);
+  return nodes;
 }
 
 // ── Mutating ────────────────────────────────────────────────────────────────
