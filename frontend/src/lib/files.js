@@ -77,12 +77,11 @@ export function fileLimits(session) {
 // ── Reading ─────────────────────────────────────────────────────────────────
 
 /**
- * Every node in the account, in one call.
- *
- * A Drive UI needs the whole tree anyway — breadcrumbs, the folder sidebar and
- * move targets all need ancestors that a single-folder listing would not
- * return. Fetching once and indexing in memory also makes navigation instant.
- * This matches how the app already loads Mailboxes and Calendars.
+ * A Drive UI needs the whole tree, not one folder: breadcrumbs, the sidebar and
+ * move targets all need ancestors a single-folder listing would not return. So
+ * everything is fetched up front and indexed in memory, which also makes
+ * navigation instant. What changed is that "everything" can no longer be asked
+ * for in one call — see maxObjectsInGet below.
  */
 const MAX_PAGES = 200;
 
@@ -173,6 +172,24 @@ export async function fetchFileNodes(accountId, session) {
 export async function getFileNodes(accountId, session) {
   const { nodes } = await fetchFileNodes(accountId, session);
   return nodes;
+}
+
+/**
+ * Fetch specific nodes by id.
+ *
+ * Deliberately separate from the enumeration above: that one lists, this one
+ * asks a direct question. When the server refuses a create with `alreadyExists`
+ * but the node is nowhere in the listing, those two disagree, and only an
+ * explicit by-id fetch says which is right.
+ */
+export async function getFileNodesByIds(accountId, session, ids) {
+  if (!ids?.length) return { list: [], notFound: [] };
+  const data = await jmapPost(
+    [['FileNode/get', { accountId, ids }, 'f']],
+    fileUsing(session),
+  );
+  const resp = data?.methodResponses?.[0]?.[1];
+  return { list: resp?.list ?? [], notFound: resp?.notFound ?? [] };
 }
 
 // ── Mutating ────────────────────────────────────────────────────────────────
