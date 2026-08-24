@@ -7,6 +7,11 @@ stages:
   - test
   - release
 
+variables:
+  # One tag for both the docker client image and the dind service. Verified to
+  # exist on Docker Hub -- see the note under "Dependency Proxy" below.
+  DOCKER_TAG: "28.5.0"
+
 # ---------------------------------------------------------------------------
 # Dependency Proxy
 #
@@ -24,21 +29,31 @@ stages:
 # The proxy only fronts Docker Hub. Anything from $CI_REGISTRY keeps using the
 # registry login, which is why build:image performs both.
 #
-# Docker is pinned to an exact patch version rather than a floating major tag.
-# This mirrors the configuration already proven against this GitLab instance in
-# the sibling `cove` project; a floating `docker:26` tag did not come up as a
-# proxied service here.
+# Docker is pinned to an exact patch version rather than a floating major tag,
+# mirroring the configuration proven against this GitLab instance in the sibling
+# `cove` project; a floating `docker:26` tag did not come up as a proxied
+# service here.
+#
+# DOCKER_TAG is defined once and used for both the client image and the dind
+# service so the two cannot drift apart. Whatever it is set to must be a tag
+# that actually exists: a pipeline failed here on `docker:28.6.0-dind`, which
+# was never published (28.5.0 is the newest 28.x patch on Docker Hub). Check a
+# candidate before changing it:
+#
+#   TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/docker:pull" | jq -r .token)
+#   curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+#     https://registry-1.docker.io/v2/library/docker/manifests/28.5.0-dind
 # ---------------------------------------------------------------------------
 
 .docker_base:
   tags:
     - saas-linux-small-amd64
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:24.0.5
+  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:${DOCKER_TAG}
   services:
     # Explicit alias: GitLab derives a service's hostname from its image name,
     # so the dependency-proxy prefix would otherwise move it away from "docker"
     # and every command would sit waiting on a host that never appears.
-    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:24.0.5-dind
+    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:${DOCKER_TAG}-dind
       alias: docker
   variables:
     # Scoped to the dind jobs rather than set globally — the plain python and
@@ -63,6 +78,12 @@ stages:
       echo "ERROR: the docker-in-docker service never became reachable."
       echo "  DOCKER_HOST=${DOCKER_HOST:-<unset>}"
       echo "  DOCKER_TLS_CERTDIR=${DOCKER_TLS_CERTDIR:-<unset>}"
+      echo "  this job requested: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:${DOCKER_TAG}-dind"
+      # Printed because a failure here once named an image no file in this repo
+      # references, and unprefixed at that. If the 'services' section shows a
+      # different image from the line above, the service is being injected from
+      # outside the pipeline -- runner config.toml, a group CI/CD variable, or a
+      # compliance-framework pipeline -- and nothing in this file will fix it.
       echo "Check the 'services' section of this job's log for a failed image pull."
       docker info || true
       exit 1
