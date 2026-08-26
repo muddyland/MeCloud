@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   todayBounds, isToday, eventEnd, compareEvents, summariseFiles, summariseMail,
+  recentFiles, recentNotes, senderLabel,
 } from '$lib/dashboard.js';
 
 // A fixed "now" so these do not drift with the wall clock.
@@ -138,5 +139,96 @@ describe('summariseFiles', () => {
 
   it('handles an empty drive', () => {
     expect(summariseFiles([])).toMatchObject({ files: 0, folders: 0, bytes: 0, notes: 0 });
+  });
+});
+
+describe('recentFiles', () => {
+  // Deliberately out of order, so a passing test means it sorted rather than
+  // that it happened to keep the input order.
+  const nodes = [
+    { id: 'n', name: 'Notes', parentId: null, blobId: null },
+    { id: 'note', name: 'a.md', parentId: 'n', blobId: 'b1', size: 10, modified: at(12) },
+    { id: 'sub', name: 'attachments', parentId: 'n', blobId: null },
+    { id: 'img', name: 'shot.png', parentId: 'sub', blobId: 'b2', size: 20, modified: at(13) },
+    { id: 'd', name: 'Docs', parentId: null, blobId: null, modified: at(13, 30) },
+    { id: 'old', name: 'old.pdf', parentId: 'd', blobId: 'b3', size: 30, modified: at(9) },
+    { id: 'new', name: 'new.pdf', parentId: 'd', blobId: 'b4', size: 40, modified: at(11) },
+  ];
+
+  it('lists files newest first', () => {
+    expect(recentFiles(nodes).map((n) => n.id)).toEqual(['new', 'old']);
+  });
+
+  it('leaves folders out', () => {
+    // "Docs" is the most recently touched node of all and still must not show:
+    // a folder's timestamp moves whenever anything lands in it.
+    expect(recentFiles(nodes).some((n) => n.id === 'd')).toBe(false);
+  });
+
+  it('leaves the whole Notes subtree out, attachments included', () => {
+    const ids = recentFiles(nodes).map((n) => n.id);
+    expect(ids).not.toContain('note');
+    expect(ids).not.toContain('img');
+  });
+
+  it('honours the limit', () => {
+    expect(recentFiles(nodes, { limit: 1 })).toHaveLength(1);
+  });
+
+  it('does not reorder the caller\'s array', () => {
+    const input = [...nodes];
+    recentFiles(input);
+    expect(input.map((n) => n.id)).toEqual(nodes.map((n) => n.id));
+  });
+
+  it('sorts a node with no modified date last rather than throwing', () => {
+    const undated = [
+      { id: 'u', name: 'u.txt', parentId: null, blobId: 'b' },
+      { id: 't', name: 't.txt', parentId: null, blobId: 'b', modified: at(9) },
+    ];
+    expect(recentFiles(undated).map((n) => n.id)).toEqual(['t', 'u']);
+  });
+});
+
+describe('recentNotes', () => {
+  const nodes = [
+    { id: 'n', name: 'Notes', parentId: null, blobId: null },
+    { id: 'a', name: 'a.md', parentId: 'n', blobId: 'b1', modified: at(9) },
+    { id: 'b', name: 'b.md', parentId: 'n', blobId: 'b2', modified: at(14) },
+    { id: 'c', name: 'c.pdf', parentId: 'n', blobId: 'b3', modified: at(15) },
+  ];
+
+  it('lists notes newest first and ignores non-Markdown', () => {
+    expect(recentNotes(nodes).map((n) => n.id)).toEqual(['b', 'a']);
+  });
+
+  it('falls back to Markdown anywhere when there is no Notes folder', () => {
+    const loose = [{ id: 'x', name: 'stray.md', parentId: null, blobId: 'b', modified: at(9) }];
+    expect(recentNotes(loose).map((n) => n.id)).toEqual(['x']);
+  });
+
+  it('honours the limit', () => {
+    expect(recentNotes(nodes, { limit: 1 }).map((n) => n.id)).toEqual(['b']);
+  });
+
+  it('handles an empty drive', () => {
+    expect(recentNotes([])).toEqual([]);
+  });
+});
+
+describe('senderLabel', () => {
+  it('prefers the display name', () => {
+    expect(senderLabel({ from: [{ name: 'Ada', email: 'ada@example.com' }] })).toBe('Ada');
+  });
+
+  it('falls back to the address when there is no name', () => {
+    expect(senderLabel({ from: [{ email: 'ada@example.com' }] })).toBe('ada@example.com');
+    expect(senderLabel({ from: [{ name: '   ', email: 'ada@example.com' }] }))
+      .toBe('ada@example.com');
+  });
+
+  it('says so rather than rendering blank when From is missing', () => {
+    expect(senderLabel({})).toBe('Unknown sender');
+    expect(senderLabel({ from: [] })).toBe('Unknown sender');
   });
 });

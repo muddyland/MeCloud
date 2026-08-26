@@ -116,6 +116,38 @@ describe('fetchFileNodes', () => {
   });
 });
 
+describe('fetchFileNodes properties', () => {
+  it('narrows the paged /get to what the caller asked for', async () => {
+    servePaged(3);
+    const properties = ['id', 'name', 'modified'];
+    await fetchFileNodes('m', session, { properties });
+
+    const [, args] = jmapPost.mock.calls[0][0][1];
+    expect(args.properties).toEqual(properties);
+  });
+
+  it('narrows the fallback /get too', async () => {
+    // The fallback exists for servers without FileNode/query, and those are
+    // exactly the ones whose whole drive arrives in one response — narrowing
+    // there matters more, not less.
+    jmapPost
+      .mockRejectedValueOnce(new Error('no query'))
+      .mockResolvedValueOnce({ methodResponses: [['FileNode/get', { list: [node('a')] }, 'f']] });
+
+    await fetchFileNodes('m', session, { properties: ['id', 'name'] });
+    const [, args] = jmapPost.mock.calls[1][0][0];
+    expect(args.ids).toBeNull();
+    expect(args.properties).toEqual(['id', 'name']);
+  });
+
+  it('omits the argument entirely when no properties are named', async () => {
+    servePaged(3);
+    await fetchFileNodes('m', session);
+    const [, args] = jmapPost.mock.calls[0][0][1];
+    expect('properties' in args).toBe(false);
+  });
+});
+
 describe('maxObjectsInGet', () => {
   it('reads the advertised ceiling', () => {
     expect(maxObjectsInGet(session)).toBe(500);

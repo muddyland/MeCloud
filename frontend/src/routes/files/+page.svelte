@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { page } from '$app/stores';
   import { fly, fade } from 'svelte/transition';
   import Navbar from '$lib/components/Navbar.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
@@ -65,6 +66,34 @@
     } finally {
       filesLoading.set(false);
     }
+  }
+
+  /**
+   * Open whatever `?node=` names — how the dashboard hands a file over.
+   *
+   * A folder is entered and a previewable file is previewed, matching a click
+   * in the listing. Anything else is revealed and selected but *not* fetched:
+   * a page that starts a download on load is not something the user asked for,
+   * and the download button is right there once they can see the file.
+   */
+  function revealRequestedNode() {
+    const id = $page.url.searchParams.get('node');
+    if (!id) return;
+    // A failed load leaves the tree empty, and "no longer in your files" would
+    // then be the wrong story entirely — the listing error is already showing.
+    if ($filesError) return;
+
+    const node = $nodesById.get(id);
+    if (!node) {
+      toast('That item is no longer in your files.', 'error');
+      return;
+    }
+    if (fileKind(node) === 'folder') { openFolder(node.id); return; }
+
+    // openFolder clears the selection, so the highlight has to come after it.
+    openFolder(node.parentId ?? null);
+    selectedFileIds.set(new Set([node.id]));
+    if (isPreviewable(node)) previewNode.set(node);
   }
 
   // ── Navigation ────────────────────────────────────────────────────────────
@@ -481,7 +510,10 @@
     }
 
     supported = supportsFiles($jmapSession);
-    if (supported) await loadNodes();
+    if (supported) {
+      await loadNodes();
+      revealRequestedNode();
+    }
   });
 
   onDestroy(() => previewNode.set(null));

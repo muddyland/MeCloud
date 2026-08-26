@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { page } from '$app/stores';
   import Navbar from '$lib/components/Navbar.svelte';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import MessageList from '$lib/components/MessageList.svelte';
@@ -196,6 +197,11 @@
   // ── Mail loading ────────────────────────────────────────────────────────────
   let accountId = null;
 
+  // A message the dashboard asked for by id, held until its folder has loaded.
+  // loadEmails clears the selection on every folder change, so selecting it any
+  // earlier than that would simply be undone.
+  let pendingEmailId = null;
+
   // Track the id, not the object: renaming a folder produces a new object and
   // used to trigger a pointless full reload of its message list.
   let loadedMailboxId = null;
@@ -219,6 +225,12 @@
       const list = await getEmails(accountId, mailboxId, 0, PAGE);
       if (seq !== loadSeq) return;
       emails.set(list);
+      if (pendingEmailId) {
+        // The reading pane fetches by id, so this opens even in the unlikely
+        // case that the message sits past the first page of the list.
+        selectedEmailId.set(pendingEmailId);
+        pendingEmailId = null;
+      }
     } catch (e) {
       if (seq === loadSeq) {
         emails.set([]);
@@ -315,8 +327,25 @@
       });
       mailboxes.set(mboxList);
 
-      const inbox = mboxList.find((m) => m.role === 'inbox') ?? mboxList[0];
-      if (inbox) selectedMailbox.set(inbox);
+      // ?email=&mailbox= is how the dashboard hands a message over. Naming the
+      // folder as well as the message means the list behind the reading pane is
+      // the one the message is actually in.
+      const params = $page.url.searchParams;
+      pendingEmailId = params.get('email');
+      const wanted = params.get('mailbox');
+
+      const start = (wanted && mboxList.find((m) => m.id === wanted))
+        ?? mboxList.find((m) => m.role === 'inbox')
+        ?? mboxList[0];
+      if (start) selectedMailbox.set(start);
+
+      // The stores outlive the page, so that folder may already be loaded from
+      // an earlier visit — in which case the reload above never fires and the
+      // pending selection has to be applied here rather than waiting for it.
+      if (pendingEmailId && loadedMailboxId === start?.id) {
+        selectedEmailId.set(pendingEmailId);
+        pendingEmailId = null;
+      }
 
       connectStream();
       startPolling();

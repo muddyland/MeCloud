@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
+  import { page } from '$app/stores';
   import { fade } from 'svelte/transition';
   import Navbar from '$lib/components/Navbar.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
@@ -272,7 +273,17 @@
     }
 
     supported = supportsFiles($jmapSession);
-    if (supported) await refresh();
+    if (!supported) return;
+
+    await refresh();
+
+    // ?note= is how the dashboard hands a note over. It is applied after the
+    // list has loaded because openNote reads the node out of it.
+    const wanted = $page.url.searchParams.get('note');
+    if (!wanted) return;
+    const node = $noteNodes.find((n) => n.id === wanted);
+    if (node) await openNote(node);
+    else toast('That note is no longer there.', 'error');
   });
 
   onDestroy(() => {

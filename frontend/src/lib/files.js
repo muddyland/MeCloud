@@ -105,7 +105,7 @@ export function maxObjectsInGet(session) {
  * call can carry: /query pages by position, and the result reference feeds
  * those ids straight into /get so each page costs one round trip.
  */
-async function queryAllNodes(accountId, session, pageSize) {
+async function queryAllNodes(accountId, session, pageSize, properties) {
   const nodes = [];
   const seen = new Set();
   let position = 0;
@@ -117,6 +117,7 @@ async function queryAllNodes(accountId, session, pageSize) {
         ['FileNode/get', {
           accountId,
           '#ids': { resultOf: 'q', name: 'FileNode/query', path: '/ids' },
+          ...(properties ? { properties } : {}),
         }, 'g'],
       ],
       fileUsing(session),
@@ -147,20 +148,31 @@ async function queryAllNodes(accountId, session, pageSize) {
 /**
  * Every node in the account, and whether that is actually all of them.
  *
+ * `properties` narrows what each node carries. A caller that only counts and
+ * dates its nodes has no use for the rest, and on a large drive the difference
+ * is most of the payload.
+ *
  * @returns {Promise<{nodes: object[], incomplete: boolean}>}
  */
-export async function fetchFileNodes(accountId, session) {
+export async function fetchFileNodes(accountId, session, { properties = null } = {}) {
   const pageSize = maxObjectsInGet(session) ?? 256;
 
   try {
-    return { nodes: await queryAllNodes(accountId, session, pageSize), incomplete: false };
+    return {
+      nodes: await queryAllNodes(accountId, session, pageSize, properties),
+      incomplete: false,
+    };
   } catch {
     // FileNode/query is newer than FileNode/get and a server may not have it.
     // Falling back keeps a small drive working rather than failing outright,
     // but a fallback landing on the ceiling is the truncation case and says so
     // instead of pretending the listing is whole.
     const data = await jmapPost(
-      [['FileNode/get', { accountId, ids: null }, 'f']],
+      [['FileNode/get', {
+        accountId,
+        ids: null,
+        ...(properties ? { properties } : {}),
+      }, 'f']],
       fileUsing(session),
     );
     const nodes = data?.methodResponses?.[0]?.[1]?.list ?? [];
@@ -169,8 +181,8 @@ export async function fetchFileNodes(accountId, session) {
 }
 
 /** Every node in the account, for callers that cannot act on incompleteness. */
-export async function getFileNodes(accountId, session) {
-  const { nodes } = await fetchFileNodes(accountId, session);
+export async function getFileNodes(accountId, session, options) {
+  const { nodes } = await fetchFileNodes(accountId, session, options);
   return nodes;
 }
 
