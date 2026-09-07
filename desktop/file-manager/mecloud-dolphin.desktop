@@ -1,0 +1,23 @@
+[Desktop Entry]
+Type=Service
+# all/allfiles plus inode/directory, because Dolphin matches service menus on
+# MIME type and there is no way to scope one to a folder. The entries are
+# therefore visible everywhere, and acting on a file outside the sync folder
+# reports that rather than doing something surprising.
+MimeType=all/allfiles;inode/directory;
+Actions=MeCloudShare;MeCloudOpen;
+X-KDE-Submenu=MeCloud
+X-KDE-Priority=TopLevel
+Icon=mecloud-desktop
+
+[Desktop Action MeCloudShare]
+Name=Share via email…
+Icon=mail-send
+# %f, not %F: one file at a time keeps the action unambiguous, and matches
+# what the GTK extension offers.
+Exec=mecloud-desktop --share %f
+
+[Desktop Action MeCloudOpen]
+Name=Show in MeCloud
+Icon=folder-cloud
+Exec=mecloud-desktop --open %f

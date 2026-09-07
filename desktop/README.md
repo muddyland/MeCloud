@@ -202,6 +202,8 @@ mecloud-desktop --settings       # open Preferences without going via the tray
 mecloud-desktop --sync-once      # one pass, prints JSON, exits non-zero on error
 mecloud-desktop --check-update   # print what the server ships, and whether it is newer
 mecloud-desktop --update         # check, and install if there is one
+mecloud-desktop --share <file>   # start a message with that file attached
+mecloud-desktop --open  <file>   # show that file in the web UI
 ```
 
 ### How it decides
@@ -329,8 +331,22 @@ bridge and only the namespace differs, so it binds to whichever is loading it.
 creating directories for a file manager that is not there would leave dead
 files behind for nothing.
 
-Dolphin is not covered. KDE wants a `KVersionControlPlugin` in C++, which is a
-separate component rather than another import in this one.
+**Dolphin (KDE)** gets the right-click menu through a *service menu* —
+`file-manager/mecloud-dolphin.desktop`. KDE runs a command rather than hosting
+a plugin, so this needs no compilation and no KDE headers: the entries call
+`mecloud-desktop --share` / `--open`, which talk to the same socket over the
+command line.
+
+It does **not** get sync badges. Overlay icons in Dolphin require a
+`KVersionControlPlugin`, which is C++ compiled against the running Plasma —
+a separate component with its own build, not something this file can provide.
+
+Two caveats specific to KDE. The service menu directory moved in Plasma 5.85,
+so the installer writes to both `kio/servicemenus` and `kservices5/ServiceMenus`
+— putting it only in the one your Plasma does not read is a silent no-op. And
+Dolphin matches service menus on MIME type with no way to scope one to a
+folder, so the MeCloud entries appear on every file; acting on one outside the
+sync folder reports that rather than doing something surprising.
 
 ### How it knows
 

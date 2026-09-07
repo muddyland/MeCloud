@@ -25,6 +25,7 @@ install -m 0755 "$BIN" "$APP/mecloud-desktop"
 install -m 0644 desktop/src-tauri/icons/128x128.png "$APP/mecloud-desktop.png"
 install -m 0644 desktop/README.md "$APP/README.md"
 install -m 0644 desktop/file-manager/mecloud_extension.py "$APP/mecloud_extension.py"
+install -m 0644 desktop/file-manager/mecloud-dolphin.desktop "$APP/mecloud-dolphin.desktop"
 
 cat > "$APP/install.sh" <<'INNER'
 #!/bin/sh
@@ -104,9 +105,38 @@ for fm in nautilus nemo caja; do
     fi
 done
 
+# ── KDE / Dolphin ───────────────────────────────────────────────────────────
+#
+# A service menu, not a plugin: Dolphin runs a command, so this needs no
+# compilation and no KDE headers. It buys the right-click menu only — overlay
+# badges on KDE require a KVersionControlPlugin, which is C++ built against the
+# running Plasma.
+#
+# Both locations, because the directory moved in Plasma 5.85 and installing to
+# the one your Plasma does not read is a silent no-op.
+if command -v dolphin >/dev/null 2>&1 || [ -d "$DATA_DIR/kio" ] || [ -d "$DATA_DIR/kservices5" ]; then
+    for menu_dir in "$DATA_DIR/kio/servicemenus" "$DATA_DIR/kservices5/ServiceMenus"; do
+        mkdir -p "$menu_dir"
+        install -m 0755 "$HERE/mecloud-dolphin.desktop" "$menu_dir/mecloud-dolphin.desktop"
+    done
+    installed_for="$installed_for dolphin"
+    kde_installed=1
+fi
+
 if [ -n "$installed_for" ]; then
     echo "File manager integration installed for:$installed_for"
-    echo "  Restart the file manager to pick it up (e.g. nautilus -q)."
+    # Each family picks it up differently, and a wrong hint is worse than none.
+    case "$installed_for" in
+      *nautilus*|*nemo*|*caja*)
+        echo "  GTK: restart the file manager (e.g. nautilus -q) for the badges." ;;
+    esac
+    if [ "${kde_installed:-0}" = "1" ]; then
+        echo "  Dolphin: the MeCloud menu appears next time Dolphin starts."
+        echo "           Right-click entries only; sync badges on KDE need a"
+        echo "           KVersionControlPlugin, which this does not ship."
+        # Plasma 5 caches service definitions; Plasma 6 reads the directory.
+        command -v kbuildsycoca5 >/dev/null 2>&1 && kbuildsycoca5 >/dev/null 2>&1
+    fi
 else
     echo "No supported file manager found — skipping the badge integration."
     echo "  Install python3-nautilus (or the nemo/caja equivalent) and re-run"

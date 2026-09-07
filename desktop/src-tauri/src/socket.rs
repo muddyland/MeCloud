@@ -184,6 +184,35 @@ where
     }
 }
 
+/// Send one command to a running client and return its reply.
+///
+/// Used by the command line, which is how a file manager that cannot host a
+/// plugin — Dolphin, or anything driven by a shell command — reaches the
+/// client.
+pub fn send(request: &str) -> Result<String, String> {
+    use std::time::Duration;
+
+    let path = socket_path().ok_or("No runtime directory for the socket")?;
+    if !path.exists() {
+        return Err("MeCloud is not running.".into());
+    }
+    let stream = UnixStream::connect(&path).map_err(|_| "MeCloud is not running.".to_string())?;
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_write_timeout(Some(Duration::from_secs(5))).ok();
+
+    let mut writer = stream.try_clone().map_err(|e| e.to_string())?;
+    writeln!(writer, "{request}").map_err(|e| e.to_string())?;
+    writer.flush().map_err(|e| e.to_string())?;
+
+    // One line, not to EOF. The server keeps the connection open for further
+    // commands, so reading to EOF only ever ends in the read timeout.
+    let mut reply = String::new();
+    BufReader::new(stream)
+        .read_line(&mut reply)
+        .map_err(|e| e.to_string())?;
+    Ok(reply.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
