@@ -29,6 +29,9 @@ export const selectedFileIds = writable(new Set());
 export const previewNode     = writable(null);
 export const fileSearch      = writable('');
 
+/** Right-click menu in the listing: { x, y, nodeId, ids } | null. */
+export const fileContextMenu = writable(null);
+
 /** Folders the sidebar tree has expanded. */
 export const expandedFolders = writable(new Set());
 
@@ -82,6 +85,7 @@ export function resetFilesState() {
   currentFolderId.set(null);
   selectedFileIds.set(new Set());
   previewNode.set(null);
+  fileContextMenu.set(null);
   fileSearch.set('');
   filesError.set('');
 }

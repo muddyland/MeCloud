@@ -6,15 +6,21 @@
   import Toasts from '$lib/components/Toasts.svelte';
   import Spinner from '$lib/components/Spinner.svelte';
   import FileIcon from '$lib/components/FileIcon.svelte';
+  import FileThumbnail from '$lib/components/FileThumbnail.svelte';
   import FolderTree from '$lib/components/FolderTree.svelte';
   import FilePreview from '$lib/components/FilePreview.svelte';
+  import FileContextMenu from '$lib/components/FileContextMenu.svelte';
+  import ComposeModal from '$lib/components/ComposeModal.svelte';
   import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
   import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
-  import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
+  import {
+    jmapAccountId, jmapSession, currentUser, sidebarWidth,
+    composeOpen, composeContext,
+  } from '$lib/stores/mail.js';
   import { getJMAPSession, getAppConfig } from '$lib/api.js';
   import {
     fileNodes, filesLoading, filesError, currentFolderId, selectedFileIds,
-    previewNode, fileSearch, viewMode, sortKey, sortAsc,
+    previewNode, fileSearch, viewMode, sortKey, sortAsc, fileContextMenu,
     uploads, nodesById, childrenByParent, visibleNodes, totalUsage,
   } from '$lib/stores/files.js';
   import {
@@ -126,6 +132,56 @@
 
   function selectAll() {
     selectedFileIds.set(new Set($visibleNodes.map((n) => n.id)));
+  }
+
+  // ── Context menu ──────────────────────────────────────────────────────────
+
+  /**
+   * Right-clicking inside a multi-selection acts on the whole selection; doing
+   * it anywhere else acts on that one item — and does *not* change the
+   * selection, because a menu that silently reselects behind its own popup is
+   * how a right-click ends up deleting the wrong thing.
+   */
+  function openContextMenu(event, node) {
+    const ids = node
+      ? ($selectedFileIds.has(node.id) && $selectedFileIds.size > 1
+          ? [...$selectedFileIds]
+          : [node.id])
+      : [];
+    fileContextMenu.set({ x: event.clientX, y: event.clientY, ids });
+  }
+
+  /** Delete from the menu reuses the toolbar's confirm step rather than its own. */
+  function confirmDeleteIds(ids) {
+    if (!ids.length) return;
+    selectedFileIds.set(new Set(ids));
+    confirmingDelete = true;
+  }
+
+  /**
+   * Attach files to a new message.
+   *
+   * The bytes are already in the account's blob store, and JMAP blob ids are
+   * account-scoped, so the message references them directly — nothing is
+   * downloaded and nothing is uploaded again, however large the file is.
+   */
+  function shareViaEmail(nodes) {
+    const attachments = (nodes ?? [])
+      .filter((n) => n?.blobId)
+      .map((n) => ({ blobId: n.blobId, name: n.name, type: n.type, size: n.size }));
+    if (!attachments.length) {
+      toast('Folders cannot be attached to a message.', 'error');
+      return;
+    }
+    composeContext.set({
+      mode: 'compose',
+      to: '',
+      subject: attachments.length === 1
+        ? attachments[0].name
+        : `${attachments.length} files`,
+      attachments,
+    });
+    composeOpen.set(true);
   }
 
   // ── Mutations ─────────────────────────────────────────────────────────────
@@ -475,7 +531,9 @@
   // ── Keyboard ──────────────────────────────────────────────────────────────
 
   function onKeydown(e) {
-    if ($previewNode) return;
+    // The preview and the context menu both handle their own keys; letting the
+    // listing act as well would clear the selection out from under them.
+    if ($previewNode || $fileContextMenu || $composeOpen) return;
     const tag = e.target?.tagName;
     if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
     if (e.metaKey || e.ctrlKey) {
@@ -817,8 +875,11 @@
         </div>
       {/if}
 
-      <!-- Listing -->
-      <div class="flex-1 overflow-y-auto">
+      <!-- Listing. The background menu is folder-level (upload, new folder);
+           tiles and rows stop propagation so they get their own. -->
+      <!-- svelte-ignore a11y-no-static-element-interactions -->
+      <div class="flex-1 overflow-y-auto"
+           on:contextmenu|preventDefault={(e) => openContextMenu(e, null)}>
         {#if !supported}
           <div class="flex flex-col items-center justify-center h-full gap-3 text-gray-400 dark:text-gray-500">
             <svg class="w-10 h-10 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -873,6 +934,7 @@
                 }}
                 on:dblclick={() => openNode(node)}
                 on:click={(e) => (e.metaKey || e.ctrlKey ? toggleSelect(node.id, e) : openNode(node))}
+                on:contextmenu|preventDefault|stopPropagation={(e) => openContextMenu(e, node)}
                 on:keydown={(e) => { if (e.key === 'Enter') openNode(node); }}
                 class="group relative flex flex-col items-center gap-2 p-3 rounded-xl cursor-pointer
                        transition-colors duration-100 text-center
@@ -898,7 +960,7 @@
                 {#if busyId === node.id}
                   <div class="w-12 h-12 flex items-center justify-center"><Spinner size="md" label="" /></div>
                 {:else}
-                  <FileIcon {node} size="lg" />
+                  <FileThumbnail {node} size="lg" />
                 {/if}
 
                 {#if renamingId === node.id}
@@ -965,6 +1027,7 @@
                     if (isFolder && id) moveInto(id, node.id);
                   }}
                   on:dblclick={() => openNode(node)}
+                  on:contextmenu|preventDefault|stopPropagation={(e) => openContextMenu(e, node)}
                   class="group border-b border-gray-100 dark:border-gray-800 cursor-pointer
                          transition-colors duration-100
                          {selected ? 'bg-blue-50 dark:bg-blue-900/30'
@@ -992,7 +1055,7 @@
                       {#if busyId === node.id}
                         <Spinner size="sm" label="" />
                       {:else}
-                        <FileIcon {node} size="sm" />
+                        <FileThumbnail {node} size="sm" />
                       {/if}
                       {#if renamingId === node.id}
                         <!-- svelte-ignore a11y-autofocus -->
@@ -1070,4 +1133,17 @@
 </div>
 
 <FilePreview />
+
+<FileContextMenu
+  onOpen={openNode}
+  onRename={startRename}
+  onDelete={confirmDeleteIds}
+  onShare={shareViaEmail}
+  onUpload={() => fileInput?.click()}
+  onNewFolder={() => { creatingFolder = true; newFolderName = ''; }}
+/>
+
+<!-- Sharing a file opens a compose window without leaving Files. -->
+<ComposeModal />
+
 <Toasts />

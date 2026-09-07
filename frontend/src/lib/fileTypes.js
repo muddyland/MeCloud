@@ -79,6 +79,36 @@ export function isPreviewable(node) {
   return PREVIEWABLE.has(fileKind(node));
 }
 
+/**
+ * Image types the backend is willing to serve inline, mirroring its
+ * INLINE_SAFE_TYPES allow-list. Anything else — SVG above all, which can carry
+ * script — comes back as an attachment download, so pointing an <img> at it
+ * only ever produces a broken image.
+ */
+const INLINE_IMAGE_TYPES = new Set([
+  'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/bmp',
+]);
+
+/**
+ * There is no thumbnail endpoint: JMAP file storage serves the original bytes
+ * and nothing else. A grid tile therefore downloads the whole image, so past
+ * this size the icon is the better trade — a folder of 40 MB camera originals
+ * would otherwise cost hundreds of megabytes to *look at*.
+ */
+export const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
+
+/** Whether this node can be shown as an image thumbnail in the listing. */
+export function canThumbnail(node, { maxBytes = MAX_THUMBNAIL_BYTES } = {}) {
+  if (!node?.blobId) return false;
+  if (fileKind(node) !== 'image') return false;
+  if (!INLINE_IMAGE_TYPES.has(String(node.type ?? '').toLowerCase())) return false;
+  const size = Number(node.size);
+  // An unknown size is not a reason to refuse: the server does not always
+  // report one, and every such file would otherwise lose its thumbnail.
+  if (Number.isFinite(size) && size > maxBytes) return false;
+  return true;
+}
+
 // Control characters are rejected outright: they are invisible in the UI and
 // have no business in a filename.
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;

@@ -147,9 +147,27 @@ export function threadingHeaders(inReplyTo, references) {
   return headers;
 }
 
+/**
+ * Turn the compose modal's attachment rows into JMAP EmailBodyPart values.
+ *
+ * Only rows whose upload finished carry a blobId; anything else is dropped
+ * rather than sent as an empty part.
+ */
+export function attachmentParts(attachments) {
+  return (attachments ?? [])
+    .filter((a) => a?.blobId)
+    .map((a) => ({
+      blobId: a.blobId,
+      type: a.type || 'application/octet-stream',
+      name: a.name || 'attachment',
+      disposition: 'attachment',
+      ...(Number.isFinite(Number(a.size)) ? { size: Number(a.size) } : {}),
+    }));
+}
+
 export async function sendEmail(accountId, identityId, {
   fromEmail, fromName, to, cc, bcc, subject, html, sentMailboxId,
-  inReplyTo = null, references = null,
+  inReplyTo = null, references = null, attachments = null,
 }) {
   const from = [fromName ? { name: fromName, email: fromEmail } : { email: fromEmail }];
   const toAddrs = parseAddresses(to);
@@ -168,6 +186,12 @@ export async function sendEmail(accountId, identityId, {
   if (sentMailboxId) emailCreate.mailboxIds = { [sentMailboxId]: true };
   if (ccAddrs.length) emailCreate.cc = ccAddrs;
   if (bccAddrs.length) emailCreate.bcc = bccAddrs;
+
+  // Attachments are references, not bytes: the blob is uploaded first and the
+  // message only names it. Blob ids are account-scoped in JMAP, which is what
+  // lets a file already in the drive be attached without re-uploading it.
+  const parts = attachmentParts(attachments);
+  if (parts.length) emailCreate.attachments = parts;
 
   // Step 1: create the email
   const createData = await post(

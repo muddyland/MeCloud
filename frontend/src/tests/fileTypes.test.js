@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   formatBytes, extensionOf, fileKind, isPreviewable, validateName,
-  breadcrumbTrail, compareNodes, uniqueName,
+  breadcrumbTrail, compareNodes, uniqueName, canThumbnail, MAX_THUMBNAIL_BYTES,
 } from '$lib/fileTypes.js';
 
 const folder = (over = {}) => ({ id: 'f1', name: 'Docs', blobId: null, ...over });
@@ -182,5 +182,50 @@ describe('uniqueName', () => {
 
   it('accepts a Set as well as an array', () => {
     expect(uniqueName('a.txt', new Set(['a.txt']))).toBe('a (2).txt');
+  });
+});
+
+describe('canThumbnail', () => {
+  const image = (over = {}) =>
+    ({ id: 'i1', name: 'p.png', blobId: 'b1', type: 'image/png', size: 1024, ...over });
+
+  it('accepts the image types the backend serves inline', () => {
+    for (const type of ['image/png', 'image/jpeg', 'image/gif', 'image/webp',
+                        'image/avif', 'image/bmp']) {
+      expect(canThumbnail(image({ type }))).toBe(true);
+    }
+  });
+
+  it('is case-insensitive about the media type', () => {
+    expect(canThumbnail(image({ type: 'IMAGE/PNG' }))).toBe(true);
+  });
+
+  it('refuses image types the backend will not serve inline', () => {
+    // SVG can carry script, so it comes back as a download — an <img> pointed
+    // at it renders as broken, not as a picture.
+    expect(canThumbnail(image({ type: 'image/svg+xml', name: 'a.svg' }))).toBe(false);
+    expect(canThumbnail(image({ type: 'image/tiff', name: 'a.tiff' }))).toBe(false);
+  });
+
+  it('refuses folders and anything that is not an image', () => {
+    expect(canThumbnail(folder())).toBe(false);
+    expect(canThumbnail(file())).toBe(false);
+    expect(canThumbnail(null)).toBe(false);
+  });
+
+  it('refuses an image with no blob to fetch', () => {
+    expect(canThumbnail({ name: 'p.png', type: 'image/png', blobId: null })).toBe(false);
+  });
+
+  it('refuses images past the size ceiling', () => {
+    expect(canThumbnail(image({ size: MAX_THUMBNAIL_BYTES + 1 }))).toBe(false);
+    expect(canThumbnail(image({ size: MAX_THUMBNAIL_BYTES }))).toBe(true);
+    expect(canThumbnail(image({ size: 4096 }), { maxBytes: 1024 })).toBe(false);
+  });
+
+  it('allows an image whose size the server did not report', () => {
+    // Refusing would silently drop the thumbnail for every such file.
+    expect(canThumbnail(image({ size: undefined }))).toBe(true);
+    expect(canThumbnail(image({ size: null }))).toBe(true);
   });
 });

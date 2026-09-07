@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { parseAddresses, threadingHeaders } from '$lib/api.js';
+import { parseAddresses, threadingHeaders, attachmentParts } from '$lib/api.js';
 
 // ---------------------------------------------------------------------------
 // parseAddresses
@@ -209,5 +209,54 @@ describe('apiFetch 401 redirect', () => {
 
     expect(result).toEqual({ authenticated: false });
     expect(window.location.href).toBe('/auth/login');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// attachmentParts
+// ---------------------------------------------------------------------------
+
+describe('attachmentParts', () => {
+  it('returns nothing for an absent or empty list', () => {
+    expect(attachmentParts(null)).toEqual([]);
+    expect(attachmentParts(undefined)).toEqual([]);
+    expect(attachmentParts([])).toEqual([]);
+  });
+
+  it('builds a body part per uploaded attachment', () => {
+    expect(attachmentParts([{ blobId: 'b1', name: 'a.pdf', type: 'application/pdf', size: 12 }]))
+      .toEqual([{
+        blobId: 'b1',
+        type: 'application/pdf',
+        name: 'a.pdf',
+        disposition: 'attachment',
+        size: 12,
+      }]);
+  });
+
+  it('drops rows whose upload has not produced a blob', () => {
+    // A part with no blobId would be sent as an empty attachment.
+    const rows = [
+      { name: 'pending.txt', blobId: null },
+      { name: 'failed.txt', error: 'Upload failed.' },
+      { blobId: 'b2', name: 'ok.txt', type: 'text/plain', size: 3 },
+    ];
+    expect(attachmentParts(rows).map((a) => a.name)).toEqual(['ok.txt']);
+  });
+
+  it('falls back to opaque bytes and a placeholder name', () => {
+    expect(attachmentParts([{ blobId: 'b3' }])).toEqual([{
+      blobId: 'b3',
+      type: 'application/octet-stream',
+      name: 'attachment',
+      disposition: 'attachment',
+    }]);
+  });
+
+  it('omits an unknown size rather than claiming zero', () => {
+    const [part] = attachmentParts([{ blobId: 'b4', name: 'x', size: undefined }]);
+    expect(part).not.toHaveProperty('size');
+    const [nan] = attachmentParts([{ blobId: 'b5', name: 'y', size: 'huge' }]);
+    expect(nan).not.toHaveProperty('size');
   });
 });
