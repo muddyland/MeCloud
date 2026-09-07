@@ -15,6 +15,7 @@ use serde::Serialize;
 
 use crate::api::{self, Api};
 use crate::reconcile::{self, Action, Tree};
+use crate::rules::Rules;
 use crate::scan;
 use crate::syncdb::SyncDb;
 
@@ -47,6 +48,10 @@ pub struct Status {
     /// Deletions waiting out their window rather than applied.
     pub trashed: usize,
     pub pending_deletions: usize,
+    /// Uploads waiting for the user to agree to their size.
+    pub held_uploads: usize,
+    /// Paths in scope for neither side because a rule excludes them.
+    pub excluded: usize,
     pub problems: Vec<String>,
     pub tracked: i64,
     pub last_sync: Option<u64>,
@@ -63,6 +68,8 @@ impl Default for Status {
             conflicts: 0,
             trashed: 0,
             pending_deletions: 0,
+            held_uploads: 0,
+            excluded: 0,
             problems: Vec::new(),
             tracked: 0,
             last_sync: None,
@@ -85,6 +92,8 @@ pub struct Engine {
     pub delete_on_server: bool,
     /// How long it waits first.
     pub trash_days: i64,
+    /// What is in scope for this pass at all.
+    pub rules: Rules,
 }
 
 impl Engine {
@@ -96,7 +105,7 @@ impl Engine {
         // Hand the scanner what was recorded last time so it can skip reading
         // files whose size and timestamp are unchanged.
         let stamps = self.db.stamps().unwrap_or_default();
-        let ((local, mut problems), mtimes) = scan::scan_with_stamps(&self.folder, &stamps);
+        let ((local, mut problems), mtimes) = scan::scan_with_stamps(&self.folder, &stamps, &self.rules);
 
         let nodes = match self.api.nodes(&self.account_id) {
             Ok(n) => n,
@@ -112,11 +121,28 @@ impl Engine {
                 return failed;
             }
         };
-        let (remote, remote_ids) = api::to_tree(&nodes);
+        let (mut remote, remote_ids) = api::to_tree(&nodes);
         let mut folders = folder_ids(&nodes);
 
+        // The local side was already filtered by the scanner. Filtering the
+        // remote side and the baseline by the *same* rules is what makes an
+        // exclusion inert: the reconciler cannot propose a deletion for a path
+        // it never sees on any side. Filter only one side and every newly
+        // excluded file reads as "deleted here, still there" — which is a
+        // request to delete it from the server.
+        let before = remote.len();
+        remote.retain(|path, _| !self.rules.excludes(path));
+        let excluded_remote = before - remote.len();
+
         let baselines = match self.db.baselines() {
-            Ok(b) => b,
+            Ok(mut b) => {
+                // Left in the database, only held out of this pass: dropping
+                // the rows would lose the record of a file that is still on
+                // both sides, and re-including the folder later would then
+                // look like a first-ever sync of every file in it.
+                b.retain(|path, _| !self.rules.excludes(path));
+                b
+            }
             Err(e) => {
                 let failed = Status { state: State::Error, detail: e, ..Default::default() };
                 publish(status, &failed);
@@ -192,6 +218,8 @@ impl Engine {
 
         result.problems = problems;
         result.pending_deletions = self.db.pending().map(|p| p.len()).unwrap_or(0);
+        result.held_uploads = self.db.held_uploads().map(|u| u.len()).unwrap_or(0);
+        result.excluded = excluded_remote;
         result.tracked = self.db.count().unwrap_or(0);
         result.last_sync = Some(now());
         result.state = if result.problems.is_empty() { State::Idle } else { State::Problems };
@@ -221,6 +249,16 @@ impl Engine {
             }
 
             Action::Upload(path) => {
+                // Ask before spending someone's upstream on a very large file.
+                // Held rather than excluded: it stays on disk, stays tracked,
+                // and the moment it is approved the ordinary path runs.
+                let size_now = local.get(path).map(|e| e.size).unwrap_or(0);
+                if self.rules.needs_confirmation(size_now) && !self.db.upload_approved(path) {
+                    self.db.hold_upload(path, size_now)?;
+                    result.held_uploads += 1;
+                    return Ok(());
+                }
+
                 let full = scan::resolve(&self.folder, path).ok_or("unsafe path")?;
                 let (blob, size) = self.api.upload_blob(&full)?;
                 let node_id = match remote_ids.get(path) {
@@ -245,6 +283,8 @@ impl Engine {
                     path, &hash, &remote_version, size, Some(&node_id),
                     mtimes.get(path).copied().unwrap_or(0),
                 )?;
+                // The approval was for this upload, not a standing exemption.
+                let _ = self.db.clear_upload(path);
                 result.uploaded += 1;
                 Ok(())
             }
@@ -398,7 +438,7 @@ fn publish(status: &SharedStatus, next: &Status) {
 }
 
 fn summarise(s: &Status) -> String {
-    if s.uploaded + s.downloaded + s.deleted + s.conflicts + s.trashed == 0 {
+    if s.uploaded + s.downloaded + s.deleted + s.conflicts + s.trashed + s.held_uploads == 0 {
         return "Up to date".into();
     }
     let mut parts = Vec::new();
@@ -407,6 +447,9 @@ fn summarise(s: &Status) -> String {
     if s.deleted > 0 { parts.push(format!("{} removed", s.deleted)); }
     if s.conflicts > 0 { parts.push(format!("{} conflicted", s.conflicts)); }
     if s.trashed > 0 { parts.push(format!("{} awaiting deletion", s.trashed)); }
+    // Worth its own line: nothing is wrong, but nothing will happen to these
+    // either until someone says so, and silence would read as "synced".
+    if s.held_uploads > 0 { parts.push(format!("{} too large to send yet", s.held_uploads)); }
     parts.join(", ")
 }
 
@@ -563,5 +606,121 @@ mod tests {
         assert!(!deep.exists(), "empty directories should be removed");
         assert!(root.exists(), "the sync folder itself must survive");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The safety property the whole rules design exists for.
+    ///
+    /// Filtering the three inputs is done in `run_once`, which needs a server
+    /// and a disk; this reproduces the filtering exactly and asserts on what
+    /// the planner then does, because the thing that must never regress is the
+    /// *outcome*: newly excluding a file produces no work, and above all no
+    /// deletion.
+    fn plan_with_rules(
+        local: &Tree, remote: &Tree, baselines: &crate::reconcile::Baselines, rules: &Rules,
+    ) -> Vec<Action> {
+        let local: Tree = local.iter().filter(|(p, _)| !rules.excludes(p))
+            .map(|(p, e)| (p.clone(), e.clone())).collect();
+        let remote: Tree = remote.iter().filter(|(p, _)| !rules.excludes(p))
+            .map(|(p, e)| (p.clone(), e.clone())).collect();
+        let baselines: crate::reconcile::Baselines = baselines.iter()
+            .filter(|(p, _)| !rules.excludes(p))
+            .map(|(p, b)| (p.clone(), b.clone())).collect();
+        reconcile::plan(&local, &remote, &baselines, "2026-09-07 1200")
+    }
+
+    /// Anything that reads or writes a byte, on either side.
+    fn moves_data(action: &Action) -> bool {
+        !matches!(action, Action::RecordOnly(_))
+    }
+
+    fn entry(version: &str) -> crate::reconcile::Entry {
+        crate::reconcile::Entry { version: version.into(), size: 10 }
+    }
+
+    #[test]
+    fn newly_excluding_a_synced_file_proposes_nothing() {
+        // The file is on both sides and fully in step. Adding a rule that
+        // covers it must be inert — not a deletion, not a download, nothing.
+        let mut local = Tree::new();
+        local.insert("Photos/beach.jpg".into(), entry("localhash"));
+        local.insert("Docs/tax.pdf".into(), entry("otherhash"));
+
+        let mut remote = Tree::new();
+        remote.insert("Photos/beach.jpg".into(), entry("blob-1"));
+        remote.insert("Docs/tax.pdf".into(), entry("blob-2"));
+
+        let mut baselines = crate::reconcile::Baselines::new();
+        baselines.insert("Photos/beach.jpg".into(), crate::reconcile::Baseline {
+            local: "localhash".into(), remote: "blob-1".into(),
+        });
+        baselines.insert("Docs/tax.pdf".into(), crate::reconcile::Baseline {
+            local: "otherhash".into(), remote: "blob-2".into(),
+        });
+
+        let rules = Rules::new(&["Photos/".to_string()], &[], None, true);
+        let actions = plan_with_rules(&local, &remote, &baselines, &rules);
+
+        // `RecordOnly` re-stamps a baseline and moves nothing, so it is not
+        // work in the sense that matters. What must not appear is the
+        // excluded path, in any action at all.
+        assert!(
+            !actions.iter().any(|a| a.path() == "Photos/beach.jpg"),
+            "an excluded path must not appear in the plan: {actions:?}"
+        );
+        assert!(!actions.iter().any(|a| moves_data(a)), "{actions:?}");
+    }
+
+    #[test]
+    fn excluding_a_file_present_only_locally_does_not_delete_it_remotely() {
+        // The dangerous ordering: the file is gone from the local tree because
+        // a rule now hides it, while the baseline still says it was synced.
+        // Filtering the baseline by the same rule is what stops that reading
+        // as "the user deleted this".
+        let local = Tree::new();
+        let mut remote = Tree::new();
+        remote.insert("secret.key".into(), entry("blob-9"));
+        let mut baselines = crate::reconcile::Baselines::new();
+        baselines.insert("secret.key".into(), crate::reconcile::Baseline {
+            local: "hash".into(), remote: "blob-9".into(),
+        });
+
+        let rules = Rules::new(&["*.key".to_string()], &[], None, true);
+        let actions = plan_with_rules(&local, &remote, &baselines, &rules);
+
+        assert!(
+            !actions.iter().any(|a| matches!(a, Action::DeleteRemote(_))),
+            "an exclusion must never become a deletion: {actions:?}"
+        );
+        assert!(actions.is_empty());
+
+        // And without the rule it *is* read as a deletion — which is what
+        // makes the filtering above load-bearing rather than incidental.
+        let unfiltered = plan_with_rules(&local, &remote, &baselines, &Rules::permissive());
+        assert!(unfiltered.iter().any(|a| matches!(a, Action::DeleteRemote(_))));
+    }
+
+    #[test]
+    fn switching_a_folder_back_on_resumes_it_rather_than_starting_over() {
+        // Baselines are held out of the pass, not deleted, so re-including a
+        // folder finds its history intact and does nothing for files that
+        // never changed while it was switched off.
+        let mut local = Tree::new();
+        local.insert("Photos/beach.jpg".into(), entry("localhash"));
+        let mut remote = Tree::new();
+        remote.insert("Photos/beach.jpg".into(), entry("blob-1"));
+        let mut baselines = crate::reconcile::Baselines::new();
+        baselines.insert("Photos/beach.jpg".into(), crate::reconcile::Baseline {
+            local: "localhash".into(), remote: "blob-1".into(),
+        });
+
+        let off = Rules::new(&[], &["Photos".to_string()], None, true);
+        assert!(plan_with_rules(&local, &remote, &baselines, &off).is_empty());
+
+        let on = Rules::permissive();
+        let resumed = plan_with_rules(&local, &remote, &baselines, &on);
+        assert!(
+            !resumed.iter().any(|a| moves_data(a)),
+            "re-including must not re-transfer files that never changed: {resumed:?}"
+        );
     }
 }

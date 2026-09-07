@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     /// Base URL of the MeCloud server, with no trailing slash.
     #[serde(default)]
@@ -45,6 +45,51 @@ pub struct Config {
     /// the client all look exactly like "the user deleted these".
     #[serde(default = "default_trash_days")]
     pub trash_days: i64,
+    /// Exclusion patterns, one per line, in the syntax `rules.rs` documents.
+    #[serde(default)]
+    pub ignore_patterns: Vec<String>,
+    /// Top-level folders switched off in selective sync.
+    #[serde(default)]
+    pub excluded_folders: Vec<String>,
+    /// Uploads larger than this many megabytes wait to be agreed to. Zero
+    /// means never ask, which is what every existing install gets.
+    #[serde(default)]
+    pub confirm_over_mb: u64,
+    /// Whether dot-files sync.
+    ///
+    /// Defaults to true, and must: an existing install that suddenly stopped
+    /// reporting its hidden files would have every one of them read as a
+    /// deletion. The safe direction for a new default is always the one that
+    /// keeps files visible to the reconciler.
+    #[serde(default = "default_true")]
+    pub sync_hidden: bool,
+}
+
+/// Written out by hand rather than derived.
+///
+/// `load()` falls back to `Config::default()` for a missing or unreadable
+/// file, and a derived `Default` ignores every `#[serde(default = ...)]` —
+/// so a derive would hand a first run `delete_on_server: false` and
+/// `trash_days: 0` while the deserialiser gave everyone else `true` and `30`.
+/// Two sources of truth for one default is how a safety setting ends up off on
+/// exactly the installs that never opened the settings screen.
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            server_url: None,
+            handle_mailto: false,
+            sync_folder: None,
+            sync_enabled: false,
+            auto_update: false,
+            allow_bulk_delete_once: false,
+            delete_on_server: default_true(),
+            trash_days: default_trash_days(),
+            ignore_patterns: Vec::new(),
+            excluded_folders: Vec::new(),
+            confirm_over_mb: 0,
+            sync_hidden: default_true(),
+        }
+    }
 }
 
 fn default_true() -> bool {
@@ -58,6 +103,16 @@ fn default_trash_days() -> i64 {
 impl Config {
     pub fn is_configured(&self) -> bool {
         self.server_url.as_deref().is_some_and(|u| !u.is_empty())
+    }
+
+    /// The exclusion rules this configuration describes.
+    pub fn rules(&self) -> crate::rules::Rules {
+        crate::rules::Rules::new(
+            &self.ignore_patterns,
+            &self.excluded_folders,
+            (self.confirm_over_mb > 0).then(|| self.confirm_over_mb * 1024 * 1024),
+            self.sync_hidden,
+        )
     }
 
     pub fn sync_path(&self) -> Option<PathBuf> {
@@ -303,5 +358,46 @@ mod tests {
         assert!(!Config::default().is_configured());
         assert!(!Config { server_url: Some(String::new()), ..Default::default() }.is_configured());
         assert!(Config { server_url: Some("https://x".into()), ..Default::default() }.is_configured());
+    }
+
+    #[test]
+    fn the_hand_written_default_agrees_with_the_deserialised_one() {
+        // These are two independent definitions of the same thing, and the
+        // one that gets used depends on whether a file happens to exist.
+        let from_empty_json: Config = serde_json::from_str("{}").unwrap();
+        let derived = Config::default();
+
+        assert_eq!(derived.delete_on_server, from_empty_json.delete_on_server);
+        assert_eq!(derived.trash_days, from_empty_json.trash_days);
+        assert_eq!(derived.sync_hidden, from_empty_json.sync_hidden);
+        assert_eq!(derived.confirm_over_mb, from_empty_json.confirm_over_mb);
+        assert_eq!(derived.auto_update, from_empty_json.auto_update);
+        assert_eq!(derived.sync_enabled, from_empty_json.sync_enabled);
+        assert_eq!(derived.handle_mailto, from_empty_json.handle_mailto);
+        assert_eq!(derived.ignore_patterns, from_empty_json.ignore_patterns);
+        assert_eq!(derived.excluded_folders, from_empty_json.excluded_folders);
+    }
+
+    #[test]
+    fn a_first_run_deletes_on_the_server_only_after_the_full_window() {
+        let fresh = Config::default();
+        assert!(fresh.delete_on_server);
+        assert_eq!(fresh.trash_days, 30);
+    }
+
+    #[test]
+    fn an_unconfigured_install_excludes_nothing() {
+        let rules = Config::default().rules();
+        assert!(!rules.excludes("Photos/beach.jpg"));
+        assert!(!rules.excludes(".bashrc"));
+        assert!(!rules.needs_confirmation(u64::MAX));
+    }
+
+    #[test]
+    fn the_threshold_is_stored_in_megabytes_and_used_in_bytes() {
+        let config = Config { confirm_over_mb: 100, ..Default::default() };
+        let rules = config.rules();
+        assert!(!rules.needs_confirmation(100 * 1024 * 1024));
+        assert!(rules.needs_confirmation(100 * 1024 * 1024 + 1));
     }
 }

@@ -3,72 +3,155 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>MeCloud — Setup</title>
+<title>MeCloud — Settings</title>
 <style>
   :root {
     color-scheme: light dark;
     --bg: #f6f7f9; --panel: #fff; --text: #111827; --muted: #6b7280;
     --line: #e5e7eb; --accent: #3b82f6; --accent-text: #fff;
-    --ok: #059669; --bad: #dc2626;
+    --ok: #059669; --bad: #dc2626; --warn: #b45309;
+    --rail: #eef0f4; --hover: rgba(0,0,0,.05);
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #0b1220; --panel: #111827; --text: #f3f4f6; --muted: #9ca3af;
       --line: #1f2937; --accent: #3b82f6; --ok: #34d399; --bad: #f87171;
+      --warn: #fbbf24; --rail: #0e1626; --hover: rgba(255,255,255,.06);
     }
   }
   * { box-sizing: border-box; }
   body {
-    margin: 0; padding: 28px 26px; background: var(--bg); color: var(--text);
+    margin: 0; background: var(--bg); color: var(--text);
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* The window is a fixed frame with one scrolling region inside it, so the
+       navigation and the status line never scroll away from the pane they
+       describe. */
+    height: 100vh; display: grid;
+    grid-template-columns: 210px 1fr;
+    grid-template-rows: auto 1fr auto;
+    grid-template-areas: "brand main" "nav main" "nav foot";
   }
-  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
-  .brand svg { width: 30px; height: 30px; color: var(--accent); }
-  .brand h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
-  .brand p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+
+  /* ── Brand ─────────────────────────────────────────────────────────── */
+  .brand {
+    grid-area: brand; display: flex; align-items: center; gap: 10px;
+    padding: 18px 16px 14px; background: var(--rail);
+  }
+  .brand svg { width: 26px; height: 26px; color: var(--accent); flex-shrink: 0; }
+  .brand h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+  .brand p { margin: 1px 0 0; font-size: 11px; color: var(--muted); }
+
+  /* ── Navigation rail ───────────────────────────────────────────────── */
+  nav {
+    grid-area: nav; background: var(--rail); padding: 0 10px 14px;
+    overflow-y: auto; border-right: 1px solid var(--line);
+  }
+  nav button {
+    display: flex; align-items: center; gap: 9px; width: 100%;
+    padding: 8px 10px; margin-bottom: 2px; border: 0; border-radius: 8px;
+    background: transparent; color: var(--text); font: inherit; font-size: 13px;
+    font-weight: 500; text-align: left; cursor: pointer;
+  }
+  nav button:hover:not(:disabled) { background: var(--hover); }
+  nav button[aria-current="page"] { background: var(--accent); color: var(--accent-text); }
+  nav button:disabled { opacity: .38; cursor: not-allowed; }
+  nav button svg { width: 16px; height: 16px; flex-shrink: 0; }
+  nav .count {
+    margin-left: auto; font-size: 10px; font-weight: 700; padding: 1px 6px;
+    border-radius: 999px; background: var(--bad); color: #fff;
+  }
+  nav button[aria-current="page"] .count { background: rgba(255,255,255,.28); }
+  nav .group {
+    font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--muted); padding: 14px 10px 5px;
+  }
+
+  /* ── Panes ─────────────────────────────────────────────────────────── */
+  main { grid-area: main; overflow-y: auto; padding: 22px 26px; }
+  section[hidden] { display: none; }
+  h2 { font-size: 16px; margin: 0 0 3px; font-weight: 650; letter-spacing: -.01em; }
+  .lede { font-size: 12.5px; color: var(--muted); margin: 0 0 18px; max-width: 52ch; }
   .panel {
     background: var(--panel); border: 1px solid var(--line);
-    border-radius: 12px; padding: 18px; margin-bottom: 14px;
+    border-radius: 12px; padding: 16px 18px; margin-bottom: 14px;
+  }
+  .panel > h3 {
+    font-size: 12px; font-weight: 700; margin: 0 0 10px;
+    letter-spacing: .03em; text-transform: uppercase; color: var(--muted);
   }
   label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
   .hint { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
-  input[type=text] {
+  input[type=text], textarea {
     width: 100%; padding: 9px 11px; border-radius: 8px; font-size: 14px;
     border: 1px solid var(--line); background: var(--bg); color: var(--text);
   }
-  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  textarea {
+    font: 12.5px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+    min-height: 9rem; resize: vertical;
+  }
+  input[type=text]:focus, textarea:focus, input[type=number]:focus {
+    outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent;
+  }
+  input[type=number] {
+    width: 4.4rem; padding: 5px 7px; border-radius: 6px; font-size: 13px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  }
   .row { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; }
-  .row input { margin-top: 2px; }
+  .row:first-child { margin-top: 0; }
+  .row input[type=checkbox] { margin-top: 3px; flex-shrink: 0; }
   .row div { font-size: 13px; }
   .row small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .row label { display: inline; font-weight: 600; margin: 0; font-size: 13px; }
   button {
-    padding: 9px 18px; border-radius: 8px; border: 0; font-size: 14px; font-weight: 600;
+    padding: 8px 16px; border-radius: 8px; border: 0; font-size: 13.5px; font-weight: 600;
     background: var(--accent); color: var(--accent-text); cursor: pointer;
   }
   button:disabled { opacity: .55; cursor: not-allowed; }
   button.ghost { background: transparent; color: var(--muted); font-weight: 500; }
-  .actions { display: flex; align-items: center; gap: 8px; }
-  .status { font-size: 13px; margin: 12px 0 0; min-height: 1.4em; }
-  .status.ok  { color: var(--ok); }
-  .status.bad { color: var(--bad); }
-  .status.busy { color: var(--muted); }
-  footer { font-size: 11px; color: var(--muted); text-align: center; margin-top: 18px; }
+  button.ghost:hover:not(:disabled) { background: var(--hover); }
   button.danger { background: var(--bad); color: #fff; }
-  button.secondary { background: transparent; color: var(--accent);
-                     border: 1px solid var(--accent); font-weight: 600; }
-  .pill { font-size: 11px; padding: 2px 9px; border-radius: 999px;
-          background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
-  .pill.on   { color: var(--ok);  border-color: var(--ok); }
-  .pill.bad  { color: var(--bad); border-color: var(--bad); }
-  #syncdetail { font-size: 12px; }
-  #trashlist { list-style: none; margin: 6px 0 0; padding: 0;
-               max-height: 9rem; overflow-y: auto; }
-  #trashlist li { display: flex; align-items: center; gap: 8px; padding: 4px 0;
-                  border-top: 1px solid var(--line); font-size: 12px; }
-  #trashlist .name { flex: 1; min-width: 0; overflow: hidden;
-                     text-overflow: ellipsis; white-space: nowrap; }
-  #trashlist .age { color: var(--muted); flex-shrink: 0; }
-  #trashlist button { padding: 2px 8px; font-size: 11px; border-radius: 6px; }
+  button.secondary {
+    background: transparent; color: var(--accent);
+    border: 1px solid var(--accent); font-weight: 600;
+  }
+  .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .status { font-size: 12.5px; margin: 10px 0 0; min-height: 1.4em; }
+  .status.ok { color: var(--ok); }
+  .status.bad { color: var(--bad); }
+  .status.warn { color: var(--warn); }
+  .status.busy { color: var(--muted); }
+  .pill {
+    font-size: 11px; padding: 2px 9px; border-radius: 999px;
+    background: var(--bg); color: var(--muted); border: 1px solid var(--line);
+  }
+  .pill.on { color: var(--ok); border-color: var(--ok); }
+  .pill.bad { color: var(--bad); border-color: var(--bad); }
+  .between { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+
+  /* ── Lists of files ────────────────────────────────────────────────── */
+  ul.files { list-style: none; margin: 4px 0 0; padding: 0; max-height: 15rem; overflow-y: auto; }
+  ul.files li {
+    display: flex; align-items: center; gap: 8px; padding: 6px 0;
+    border-top: 1px solid var(--line); font-size: 12px;
+  }
+  ul.files .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  ul.files .meta { color: var(--muted); flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  ul.files button { padding: 2px 9px; font-size: 11px; border-radius: 6px; }
+  ul.files.picker li { padding: 8px 0; }
+  ul.files.picker input { margin: 0; flex-shrink: 0; }
+  .empty { font-size: 12px; color: var(--muted); font-style: italic; padding: 8px 0 2px; }
+
+  /* ── Status bar ────────────────────────────────────────────────────── */
+  footer {
+    grid-area: foot; display: flex; align-items: center; gap: 10px;
+    padding: 9px 26px; border-top: 1px solid var(--line);
+    background: var(--panel); font-size: 12px; color: var(--muted);
+  }
+  footer .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex-shrink: 0; }
+  footer .dot.on { background: var(--ok); }
+  footer .dot.bad { background: var(--bad); }
+  footer .dot.busy { background: var(--accent); }
+  footer #footdetail { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>
 </head>
 <body>
@@ -80,231 +163,379 @@
       <path d="M10.6 12.4v-1.2a1.4 1.4 0 0 1 2.8 0v1.2" />
     </svg>
     <div>
-      <h1>Connect to MeCloud</h1>
-      <p>Your mail, calendar, contacts, notes and files.</p>
+      <h1>MeCloud</h1>
+      <p>Settings</p>
     </div>
   </div>
 
-  <div class="panel">
-    <label for="server">Server address</label>
-    <p class="hint">The address you use in the browser, for example
-      <code>cloud.example.com</code>.</p>
-    <input id="server" type="text" placeholder="cloud.example.com"
-           autocomplete="off" autocapitalize="off" spellcheck="false" />
+  <nav id="nav" aria-label="Settings sections">
+    <button data-pane="account" aria-current="page">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.2"/>
+        <path d="M5 19.5a7 7 0 0 1 14 0"/></svg>
+      Account
+    </button>
 
-    <div class="row">
-      <input id="mailto" type="checkbox" checked />
-      <div>
-        <label for="mailto" style="display:inline; font-weight:600;">Handle mail links</label>
-        <small>Open <code>mailto:</code> links from other apps in MeCloud.</small>
-      </div>
-    </div>
+    <div class="group">Files</div>
+    <button data-pane="sync" data-needs-server>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/>
+        <path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-13.7 5.6L4 16"/><path d="M4 20v-4h4"/></svg>
+      Sync
+    </button>
+    <button data-pane="folders" data-needs-server>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4L10 8h9.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+      Folders
+    </button>
+    <button data-pane="rules" data-needs-server>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16"/><path d="M4 12h16"/>
+        <path d="M4 18h16"/></svg>
+      Rules
+      <span class="count" id="heldcount" hidden></span>
+    </button>
+    <button data-pane="deletions" data-needs-server>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/>
+        <path d="M9 7V5.5A1.5 1.5 0 0 1 10.5 4h3A1.5 1.5 0 0 1 15 5.5V7"/>
+        <path d="M6 7l1 12.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5L18 7"/></svg>
+      Deletions
+      <span class="count" id="trashcount" hidden></span>
+    </button>
 
-    <p id="status" class="status"></p>
+    <div class="group">Application</div>
+    <button data-pane="about">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/>
+        <path d="M12 11v5"/><path d="M12 8h.01"/></svg>
+      About
+    </button>
+  </nav>
 
-    <div class="actions" style="margin-top:12px">
-      <button id="connect">Connect</button>
-      <button id="cancel" class="ghost" hidden>Cancel</button>
-    </div>
-  </div>
+  <main>
+    <!-- ── Account ──────────────────────────────────────────────────── -->
+    <section id="pane-account">
+      <h2>Account</h2>
+      <p class="lede">The MeCloud server this computer belongs to.</p>
 
-  <div class="panel" id="syncpanel" hidden>
-    <div class="row" style="margin-top:0; justify-content:space-between; align-items:center">
-      <strong style="font-size:13px">File sync</strong>
-      <span id="syncstate" class="pill">off</span>
-    </div>
-    <p class="hint" style="margin-top:8px">
-      Keep a folder on this computer in step with your drive.
-    </p>
+      <div class="panel">
+        <label for="server">Server address</label>
+        <p class="hint">The address you use in the browser, for example
+          <code>cloud.example.com</code>.</p>
+        <input id="server" type="text" placeholder="cloud.example.com"
+               autocomplete="off" autocapitalize="off" spellcheck="false" />
 
-    <div id="pairrow">
-      <p class="hint" id="pairhint">
-        This computer is not connected to your account yet.
-      </p>
-      <button id="pair" class="secondary">Connect this computer…</button>
-    </div>
+        <div class="row" style="margin-top:14px">
+          <input id="mailto" type="checkbox" checked />
+          <div>
+            <label for="mailto">Handle mail links</label>
+            <small>Open <code>mailto:</code> links from other apps in MeCloud.</small>
+          </div>
+        </div>
 
-    <div id="folderrow" hidden>
-      <label for="folder" style="margin-top:12px">Folder</label>
-      <input id="folder" type="text" placeholder="/home/you/MeCloud"
-             autocomplete="off" spellcheck="false" />
-      <div class="row">
-        <input id="syncon" type="checkbox" />
-        <div>
-          <label for="syncon" style="display:inline; font-weight:600;">Keep this folder in sync</label>
-          <small>Runs in the background, every 30 seconds.</small>
+        <p id="status" class="status"></p>
+        <div class="actions">
+          <button id="connect">Connect</button>
+          <button id="cancel" class="ghost" hidden>Close</button>
         </div>
       </div>
-      <div class="row">
-        <input id="deleteon" type="checkbox" />
-        <div>
-          <label for="deleteon" style="display:inline; font-weight:600;">Delete on the server too</label>
-          <small>Files you delete here are removed from the server after
-            <input id="trashdays" type="number" min="1" max="365" value="30"
-                   style="width:3.6rem; padding:1px 4px; font-size:12px" /> days.
-            Until then they wait below and can be put back.</small>
+
+      <div class="panel" id="devicepanel" hidden>
+        <h3>This computer</h3>
+        <p class="hint" id="pairhint">This computer is not connected to your account yet.</p>
+        <div class="actions" style="margin-top:0">
+          <button id="pair" class="secondary">Connect this computer…</button>
+          <button id="unpair" class="ghost" hidden>Disconnect</button>
+        </div>
+        <p id="pairdetail" class="status"></p>
+      </div>
+
+      <p class="hint">You sign in on the next screen, in your server’s own login page.</p>
+    </section>
+
+    <!-- ── Sync ─────────────────────────────────────────────────────── -->
+    <section id="pane-sync" hidden>
+      <h2>Sync</h2>
+      <p class="lede">Keep a folder on this computer in step with your drive.</p>
+
+      <div id="needspair" class="panel" hidden>
+        <p class="hint" style="margin:0">Connect this computer on the
+          <strong>Account</strong> screen before setting up sync.</p>
+      </div>
+
+      <div id="syncbody" hidden>
+        <div class="panel">
+          <label for="folder">Folder</label>
+          <input id="folder" type="text" placeholder="/home/you/MeCloud"
+                 autocomplete="off" spellcheck="false" />
+          <div class="row">
+            <input id="syncon" type="checkbox" />
+            <div>
+              <label for="syncon">Keep this folder in sync</label>
+              <small>Runs in the background, every 30 seconds.</small>
+            </div>
+          </div>
+          <p id="syncdetail" class="status"></p>
+          <div class="actions">
+            <button id="savesync">Save</button>
+            <button id="syncnow" class="ghost">Sync now</button>
+            <button id="confirmdelete" class="danger" hidden>Delete them anyway</button>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Last pass</h3>
+          <ul class="files" id="counters" style="max-height:none"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Folders ──────────────────────────────────────────────────── -->
+    <section id="pane-folders" hidden>
+      <h2>Folders</h2>
+      <p class="lede">Choose which top-level folders this computer keeps a copy of.
+        Switching one off leaves both copies exactly where they are — it only stops
+        MeCloud having an opinion about them.</p>
+
+      <div class="panel">
+        <div class="between">
+          <h3 style="margin:0">On your drive</h3>
+          <button id="refreshfolders" class="ghost">Refresh</button>
+        </div>
+        <ul class="files picker" id="folderlist" style="max-height:22rem"></ul>
+        <p id="foldersdetail" class="status"></p>
+      </div>
+    </section>
+
+    <!-- ── Rules ────────────────────────────────────────────────────── -->
+    <section id="pane-rules" hidden>
+      <h2>Rules</h2>
+      <p class="lede">What sync should leave alone, and when it should ask first.</p>
+
+      <div class="panel">
+        <h3>Never sync</h3>
+        <p class="hint">One pattern per line. Lines starting with <code>#</code> are notes.</p>
+        <textarea id="patterns" spellcheck="false" autocapitalize="off"
+                  placeholder="*.log&#10;node_modules/&#10;Photos/raw&#10;**/cache"></textarea>
+        <p class="hint" style="margin:8px 0 0">
+          <code>*.log</code> any <code>.log</code> file, at any depth ·
+          <code>node_modules/</code> that folder anywhere ·
+          <code>Photos/raw</code> only that path, from the top ·
+          <code>**/cache</code> <code>cache</code> at any depth
+        </p>
+
+        <div class="row" style="margin-top:16px">
+          <input id="synchidden" type="checkbox" />
+          <div>
+            <label for="synchidden">Sync hidden files</label>
+            <small>Files and folders whose name starts with a dot.</small>
+          </div>
+        </div>
+
+        <div class="row">
+          <input id="askbig" type="checkbox" />
+          <div>
+            <label for="askbig">Ask before uploading large files</label>
+            <small>Files over
+              <input id="bigmb" type="number" min="1" max="102400" value="500" /> MB
+              wait here until you agree to send them.</small>
+          </div>
+        </div>
+
+        <p id="rulesdetail" class="status"></p>
+        <div class="actions">
+          <button id="saverules">Save rules</button>
         </div>
       </div>
 
-      <div id="trash" hidden>
-        <div class="row" style="justify-content:space-between; align-items:center">
-          <strong style="font-size:12px">Waiting to be deleted from the server</strong>
-          <span id="trashcount" class="pill"></span>
+      <div class="panel" id="heldpanel" hidden>
+        <div class="between">
+          <h3 style="margin:0">Waiting to be uploaded</h3>
+          <span class="pill" id="heldpill"></span>
         </div>
-        <ul id="trashlist"></ul>
+        <p class="hint">Larger than your limit. Nothing has been sent, and nothing
+          has been deleted.</p>
+        <ul class="files" id="heldlist"></ul>
+      </div>
+    </section>
+
+    <!-- ── Deletions ────────────────────────────────────────────────── -->
+    <section id="pane-deletions" hidden>
+      <h2>Deletions</h2>
+      <p class="lede">A file you delete here waits before it is removed from the
+        server, so a mistake can be undone.</p>
+
+      <div class="panel">
+        <div class="row">
+          <input id="deleteon" type="checkbox" />
+          <div>
+            <label for="deleteon">Delete on the server too</label>
+            <small>Files you delete here are removed from the server after
+              <input id="trashdays" type="number" min="1" max="365" value="30" /> days.
+              With this off, deleting a file here simply brings it back on the next pass.</small>
+          </div>
+        </div>
       </div>
 
-      <p id="syncdetail" class="status"></p>
-      <div class="actions" style="margin-top:10px">
-        <button id="confirmdelete" class="danger" hidden>Delete them anyway</button>
-        <button id="savesync">Save</button>
-        <button id="syncnow" class="ghost">Sync now</button>
-        <button id="unpair" class="ghost">Disconnect</button>
+      <div class="panel">
+        <div class="between">
+          <h3 style="margin:0">Waiting to be deleted from the server</h3>
+          <span class="pill" id="trashpill"></span>
+        </div>
+        <ul class="files" id="trashlist"></ul>
+        <p id="trashdetail" class="status"></p>
       </div>
-    </div>
-  </div>
+    </section>
 
-  <div class="panel" id="apppanel" hidden>
-    <strong style="font-size:13px">This app</strong>
+    <!-- ── About ────────────────────────────────────────────────────── -->
+    <section id="pane-about" hidden>
+      <h2>About</h2>
+      <p class="lede">MeCloud desktop.</p>
 
-    <div class="row">
-      <input id="startup" type="checkbox" />
-      <div>
-        <label for="startup" style="display:inline; font-weight:600;">Start when I log in</label>
-        <small>Opens in the tray and begins syncing, without a window.</small>
+      <div class="panel">
+        <h3>Starting up</h3>
+        <div class="row">
+          <input id="startup" type="checkbox" />
+          <div>
+            <label for="startup">Start when I log in</label>
+            <small>Opens in the tray and begins syncing, without a window.</small>
+          </div>
+        </div>
       </div>
-    </div>
 
-    <div class="row">
-      <input id="autoupdate" type="checkbox" />
-      <div>
-        <label for="autoupdate" style="display:inline; font-weight:600;">Install updates automatically</label>
-        <small>Applied the next time MeCloud starts.</small>
+      <div class="panel">
+        <h3>Updates</h3>
+        <div class="row">
+          <input id="autoupdate" type="checkbox" />
+          <div>
+            <label for="autoupdate">Install updates automatically</label>
+            <small>Applied the next time MeCloud starts.</small>
+          </div>
+        </div>
+        <p id="version" class="hint" style="margin:14px 0 0"></p>
+        <p id="updatemsg" class="status"></p>
+        <div class="actions">
+          <button id="checkupdate" class="ghost">Check for updates</button>
+          <button id="installupdate" hidden>Install update</button>
+        </div>
       </div>
-    </div>
+    </section>
+  </main>
 
-    <p id="version" class="hint" style="margin-top:12px"></p>
-    <p id="updatemsg" class="status"></p>
-    <div class="actions">
-      <button id="checkupdate" class="ghost">Check for updates</button>
-      <button id="installupdate" hidden>Install update</button>
-    </div>
-  </div>
-
-  <footer>You will sign in on the next screen, in your server’s own login page.</footer>
+  <footer>
+    <span class="dot" id="footdot"></span>
+    <span id="footdetail">Not set up</span>
+    <span class="pill" id="footstate">off</span>
+  </footer>
 
 <script type="module">
   const { invoke } = window.__TAURI__.core;
+  const $ = (id) => document.getElementById(id);
+  const call = (name, args) => invoke(name, args);
 
-  const $server  = document.getElementById('server');
-  const $mailto  = document.getElementById('mailto');
-  const $connect = document.getElementById('connect');
-  const $cancel  = document.getElementById('cancel');
-  const $status  = document.getElementById('status');
+  /** Human-readable size. The picker exists to answer "how much", so the
+      number has to be readable at a glance rather than exact. */
+  function bytes(n) {
+    if (!n) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(1024)));
+    const value = n / 1024 ** i;
+    return `${value >= 100 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`;
+  }
 
-  const say = (text, kind = '') => {
-    $status.textContent = text;
-    $status.className = `status ${kind}`;
+  const setStatus = (el, text, kind = '') => {
+    el.textContent = text;
+    el.className = `status ${kind}`;
   };
 
-  // Re-opening Preferences should show what is configured, not a blank form.
-  try {
-    const config = await invoke('get_config');
-    if (config.server_url) {
-      $server.value = config.server_url;
-      $cancel.hidden = false;
-      // Only reflect the real state once there is a real state. On first run
-      // the box stays ticked, because offering the integration is the point.
-      $mailto.checked = await invoke('is_mailto_registered');
+  function badge(id, count) {
+    const el = $(id);
+    el.hidden = !count;
+    el.textContent = String(count);
+  }
+
+  // ── Navigation ──────────────────────────────────────────────────────
+  const $nav = $('nav');
+  const panes = [...document.querySelectorAll('main section')];
+
+  function show(name) {
+    for (const pane of panes) pane.hidden = pane.id !== `pane-${name}`;
+    for (const button of $nav.querySelectorAll('button[data-pane]')) {
+      if (button.dataset.pane === name) button.setAttribute('aria-current', 'page');
+      else button.removeAttribute('aria-current');
     }
-  } catch { /* first run, nothing stored */ }
+    // Each pane pulls its own data when it is opened, so nothing is fetched
+    // for a screen nobody is looking at — the single page this replaced
+    // refreshed every control it had, every three seconds.
+    REFRESH[name]?.();
+  }
+
+  $nav.addEventListener('click', (e) => {
+    const button = e.target.closest('button[data-pane]');
+    if (button && !button.disabled) show(button.dataset.pane);
+  });
+
+  const currentPane = () =>
+    $nav.querySelector('button[aria-current="page"]')?.dataset.pane ?? 'account';
+
+  // ── Account ─────────────────────────────────────────────────────────
+  const $server = $('server'), $mailto = $('mailto'), $connect = $('connect');
+  const $cancel = $('cancel'), $status = $('status');
 
   async function connect() {
     const url = $server.value.trim();
-    if (!url) { say('Enter your server address.', 'bad'); $server.focus(); return; }
+    if (!url) { setStatus($status, 'Enter your server address.', 'bad'); $server.focus(); return; }
 
     $connect.disabled = true;
-    say('Checking…', 'busy');
+    setStatus($status, 'Checking…', 'busy');
     try {
       // Prove the address answers, and answers as MeCloud, before storing it —
       // a typo caught here beats a blank window that never loads.
-      const name = await invoke('probe_server', { url });
-      say(`Found ${name}. Opening…`, 'ok');
-      await invoke('save_server', { url, handleMailto: $mailto.checked });
+      const name = await call('probe_server', { url });
+      setStatus($status, `Found ${name}. Opening…`, 'ok');
+      await call('save_server', { url, handleMailto: $mailto.checked });
     } catch (e) {
-      say(String(e), 'bad');
+      setStatus($status, String(e), 'bad');
     } finally {
       $connect.disabled = false;
     }
   }
 
-  // ── Sync ────────────────────────────────────────────────────────────────
-  const $syncPanel  = document.getElementById('syncpanel');
-  const $pairRow    = document.getElementById('pairrow');
-  const $folderRow  = document.getElementById('folderrow');
-  const $pair       = document.getElementById('pair');
-  const $unpair     = document.getElementById('unpair');
-  const $folder     = document.getElementById('folder');
-  const $syncOn     = document.getElementById('syncon');
-  const $saveSync   = document.getElementById('savesync');
-  const $syncNow    = document.getElementById('syncnow');
-  const $syncState  = document.getElementById('syncstate');
-  const $syncDetail = document.getElementById('syncdetail');
-  const $confirmDelete = document.getElementById('confirmdelete');
+  const $devicePanel = $('devicepanel'), $pair = $('pair'), $unpair = $('unpair');
+  const $pairHint = $('pairhint'), $pairDetail = $('pairdetail');
 
-  const STATE_LABEL = {
-    not_configured: ['not set up', ''],
-    paused:         ['off', ''],
-    idle:           ['on', 'on'],
-    syncing:        ['syncing…', 'on'],
-    problems:       ['problems', 'bad'],
-    error:          ['error', 'bad'],
-    needs_confirmation: ['stopped', 'bad'],
-  };
-
-  async function refreshSync() {
-    const config = await invoke('get_config').catch(() => ({}));
-    if (!config.server_url) { $syncPanel.hidden = true; return; }
-    $syncPanel.hidden = false;
-
-    const paired = await invoke('is_paired').catch(() => false);
-    $pairRow.hidden = paired;
-    $folderRow.hidden = !paired;
-    if (config.sync_folder) $folder.value = config.sync_folder;
-    $syncOn.checked = !!config.sync_enabled;
-    $deleteOn.checked = config.delete_on_server !== false;
-    $trashDays.value = config.trash_days ?? 30;
-    $trashDays.disabled = !$deleteOn.checked;
-    await refreshTrash();
-
-    const status = await invoke('sync_status').catch(() => null);
-    if (status) {
-      // Only offered when the engine actually refused a pass, so the button
-      // cannot be pressed speculatively.
-      $confirmDelete.hidden = status.state !== 'needs_confirmation';
-      const [label, cls] = STATE_LABEL[status.state] ?? ['—', ''];
-      $syncState.textContent = label;
-      $syncState.className = `pill ${cls}`;
-      $syncDetail.textContent = status.problems?.length
-        ? `${status.detail} — ${status.problems[0]}`
-        : status.detail;
-      $syncDetail.className = `status ${cls === 'bad' ? 'bad' : ''}`;
+  async function refreshAccount() {
+    const config = await call('get_config').catch(() => ({}));
+    if (config.server_url) {
+      $server.value = config.server_url;
+      $cancel.hidden = false;
+      // Only reflect the real state once there is a real state. On first run
+      // the box stays ticked, because offering the integration is the point.
+      $mailto.checked = await call('is_mailto_registered').catch(() => true);
     }
+    $devicePanel.hidden = !config.server_url;
+
+    const paired = await call('is_paired').catch(() => false);
+    $pair.hidden = paired;
+    $unpair.hidden = !paired;
+    $pairHint.textContent = paired
+      ? 'This computer is connected to your account and can sync files.'
+      : 'This computer is not connected to your account yet. Connecting it lets '
+        + 'MeCloud sync files in the background.';
+    return { config, paired };
   }
 
   $pair.addEventListener('click', async () => {
     $pair.disabled = true;
     $pair.textContent = 'Waiting for approval in your browser…';
     try {
-      const name = await invoke('pair_device');
-      $syncDetail.textContent = `Connected as ${name}.`;
-      $syncDetail.className = 'status ok';
-      // A sensible default the user can change before switching sync on.
-      if (!$folder.value) $folder.value = '';
-      await refreshSync();
+      const name = await call('pair_device');
+      setStatus($pairDetail, `Connected as ${name}.`, 'ok');
+      await refreshAccount();
     } catch (e) {
-      $syncDetail.textContent = String(e);
-      $syncDetail.className = 'status bad';
+      setStatus($pairDetail, String(e), 'bad');
     } finally {
       $pair.disabled = false;
       $pair.textContent = 'Connect this computer…';
@@ -312,46 +543,72 @@
   });
 
   $unpair.addEventListener('click', async () => {
-    await invoke('unpair_device').catch(() => {});
-    await refreshSync();
+    if (!window.confirm('Disconnect this computer? Sync will stop. No files are deleted.')) return;
+    await call('unpair_device').catch(() => {});
+    setStatus($pairDetail, 'Disconnected.', '');
+    await refreshAccount();
   });
 
-  $saveSync.addEventListener('click', async () => {
-    $saveSync.disabled = true;
-    try {
-      await saveSync(false);
-      $syncDetail.textContent = $syncOn.checked ? 'Sync is on.' : 'Sync is off.';
-      $syncDetail.className = 'status ok';
-    } catch (e) {
-      $syncDetail.textContent = String(e);
-      $syncDetail.className = 'status bad';
-    } finally {
-      $saveSync.disabled = false;
-      await refreshSync();
-    }
-  });
+  // ── Sync ────────────────────────────────────────────────────────────
+  const $needsPair = $('needspair'), $syncBody = $('syncbody');
+  const $folder = $('folder'), $syncOn = $('syncon'), $saveSync = $('savesync');
+  const $syncNow = $('syncnow'), $syncDetail = $('syncdetail'), $counters = $('counters');
+  const $confirmDelete = $('confirmdelete');
 
-  $confirmDelete.addEventListener('click', async () => {
-    $confirmDelete.disabled = true;
-    try {
-      await invoke('confirm_bulk_delete');
-      $syncDetail.textContent = 'Confirmed — the next pass will apply the deletions.';
-      $syncDetail.className = 'status';
-      await invoke('sync_now');
-    } catch (e) {
-      $syncDetail.textContent = String(e);
-      $syncDetail.className = 'status bad';
-    } finally {
-      $confirmDelete.disabled = false;
-      await refreshSync();
-    }
-  });
+  const STATE_LABEL = {
+    not_configured: ['not set up', ''],
+    paused: ['off', ''],
+    idle: ['on', 'on'],
+    syncing: ['syncing…', 'busy'],
+    problems: ['problems', 'bad'],
+    error: ['error', 'bad'],
+    needs_confirmation: ['stopped', 'bad'],
+  };
+
+  async function refreshSync() {
+    const config = await call('get_config').catch(() => ({}));
+    const paired = await call('is_paired').catch(() => false);
+    $needsPair.hidden = paired;
+    $syncBody.hidden = !paired;
+    if (config.sync_folder) $folder.value = config.sync_folder;
+    $syncOn.checked = !!config.sync_enabled;
+
+    const status = await call('sync_status').catch(() => null);
+    if (!status) return;
+    // Only offered when the engine actually refused a pass, so the button
+    // cannot be pressed speculatively.
+    $confirmDelete.hidden = status.state !== 'needs_confirmation';
+
+    const rows = [
+      ['Uploaded', status.uploaded], ['Downloaded', status.downloaded],
+      ['Removed', status.deleted], ['Conflicts', status.conflicts],
+      ['Awaiting deletion', status.pending_deletions],
+      ['Too large to send', status.held_uploads],
+      ['Tracked files', status.tracked],
+    ];
+    $counters.replaceChildren(...rows.map(([label, value]) => {
+      const li = document.createElement('li');
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = label;
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = String(value ?? 0);
+      li.append(name, meta);
+      return li;
+    }));
+
+    const kind = STATE_LABEL[status.state]?.[1] ?? '';
+    setStatus($syncDetail,
+      status.problems?.length ? `${status.detail} — ${status.problems[0]}` : status.detail,
+      kind === 'on' ? '' : kind);
+  }
 
   // Save, surfacing "this folder already has files in it" as a question rather
   // than an error the user cannot get past.
   async function saveSync(acknowledged) {
     try {
-      await invoke('set_sync', {
+      await call('set_sync', {
         folder: $folder.value.trim(), enabled: $syncOn.checked, acknowledged,
       });
     } catch (e) {
@@ -368,14 +625,196 @@
     }
   }
 
-  const $deleteOn   = document.getElementById('deleteon');
-  const $trashDays  = document.getElementById('trashdays');
-  const $trash      = document.getElementById('trash');
-  const $trashList  = document.getElementById('trashlist');
-  const $trashCount = document.getElementById('trashcount');
+  $saveSync.addEventListener('click', async () => {
+    $saveSync.disabled = true;
+    try {
+      await saveSync(false);
+      setStatus($syncDetail, $syncOn.checked ? 'Sync is on.' : 'Sync is off.', 'ok');
+    } catch (e) {
+      setStatus($syncDetail, String(e), 'bad');
+    } finally {
+      $saveSync.disabled = false;
+      await refreshSync();
+    }
+  });
+
+  $syncNow.addEventListener('click', async () => {
+    setStatus($syncDetail, 'Syncing…', 'busy');
+    await call('sync_now').catch(() => {});
+    await refreshSync();
+  });
+
+  $confirmDelete.addEventListener('click', async () => {
+    $confirmDelete.disabled = true;
+    try {
+      await call('confirm_bulk_delete');
+      setStatus($syncDetail, 'Confirmed — the next pass will apply the deletions.', '');
+      await call('sync_now');
+    } catch (e) {
+      setStatus($syncDetail, String(e), 'bad');
+    } finally {
+      $confirmDelete.disabled = false;
+      await refreshSync();
+    }
+  });
+
+  // ── Folders (selective sync) ────────────────────────────────────────
+  const $folderList = $('folderlist'), $foldersDetail = $('foldersdetail');
+
+  async function refreshFolders() {
+    setStatus($foldersDetail, 'Reading your drive…', 'busy');
+    let choices;
+    try {
+      choices = await call('sync_folders');
+    } catch (e) {
+      setStatus($foldersDetail, String(e), 'bad');
+      return;
+    }
+    setStatus($foldersDetail, '');
+
+    if (!choices.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty';
+      empty.textContent = 'No folders yet — this lists the top-level folders on your drive.';
+      $folderList.replaceChildren(empty);
+      return;
+    }
+
+    $folderList.replaceChildren(...choices.map((choice) => {
+      const li = document.createElement('li');
+
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.checked = choice.included;
+      box.id = `folder-${choice.name}`;
+
+      const name = document.createElement('label');
+      name.className = 'name';
+      name.htmlFor = box.id;
+      name.style.cssText = 'font-weight:500;margin:0;font-size:12.5px';
+      // textContent, not innerHTML: these are folder names from the drive.
+      name.textContent = choice.name;
+      name.title = choice.name;
+
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = choice.files
+        ? `${choice.files} file${choice.files === 1 ? '' : 's'} · ${bytes(choice.bytes)}`
+        : 'not synced here';
+
+      box.addEventListener('change', async () => {
+        box.disabled = true;
+        try {
+          await call('set_folder_included', { name: choice.name, included: box.checked });
+          setStatus($foldersDetail, box.checked
+            ? `${choice.name} will sync from the next pass.`
+            : `${choice.name} is no longer synced here. Nothing was deleted.`, 'ok');
+        } catch (e) {
+          box.checked = !box.checked;
+          setStatus($foldersDetail, String(e), 'bad');
+        } finally {
+          box.disabled = false;
+        }
+      });
+
+      li.append(box, name, meta);
+      return li;
+    }));
+  }
+
+  $('refreshfolders').addEventListener('click', refreshFolders);
+
+  // ── Rules ───────────────────────────────────────────────────────────
+  const $patterns = $('patterns'), $syncHidden = $('synchidden');
+  const $askBig = $('askbig'), $bigMb = $('bigmb'), $rulesDetail = $('rulesdetail');
+  const $heldPanel = $('heldpanel'), $heldList = $('heldlist'), $heldPill = $('heldpill');
+
+  async function refreshRules() {
+    const rules = await call('get_rules').catch(() => null);
+    if (rules) {
+      $patterns.value = rules.patterns ?? '';
+      $syncHidden.checked = rules.sync_hidden !== false;
+      $askBig.checked = rules.confirm_over_mb > 0;
+      if (rules.confirm_over_mb > 0) $bigMb.value = rules.confirm_over_mb;
+    }
+    $bigMb.disabled = !$askBig.checked;
+    await refreshHeld();
+  }
+
+  $askBig.addEventListener('change', () => { $bigMb.disabled = !$askBig.checked; });
+
+  $('saverules').addEventListener('click', async () => {
+    const button = $('saverules');
+    button.disabled = true;
+    try {
+      const rejected = await call('set_rules', {
+        patterns: $patterns.value,
+        confirmOverMb: $askBig.checked ? Math.max(1, Number($bigMb.value) || 1) : 0,
+        syncHidden: $syncHidden.checked,
+      });
+      // Saved either way — the unusable lines are reported rather than
+      // throwing away the good ones above them.
+      setStatus($rulesDetail, rejected.length
+        ? `Saved. These lines were not understood and are not in force: ${rejected.join(', ')}`
+        : 'Saved. They apply from the next pass.',
+        rejected.length ? 'warn' : 'ok');
+    } catch (e) {
+      setStatus($rulesDetail, String(e), 'bad');
+    } finally {
+      button.disabled = false;
+    }
+  });
+
+  async function refreshHeld() {
+    const items = await call('held_uploads').catch(() => []);
+    $heldPanel.hidden = items.length === 0;
+    $heldPill.textContent = String(items.length);
+    badge('heldcount', items.length);
+    if (!items.length) { $heldList.replaceChildren(); return; }
+
+    $heldList.replaceChildren(...items.map((item) => {
+      const li = document.createElement('li');
+
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = item.path;
+      name.title = item.path;
+
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = bytes(item.size);
+
+      const send = document.createElement('button');
+      send.textContent = 'Upload';
+      send.addEventListener('click', async () => {
+        send.disabled = true;
+        await call('approve_upload', { path: item.path }).catch(() => {});
+        await refreshHeld();
+      });
+
+      const never = document.createElement('button');
+      never.className = 'ghost';
+      never.textContent = 'Never';
+      never.addEventListener('click', async () => {
+        if (!window.confirm(
+          `Never upload "${item.path}"?\n\n`
+          + 'It stays on this computer, and a rule is added so MeCloud leaves it alone. '
+          + 'You can remove that rule here later.')) return;
+        await call('decline_upload', { path: item.path }).catch(() => {});
+        await refreshRules();
+      });
+
+      li.append(name, meta, send, never);
+      return li;
+    }));
+  }
+
+  // ── Deletions ───────────────────────────────────────────────────────
+  const $deleteOn = $('deleteon'), $trashDays = $('trashdays');
+  const $trashList = $('trashlist'), $trashPill = $('trashpill'), $trashDetail = $('trashdetail');
 
   async function saveDeletionPolicy() {
-    await invoke('set_deletion_policy', {
+    await call('set_deletion_policy', {
       enabled: $deleteOn.checked, days: Number($trashDays.value) || 30,
     }).catch(() => {});
     $trashDays.disabled = !$deleteOn.checked;
@@ -383,11 +822,23 @@
   $deleteOn.addEventListener('change', saveDeletionPolicy);
   $trashDays.addEventListener('change', saveDeletionPolicy);
 
-  async function refreshTrash() {
-    const items = await invoke('pending_deletions').catch(() => []);
-    $trash.hidden = items.length === 0;
-    $trashCount.textContent = String(items.length);
-    if (!items.length) { $trashList.replaceChildren(); return; }
+  async function refreshDeletions() {
+    const config = await call('get_config').catch(() => ({}));
+    $deleteOn.checked = config.delete_on_server !== false;
+    $trashDays.value = config.trash_days ?? 30;
+    $trashDays.disabled = !$deleteOn.checked;
+
+    const items = await call('pending_deletions').catch(() => []);
+    $trashPill.textContent = String(items.length);
+    badge('trashcount', items.length);
+
+    if (!items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty';
+      empty.textContent = 'Nothing is waiting to be deleted.';
+      $trashList.replaceChildren(empty);
+      return;
+    }
 
     const days = Number($trashDays.value) || 30;
     $trashList.replaceChildren(...items.map((item) => {
@@ -395,21 +846,20 @@
 
       const name = document.createElement('span');
       name.className = 'name';
-      // textContent, not innerHTML: these are file names from the drive.
       name.textContent = item.path;
       name.title = item.path;
 
-      const age = document.createElement('span');
-      age.className = 'age';
+      const meta = document.createElement('span');
+      meta.className = 'meta';
       const left = Math.max(0, days - item.days_waiting);
-      age.textContent = left === 0 ? 'due now' : `${left}d left`;
+      meta.textContent = left === 0 ? 'due now' : `${left}d left`;
 
       const restore = document.createElement('button');
       restore.className = 'ghost';
       restore.textContent = 'Put back';
       restore.addEventListener('click', async () => {
-        await invoke('restore_deletion', { path: item.path }).catch(() => {});
-        await refreshTrash();
+        await call('restore_deletion', { path: item.path }).catch(() => {});
+        await refreshDeletions();
       });
 
       const now = document.createElement('button');
@@ -417,79 +867,60 @@
       now.textContent = 'Delete now';
       now.addEventListener('click', async () => {
         if (!window.confirm(`Delete "${item.path}" from the server? This cannot be undone.`)) return;
-        await invoke('apply_deletion', { path: item.path }).catch((e) => {
-          $syncDetail.textContent = String(e);
-          $syncDetail.className = 'status bad';
-        });
-        await refreshTrash();
+        await call('apply_deletion', { path: item.path })
+          .catch((e) => setStatus($trashDetail, String(e), 'bad'));
+        await refreshDeletions();
       });
 
-      li.append(name, age, restore, now);
+      li.append(name, meta, restore, now);
       return li;
     }));
   }
 
-  $syncNow.addEventListener('click', async () => {
-    $syncDetail.textContent = 'Syncing…';
-    $syncDetail.className = 'status busy';
-    await invoke('sync_now').catch(() => {});
-    await refreshSync();
-  });
-
-  // ── This app: startup and updates ───────────────────────────────────────
-  const $appPanel   = document.getElementById('apppanel');
-  const $startup    = document.getElementById('startup');
-  const $autoUpdate = document.getElementById('autoupdate');
-  const $version    = document.getElementById('version');
-  const $updateMsg  = document.getElementById('updatemsg');
-  const $check      = document.getElementById('checkupdate');
-  const $install    = document.getElementById('installupdate');
+  // ── About ───────────────────────────────────────────────────────────
+  const $startup = $('startup'), $autoUpdate = $('autoupdate');
+  const $version = $('version'), $updateMsg = $('updatemsg');
+  const $check = $('checkupdate'), $install = $('installupdate');
 
   function showUpdate(info) {
     if (!info) return;
     $version.textContent = `Version ${info.current}`;
     $install.hidden = !info.newer;
-    // Always resolve to something. The old version left the message on
+    // Always resolve to something. An older build left the message on
     // "Checking…" whenever the server published no version at all, which
     // looked stuck and read as "no update" — two states it could not tell
     // apart. The client now says which it is.
     if (!info.detail) return;
-    $updateMsg.textContent = info.detail;
-    $updateMsg.className = `status ${info.newer ? 'ok' : ''}`;
+    setStatus($updateMsg, info.detail, info.newer ? 'ok' : '');
   }
 
-  async function refreshApp() {
-    const config = await invoke('get_config').catch(() => ({}));
-    if (!config.server_url) { $appPanel.hidden = true; return; }
-    $appPanel.hidden = false;
-    $startup.checked = await invoke('get_autostart').catch(() => false);
+  async function refreshAbout() {
+    const config = await call('get_config').catch(() => ({}));
+    $startup.checked = await call('get_autostart').catch(() => false);
     $autoUpdate.checked = !!config.auto_update;
-    showUpdate(await invoke('update_info').catch(() => null));
+    showUpdate(await call('update_info').catch(() => null));
   }
 
   $startup.addEventListener('change', async () => {
     try {
-      await invoke('set_autostart', { enabled: $startup.checked });
+      await call('set_autostart', { enabled: $startup.checked });
     } catch (e) {
-      $updateMsg.textContent = String(e);
-      $updateMsg.className = 'status bad';
+      setStatus($updateMsg, String(e), 'bad');
       $startup.checked = !$startup.checked;
     }
   });
 
-  $autoUpdate.addEventListener('change', async () => {
-    await invoke('set_auto_update', { enabled: $autoUpdate.checked }).catch(() => {});
+  $autoUpdate.addEventListener('change', () => {
+    call('set_auto_update', { enabled: $autoUpdate.checked }).catch(() => {});
   });
 
   $check.addEventListener('click', async () => {
     $check.disabled = true;
-    $updateMsg.textContent = 'Checking…';
-    $updateMsg.className = 'status busy';
+    setStatus($updateMsg, 'Checking…', 'busy');
     try {
-      showUpdate(await invoke('check_for_update'));
+      showUpdate(await call('check_for_update'));
     } catch (e) {
-      $updateMsg.textContent = String(e);
-      $updateMsg.className = 'status bad';
+      setStatus($updateMsg, String(e), 'bad');
     } finally {
       $check.disabled = false;
     }
@@ -497,30 +928,73 @@
 
   $install.addEventListener('click', async () => {
     $install.disabled = true;
-    $updateMsg.textContent = 'Downloading…';
-    $updateMsg.className = 'status busy';
+    setStatus($updateMsg, 'Downloading…', 'busy');
     try {
-      const version = await invoke('install_update');
-      $updateMsg.textContent = `Version ${version} installed — restart MeCloud to use it.`;
-      $updateMsg.className = 'status ok';
+      const version = await call('install_update');
+      setStatus($updateMsg, `Version ${version} installed — restart MeCloud to use it.`, 'ok');
       $install.hidden = true;
     } catch (e) {
-      $updateMsg.textContent = String(e);
-      $updateMsg.className = 'status bad';
+      setStatus($updateMsg, String(e), 'bad');
     } finally {
       $install.disabled = false;
     }
   });
 
-  await refreshApp();
-  await refreshSync();
-  // The engine runs on its own schedule; poll so the panel reflects it.
-  setInterval(refreshSync, 3000);
+  // ── Chrome that is always on screen ─────────────────────────────────
+  const $footDot = $('footdot'), $footDetail = $('footdetail'), $footState = $('footstate');
+
+  /** The status line and the nav badges, which have to be right whichever
+      pane is open — this is the one thing that keeps polling. */
+  async function refreshChrome() {
+    const config = await call('get_config').catch(() => ({}));
+    const configured = !!config.server_url;
+    for (const button of $nav.querySelectorAll('button[data-needs-server]')) {
+      button.disabled = !configured;
+    }
+
+    const status = await call('sync_status').catch(() => null);
+    if (!status) return;
+    const [label, kind] = STATE_LABEL[status.state] ?? ['—', ''];
+    $footState.textContent = label;
+    $footState.className = `pill ${kind === 'busy' ? '' : kind}`;
+    $footDot.className = `dot ${kind}`;
+    $footDetail.textContent = status.problems?.length
+      ? `${status.detail} — ${status.problems[0]}`
+      : status.detail;
+    $footDetail.title = status.problems?.join('\n') ?? '';
+
+    badge('trashcount', status.pending_deletions ?? 0);
+    badge('heldcount', status.held_uploads ?? 0);
+  }
+
+  const REFRESH = {
+    account: refreshAccount,
+    sync: refreshSync,
+    folders: refreshFolders,
+    rules: refreshRules,
+    deletions: refreshDeletions,
+    about: refreshAbout,
+  };
 
   $connect.addEventListener('click', connect);
   $server.addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
-  $cancel.addEventListener('click', () => window.__TAURI__.core.invoke('plugin:window|hide'));
-  $server.focus();
+  $cancel.addEventListener('click', () => call('plugin:window|hide'));
+
+  const { config } = await refreshAccount();
+  await refreshChrome();
+  // Land on the screen the user came for: an unconfigured client needs an
+  // address before anything else works, a configured one almost always came
+  // to look at sync.
+  show(config?.server_url ? 'sync' : 'account');
+  if (!config?.server_url) $server.focus();
+
+  // The engine runs on its own schedule, so the status line follows it. Only
+  // the two panes whose contents actually change on their own are refreshed.
+  setInterval(async () => {
+    await refreshChrome();
+    const pane = currentPane();
+    if (pane === 'sync' || pane === 'deletions') await REFRESH[pane]?.();
+  }, 3000);
 </script>
 </body>
 </html>

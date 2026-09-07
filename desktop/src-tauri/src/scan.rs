@@ -11,38 +11,7 @@ use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 use crate::reconcile::{Entry, Tree};
-
-/// Names never synced, in any folder.
-///
-/// The sync database lives in the config directory rather than the synced
-/// folder, so it is not here; these are the things other software leaves
-/// behind that no one means to share, plus our own conflict marker files
-/// would be synced (they should be — they are real files the user must see).
-const IGNORED_NAMES: &[&str] = &[
-    ".DS_Store",
-    "Thumbs.db",
-    "desktop.ini",
-    ".Trash-1000",
-];
-
-const IGNORED_PREFIXES: &[&str] = &[".~lock.", "~$"];
-const IGNORED_SUFFIXES: &[&str] = &[".part", ".crdownload", ".swp", ".tmp"];
-
-/// Whether a single path component should be skipped.
-pub fn is_ignored(name: &str) -> bool {
-    if IGNORED_NAMES.contains(&name) {
-        return true;
-    }
-    if IGNORED_PREFIXES.iter().any(|p| name.starts_with(p)) {
-        return true;
-    }
-    if IGNORED_SUFFIXES.iter().any(|s| name.ends_with(s)) {
-        return true;
-    }
-    // An editor writing "file.txt" often creates "file.txt~" first; syncing
-    // the intermediate wastes a round trip and confuses the baseline.
-    name.ends_with('~')
-}
+use crate::rules::{is_ignored, Rules};
 
 /// SHA-256 of a file's contents, streamed.
 ///
@@ -71,7 +40,7 @@ pub fn hash_file(path: &Path) -> Result<(String, u64), String> {
 /// single unreadable file should not stop everything else from syncing. They
 /// are returned alongside so the caller can report them.
 pub fn scan(root: &Path) -> (Tree, Vec<String>) {
-    scan_with_stamps(root, &std::collections::HashMap::new()).0
+    scan_with_stamps(root, &std::collections::HashMap::new(), &Rules::permissive()).0
 }
 
 /// The modification time of an entry, in whole seconds since the epoch.
@@ -101,6 +70,7 @@ fn mtime_of(meta: &std::fs::Metadata) -> i64 {
 pub fn scan_with_stamps(
     root: &Path,
     known: &std::collections::HashMap<String, (u64, i64, String)>,
+    rules: &Rules,
 ) -> ((Tree, Vec<String>), std::collections::HashMap<String, i64>) {
     let mut tree = Tree::new();
     let mut problems = Vec::new();
@@ -110,12 +80,16 @@ pub fn scan_with_stamps(
         .follow_links(false)
         .into_iter()
         .filter_entry(|e| {
+            // Pruning whole directories here rather than filtering files
+            // afterwards is what makes an excluded `node_modules` cost
+            // nothing instead of a full walk of it.
             e.depth() == 0
-                || !e
-                    .file_name()
-                    .to_str()
-                    .map(is_ignored)
-                    .unwrap_or(true)
+                || e.path()
+                    .strip_prefix(root)
+                    .ok()
+                    .and_then(|r| r.to_str())
+                    .map(|r| !rules.excludes(&r.replace('\\', "/")))
+                    .unwrap_or(false)
         })
     {
         let entry = match entry {
@@ -245,14 +219,14 @@ mod tests {
         let path = dir.join("a.txt");
         fs::write(&path, b"hello").unwrap();
 
-        let ((first, _), stamps) = scan_with_stamps(&dir, &Default::default());
+        let ((first, _), stamps) = scan_with_stamps(&dir, &Default::default(), &Rules::permissive());
         let real = first["a.txt"].version.clone();
 
         // Claim a different hash for the same size and mtime: if the scan
         // re-read the file it would disagree with us.
         let mut known = std::collections::HashMap::new();
         known.insert("a.txt".to_string(), (5u64, stamps["a.txt"], "PRETEND".to_string()));
-        let ((second, _), _) = scan_with_stamps(&dir, &known);
+        let ((second, _), _) = scan_with_stamps(&dir, &known, &Rules::permissive());
         assert_eq!(second["a.txt"].version, "PRETEND", "should have trusted the stamp");
         assert_ne!(real, "PRETEND");
     }
@@ -262,12 +236,12 @@ mod tests {
         let dir = tempdir();
         let path = dir.join("a.txt");
         fs::write(&path, b"hello").unwrap();
-        let ((_, _), stamps) = scan_with_stamps(&dir, &Default::default());
+        let ((_, _), stamps) = scan_with_stamps(&dir, &Default::default(), &Rules::permissive());
 
         let mut known = std::collections::HashMap::new();
         // Recorded as a different length, so the stamp cannot be trusted.
         known.insert("a.txt".to_string(), (999u64, stamps["a.txt"], "PRETEND".to_string()));
-        let ((tree, _), _) = scan_with_stamps(&dir, &known);
+        let ((tree, _), _) = scan_with_stamps(&dir, &known, &Rules::permissive());
         assert_ne!(tree["a.txt"].version, "PRETEND");
     }
 
@@ -278,7 +252,7 @@ mod tests {
         fs::write(dir.join("a.txt"), b"hello").unwrap();
         let mut known = std::collections::HashMap::new();
         known.insert("a.txt".to_string(), (5u64, 0i64, "PRETEND".to_string()));
-        let ((tree, _), _) = scan_with_stamps(&dir, &known);
+        let ((tree, _), _) = scan_with_stamps(&dir, &known, &Rules::permissive());
         assert_ne!(tree["a.txt"].version, "PRETEND");
     }
 
@@ -329,5 +303,36 @@ mod tests {
         ));
         fs::create_dir_all(&base).unwrap();
         base
+    }
+
+    #[test]
+    fn excluded_folders_are_pruned_rather_than_walked() {
+        let dir = tempdir();
+        fs::create_dir_all(dir.join("node_modules/left-pad")).unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("node_modules/left-pad/index.js"), b"junk").unwrap();
+        fs::write(dir.join("src/main.rs"), b"code").unwrap();
+
+        let rules = Rules::new(&["node_modules/".to_string()], &[], None, true);
+        let ((tree, problems), _) = scan_with_stamps(&dir, &Default::default(), &rules);
+
+        assert!(problems.is_empty());
+        assert_eq!(tree.keys().collect::<Vec<_>>(), vec!["src/main.rs"]);
+    }
+
+    #[test]
+    fn an_excluded_path_is_reported_the_same_as_one_that_is_not_there() {
+        // The engine relies on this: an excluded file must be absent from the
+        // local tree, not present-and-flagged, or the reconciler would see a
+        // file it has a baseline for and nothing else, and call it deleted.
+        let dir = tempdir();
+        fs::write(dir.join("keep.txt"), b"a").unwrap();
+        fs::write(dir.join("secret.key"), b"b").unwrap();
+
+        let rules = Rules::new(&["*.key".to_string()], &[], None, true);
+        let ((tree, _), stamps) = scan_with_stamps(&dir, &Default::default(), &rules);
+
+        assert!(!tree.contains_key("secret.key"));
+        assert!(!stamps.contains_key("secret.key"));
     }
 }

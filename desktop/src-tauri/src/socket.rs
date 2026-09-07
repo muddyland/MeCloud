@@ -30,7 +30,7 @@ pub enum FileStatus {
     Synced,
     /// Known, but not yet in step.
     Syncing,
-    /// In the folder but deliberately never synced (see `scan::is_ignored`).
+    /// In the folder but deliberately never synced (see `rules::is_ignored`).
     Ignored,
     /// The last pass could not handle it.
     Error,
@@ -128,7 +128,7 @@ pub fn status_for(
     if path
         .file_name()
         .and_then(|n| n.to_str())
-        .map(crate::scan::is_ignored)
+        .map(crate::rules::is_ignored)
         .unwrap_or(false)
     {
         return FileStatus::Ignored;

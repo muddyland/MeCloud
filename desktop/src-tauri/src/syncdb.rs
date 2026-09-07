@@ -16,6 +16,15 @@ pub struct SyncDb {
     conn: Connection,
 }
 
+/// A file too large to upload without the user agreeing to it first.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingUpload {
+    pub path: String,
+    pub size: u64,
+    pub approved: bool,
+    pub days_waiting: i64,
+}
+
 /// A file deleted here, still present on the server.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PendingDeletion {
@@ -61,6 +70,16 @@ impl SyncDb {
                  path      TEXT PRIMARY KEY,
                  node_id   TEXT,
                  size      INTEGER NOT NULL DEFAULT 0,
+                 marked_at INTEGER NOT NULL
+             );
+             -- Uploads held back for being larger than the user's threshold.
+             -- Not an exclusion: the file stays on disk and stays tracked, and
+             -- the row exists so the settings screen can ask about it once
+             -- rather than the engine asking on every pass.
+             CREATE TABLE IF NOT EXISTS pending_upload (
+                 path      TEXT PRIMARY KEY,
+                 size      INTEGER NOT NULL DEFAULT 0,
+                 approved  INTEGER NOT NULL DEFAULT 0,
                  marked_at INTEGER NOT NULL
              );",
         )
@@ -217,6 +236,84 @@ impl SyncDb {
     /// The baseline row is deliberately kept. Dropping it would make the next
     /// pass see "on the server, absent here, no history" and download the file
     /// straight back, undoing the deletion the user actually made.
+    /// Note that a file is too large to upload without being asked about.
+    ///
+    /// Deliberately does not disturb an existing row: re-noting it must not
+    /// clear an approval the user has already given, or an approved upload
+    /// that failed once would need approving again on every pass.
+    /// Every tracked path with its size — what the selective-sync picker needs
+    /// to say how much a folder is costing.
+    pub fn sizes(&self) -> Result<Vec<(String, u64)>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path, size FROM baseline")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? as u64)))
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn hold_upload(&self, path: &str, size: u64) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO pending_upload (path, size, approved, marked_at)
+                 VALUES (?1, ?2, 0, strftime('%s','now'))
+                 ON CONFLICT(path) DO UPDATE SET size = ?2",
+                params![path, size as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Whether this path may be uploaded despite exceeding the threshold.
+    pub fn upload_approved(&self, path: &str) -> bool {
+        self.conn
+            .query_row(
+                "SELECT approved FROM pending_upload WHERE path = ?1",
+                params![path],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|v| v == 1)
+            .unwrap_or(false)
+    }
+
+    pub fn approve_upload(&self, path: &str) -> Result<(), String> {
+        self.conn
+            .execute("UPDATE pending_upload SET approved = 1 WHERE path = ?1", params![path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn clear_upload(&self, path: &str) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM pending_upload WHERE path = ?1", params![path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn held_uploads(&self) -> Result<Vec<PendingUpload>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT path, size, approved,
+                        (strftime('%s','now') - marked_at) / 86400
+                 FROM pending_upload WHERE approved = 0 ORDER BY size DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(PendingUpload {
+                    path: r.get(0)?,
+                    size: r.get::<_, i64>(1)? as u64,
+                    approved: r.get::<_, i64>(2)? == 1,
+                    days_waiting: r.get(3)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
     pub fn mark_pending(&self, path: &str, node_id: Option<&str>, size: u64) -> Result<(), String> {
         self.conn
             .execute(
@@ -433,5 +530,42 @@ mod tests {
     fn an_unknown_path_has_no_node_id() {
         let db = SyncDb::in_memory().unwrap();
         assert_eq!(db.node_id("nope.txt").unwrap(), None);
+    }
+
+    #[test]
+    fn a_held_upload_is_listed_until_it_is_approved() {
+        let db = SyncDb::in_memory().unwrap();
+        db.hold_upload("big.iso", 4_000_000_000).unwrap();
+
+        let held = db.held_uploads().unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].size, 4_000_000_000);
+        assert!(!db.upload_approved("big.iso"));
+
+        db.approve_upload("big.iso").unwrap();
+        assert!(db.upload_approved("big.iso"));
+        assert!(db.held_uploads().unwrap().is_empty(), "approved is no longer waiting");
+    }
+
+    #[test]
+    fn re_noting_a_held_upload_does_not_revoke_its_approval() {
+        // The engine notes the file on every pass until it is actually
+        // uploaded. If that cleared the approval, an upload that failed once
+        // for any reason could never succeed.
+        let db = SyncDb::in_memory().unwrap();
+        db.hold_upload("big.iso", 100).unwrap();
+        db.approve_upload("big.iso").unwrap();
+        db.hold_upload("big.iso", 120).unwrap();
+
+        assert!(db.upload_approved("big.iso"));
+    }
+
+    #[test]
+    fn clearing_a_held_upload_forgets_it_entirely() {
+        let db = SyncDb::in_memory().unwrap();
+        db.hold_upload("big.iso", 100).unwrap();
+        db.clear_upload("big.iso").unwrap();
+        assert!(db.held_uploads().unwrap().is_empty());
+        assert!(!db.upload_approved("big.iso"));
     }
 }

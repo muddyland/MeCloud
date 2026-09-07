@@ -9,7 +9,12 @@ own webview, so the binary is small (**4.6 MB** stripped, release) and the
 embedded UI is the same one you get in a browser rather than a reimplementation
 of it.
 
-![Setup](../docs/screenshot-desktop-setup.png)
+![Settings](../docs/screenshot-desktop-setup.png)
+
+Settings are a rail of panes rather than one long form: the connection, sync
+itself, what syncs, what does not, and what is waiting to be deleted are
+separate questions, and only one of them is usually the reason someone opened
+the window.
 
 Connecting to a server, and once connected, the web apps in a native window:
 
@@ -259,6 +264,62 @@ a conflict would litter a perfectly good folder with copies of every file.
 
 `reconcile.rs` holds all of this, is pure, and is where the tests are.
 
+### Choosing what syncs
+
+![Folders](../docs/screenshot-desktop-folders.png)
+
+**Folders** lists the top-level folders on the drive with their size, and each
+one can be switched off. **Rules** takes exclusion patterns, in the syntax
+almost everyone already knows from `.gitignore`:
+
+| Pattern | Matches |
+|---|---|
+| `*.log` | any `.log` file, at any depth |
+| `node_modules/` | that directory anywhere, and everything inside it |
+| `Photos/raw` | only that path, from the root of the sync folder |
+| `**/cache` | `cache` at any depth |
+| `draft-?.txt` | `draft-1.txt`, but not `draft-10.txt` |
+
+A pattern with no slash matches a *name* anywhere. A pattern with a slash is
+anchored to the root of the sync folder, so `Photos/raw` never quietly matches
+`Archive/Photos/raw`. A leading slash anchors a single name the same way:
+`build` is any folder called build, `/build` is the one at the top. Lines
+starting with `#` are notes, and a line that cannot be parsed is reported back
+rather than silently dropped — the other rules still save.
+
+Hidden files sync by default. That default is load-bearing rather than an
+opinion: turning it off retrospectively would make every dot-file an existing
+install has already synced look deleted.
+
+**Excluding something is inert.** Both copies stay exactly where they are — the
+local files on disk, the server's on the server. All an exclusion does is stop
+the client having an opinion about them.
+
+That is worth stating plainly because the obvious implementation gets it
+catastrophically wrong. Rules are applied to all three inputs — the local scan,
+the remote listing *and* the baseline. Filter only the local side, which is the
+natural place to put it, and every newly excluded file becomes "was synced,
+still on the server, gone from here": a deletion. Excluding a folder would
+delete it. `rules.rs` holds the matcher and `sync.rs` does the filtering, and
+the tests that matter assert the *absence* of actions.
+
+Baselines are held out of a pass rather than deleted, so switching a folder back
+on resumes it instead of re-transferring every file in it.
+
+### Asking before large uploads
+
+**Rules** can hold back anything above a size you choose. A file over the limit
+is not uploaded and not excluded: it stays on disk, stays tracked, and is listed
+with **Upload** to send it or **Never** to leave it alone for good.
+
+![Rules](../docs/screenshot-desktop-rules.png)
+
+*Never* is turned into an ordinary anchored exclusion rule rather than a hidden
+"declined" flag, so the decision is visible on the same screen and can be undone
+by deleting the line. Approving is for that upload only — the hold is cleared
+once the file is actually on the server, so a later change to the same file asks
+again.
+
 ### Warned before it adopts a folder
 
 Pointing sync at a folder that already has files in it is the single most
@@ -279,6 +340,8 @@ normal way to reconnect a machine that already has the drive on it. The
 is for when it is *not* that case.
 
 ### Deleting is deferred
+
+![Deletions](../docs/screenshot-desktop-deletions.png)
 
 A file you delete locally is **not** deleted from the server that pass. It goes
 on a waiting list, and the deletion is applied 30 days later. Until then the
@@ -316,7 +379,9 @@ involved.
   local changes feel immediate, but it tells you nothing about remote ones, so
   the poll is needed either way — the watcher is for responsiveness, not
   correctness.
-- **No selective sync.** The whole drive, or nothing.
+- **Selective sync is per top-level folder.** Anything finer is a pattern on
+  the **Rules** screen, which is a different mental model — there is no folder
+  tree with checkboxes all the way down.
 - **No partial transfers.** A file is uploaded or downloaded whole. Interrupted
   downloads are written to a scratch name and renamed into place, so a half file
   is never mistaken for the real thing, but the next pass starts it again.

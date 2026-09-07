@@ -18,6 +18,7 @@ pub mod handlers;
 pub mod api;
 pub mod pairing;
 pub mod reconcile;
+pub mod rules;
 pub mod scan;
 pub mod socket;
 pub mod sync;
@@ -351,6 +352,140 @@ fn set_deletion_policy(
     Ok(())
 }
 
+/// The exclusion rules, as the settings screen wants them: patterns as one
+/// block of text, because that is how people edit a list of lines.
+#[tauri::command]
+fn get_rules(state: tauri::State<'_, AppState>) -> serde_json::Value {
+    let config = state.config.lock().unwrap().clone();
+    serde_json::json!({
+        "patterns": config.ignore_patterns.join("\n"),
+        "excluded_folders": config.excluded_folders,
+        "confirm_over_mb": config.confirm_over_mb,
+        "sync_hidden": config.sync_hidden,
+    })
+}
+
+#[tauri::command]
+fn set_rules(
+    state: tauri::State<'_, AppState>,
+    patterns: String,
+    confirm_over_mb: u64,
+    sync_hidden: bool,
+) -> Result<Vec<String>, String> {
+    let lines: Vec<String> = patterns.lines().map(|l| l.trim().to_string()).collect();
+    // Report the unusable lines rather than refusing the save: a typo in line
+    // nine should not throw away the eight good rules above it, and a rule
+    // that silently does nothing is worse than one the screen complains about.
+    let rejected = rules::Rules::unparsed(&lines);
+
+    let mut config = state.config.lock().unwrap().clone();
+    config.ignore_patterns = lines.into_iter().filter(|l| !l.is_empty()).collect();
+    config.confirm_over_mb = confirm_over_mb;
+    config.sync_hidden = sync_hidden;
+    config::save(&config)?;
+    *state.config.lock().unwrap() = config;
+    Ok(rejected)
+}
+
+/// The top-level folders on the drive, and whether each one is being synced.
+///
+/// Read from the baseline rather than the server when possible: the picker
+/// should open instantly and work offline, and the baseline already knows the
+/// shape of the drive. Falling back to the server covers the case that
+/// matters most — choosing what to sync *before* the first pass downloads it.
+#[tauri::command]
+async fn sync_folders(state: tauri::State<'_, AppState>) -> Result<Vec<rules::FolderChoice>, String> {
+    let config = state.config.lock().unwrap().clone();
+    let excluded: std::collections::BTreeSet<String> =
+        config.excluded_folders.iter().cloned().collect();
+
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<rules::FolderChoice>, String> {
+        let known: Vec<(String, u64)> = config::sync_db_path()
+            .and_then(|p| syncdb::SyncDb::open(&p).ok())
+            .and_then(|db| db.sizes().ok())
+            .unwrap_or_default();
+
+        if !known.is_empty() {
+            let borrowed: Vec<(&String, u64)> = known.iter().map(|(p, s)| (p, *s)).collect();
+            return Ok(rules::folder_choices(borrowed, &excluded));
+        }
+
+        let (Some(server), Some(token)) = (config.server_url.clone(), config::load_token()) else {
+            return Ok(rules::folder_choices(Vec::new(), &excluded));
+        };
+        let api = api::Api::new(&server, &token)?;
+        let account_id = api.account_id()?;
+        let nodes = api.nodes(&account_id)?;
+        let (tree, _) = api::to_tree(&nodes);
+        let paths: Vec<(String, u64)> = tree.iter().map(|(p, e)| (p.clone(), e.size)).collect();
+        let borrowed: Vec<(&String, u64)> = paths.iter().map(|(p, s)| (p, *s)).collect();
+        Ok(rules::folder_choices(borrowed, &excluded))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Switch a top-level folder on or off.
+///
+/// Switching one *off* leaves both copies exactly where they are — the local
+/// files stay on disk and the server's stay on the server. It only stops the
+/// client having an opinion about them. That is the whole reason exclusions
+/// are applied to every input rather than just the local scan.
+#[tauri::command]
+fn set_folder_included(
+    state: tauri::State<'_, AppState>, name: String, included: bool,
+) -> Result<(), String> {
+    let name = name.trim_matches('/').to_string();
+    if name.is_empty() {
+        return Err("No folder given.".into());
+    }
+    let mut config = state.config.lock().unwrap().clone();
+    config.excluded_folders.retain(|f| f != &name);
+    if !included {
+        config.excluded_folders.push(name);
+    }
+    config::save(&config)?;
+    *state.config.lock().unwrap() = config;
+    Ok(())
+}
+
+#[tauri::command]
+fn held_uploads() -> Vec<syncdb::PendingUpload> {
+    config::sync_db_path()
+        .and_then(|p| syncdb::SyncDb::open(&p).ok())
+        .and_then(|db| db.held_uploads().ok())
+        .unwrap_or_default()
+}
+
+/// Agree to one oversized upload. The next pass sends it.
+#[tauri::command]
+fn approve_upload(path: String) -> Result<(), String> {
+    let db_path = config::sync_db_path().ok_or("No database")?;
+    syncdb::SyncDb::open(&db_path)?.approve_upload(&path)
+}
+
+/// Decline one oversized upload, permanently.
+///
+/// Turned into an exclusion rule rather than a "declined" row, so that the
+/// answer is visible and editable on the rules screen instead of living in a
+/// database the user cannot see. The path is anchored so it means this file,
+/// not every file that happens to share its name.
+#[tauri::command]
+fn decline_upload(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
+    let db_path = config::sync_db_path().ok_or("No database")?;
+    let db = syncdb::SyncDb::open(&db_path)?;
+    db.clear_upload(&path)?;
+
+    let rule = format!("/{}", path.trim_start_matches('/'));
+    let mut config = state.config.lock().unwrap().clone();
+    if !config.ignore_patterns.contains(&rule) {
+        config.ignore_patterns.push(rule);
+    }
+    config::save(&config)?;
+    *state.config.lock().unwrap() = config;
+    Ok(())
+}
+
 #[tauri::command]
 fn get_autostart() -> bool {
     handlers::is_autostart_enabled()
@@ -499,6 +634,7 @@ pub fn run_pass(config: &Config, status: &SharedStatus) {
         allow_bulk_delete: config.allow_bulk_delete_once,
         delete_on_server: config.delete_on_server,
         trash_days: config.trash_days,
+        rules: config.rules(),
     };
     let outcome = engine.run_once(status);
 
@@ -581,10 +717,12 @@ pub fn open_setup(app: &AppHandle) {
         return;
     }
     let _ = WebviewWindowBuilder::new(app, SETUP, WebviewUrl::App("index.html".into()))
-        .title("MeCloud — Setup")
-        .inner_size(560.0, 820.0)
-        // Resizable: the sync panel grows with what it has to say, and a
-        // fixed height that clips the buttons is worse than a resizable window.
+        .title("MeCloud — Settings")
+        // Wide enough for the navigation rail beside a pane, short enough to
+        // fit a laptop screen. The panes scroll inside the frame, so height is
+        // no longer the thing that decides whether the buttons are reachable.
+        .inner_size(880.0, 660.0)
+        .min_inner_size(680.0, 480.0)
         .resizable(true)
         .build();
 }
@@ -1016,6 +1154,13 @@ pub fn run() {
             restore_deletion,
             apply_deletion,
             set_deletion_policy,
+            get_rules,
+            set_rules,
+            sync_folders,
+            set_folder_included,
+            held_uploads,
+            approve_upload,
+            decline_upload,
             unpair_device,
             set_sync,
             sync_now,
