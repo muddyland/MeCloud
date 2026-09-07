@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MeCloud — Setup</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --panel: #fff; --text: #111827; --muted: #6b7280;
+    --line: #e5e7eb; --accent: #3b82f6; --accent-text: #fff;
+    --ok: #059669; --bad: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0b1220; --panel: #111827; --text: #f3f4f6; --muted: #9ca3af;
+      --line: #1f2937; --accent: #3b82f6; --ok: #34d399; --bad: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 28px 26px; background: var(--bg); color: var(--text);
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; }
+  .brand svg { width: 30px; height: 30px; color: var(--accent); }
+  .brand h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -0.01em; }
+  .brand p { margin: 2px 0 0; font-size: 12px; color: var(--muted); }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 18px; margin-bottom: 14px;
+  }
+  label { display: block; font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .hint { font-size: 12px; color: var(--muted); margin: 0 0 10px; }
+  input[type=text] {
+    width: 100%; padding: 9px 11px; border-radius: 8px; font-size: 14px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  }
+  input[type=text]:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .row { display: flex; align-items: flex-start; gap: 10px; margin-top: 14px; }
+  .row input { margin-top: 2px; }
+  .row div { font-size: 13px; }
+  .row small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
+  button {
+    padding: 9px 18px; border-radius: 8px; border: 0; font-size: 14px; font-weight: 600;
+    background: var(--accent); color: var(--accent-text); cursor: pointer;
+  }
+  button:disabled { opacity: .55; cursor: not-allowed; }
+  button.ghost { background: transparent; color: var(--muted); font-weight: 500; }
+  .actions { display: flex; align-items: center; gap: 8px; }
+  .status { font-size: 13px; margin: 12px 0 0; min-height: 1.4em; }
+  .status.ok  { color: var(--ok); }
+  .status.bad { color: var(--bad); }
+  .status.busy { color: var(--muted); }
+  footer { font-size: 11px; color: var(--muted); text-align: center; margin-top: 18px; }
+  button.secondary { background: transparent; color: var(--accent);
+                     border: 1px solid var(--accent); font-weight: 600; }
+  .pill { font-size: 11px; padding: 2px 9px; border-radius: 999px;
+          background: var(--bg); color: var(--muted); border: 1px solid var(--line); }
+  .pill.on   { color: var(--ok);  border-color: var(--ok); }
+  .pill.bad  { color: var(--bad); border-color: var(--bad); }
+  #syncdetail { font-size: 12px; }
+</style>
+</head>
+<body>
+  <div class="brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M7 18a4 4 0 0 1-.5-7.97A5.5 5.5 0 0 1 17.4 9.2 3.4 3.4 0 0 1 17 18z" />
+      <rect x="9.2" y="12.4" width="5.6" height="4.4" rx="1" fill="currentColor" stroke="none" />
+      <path d="M10.6 12.4v-1.2a1.4 1.4 0 0 1 2.8 0v1.2" />
+    </svg>
+    <div>
+      <h1>Connect to MeCloud</h1>
+      <p>Your mail, calendar, contacts, notes and files.</p>
+    </div>
+  </div>
+
+  <div class="panel">
+    <label for="server">Server address</label>
+    <p class="hint">The address you use in the browser, for example
+      <code>cloud.example.com</code>.</p>
+    <input id="server" type="text" placeholder="cloud.example.com"
+           autocomplete="off" autocapitalize="off" spellcheck="false" />
+
+    <div class="row">
+      <input id="mailto" type="checkbox" checked />
+      <div>
+        <label for="mailto" style="display:inline; font-weight:600;">Handle mail links</label>
+        <small>Open <code>mailto:</code> links from other apps in MeCloud.</small>
+      </div>
+    </div>
+
+    <p id="status" class="status"></p>
+
+    <div class="actions" style="margin-top:12px">
+      <button id="connect">Connect</button>
+      <button id="cancel" class="ghost" hidden>Cancel</button>
+    </div>
+  </div>
+
+  <div class="panel" id="syncpanel" hidden>
+    <div class="row" style="margin-top:0; justify-content:space-between; align-items:center">
+      <strong style="font-size:13px">File sync</strong>
+      <span id="syncstate" class="pill">off</span>
+    </div>
+    <p class="hint" style="margin-top:8px">
+      Keep a folder on this computer in step with your drive.
+    </p>
+
+    <div id="pairrow">
+      <p class="hint" id="pairhint">
+        This computer is not connected to your account yet.
+      </p>
+      <button id="pair" class="secondary">Connect this computer…</button>
+    </div>
+
+    <div id="folderrow" hidden>
+      <label for="folder" style="margin-top:12px">Folder</label>
+      <input id="folder" type="text" placeholder="/home/you/MeCloud"
+             autocomplete="off" spellcheck="false" />
+      <div class="row">
+        <input id="syncon" type="checkbox" />
+        <div>
+          <label for="syncon" style="display:inline; font-weight:600;">Keep this folder in sync</label>
+          <small>Runs in the background, every 30 seconds.</small>
+        </div>
+      </div>
+      <p id="syncdetail" class="status"></p>
+      <div class="actions" style="margin-top:10px">
+        <button id="savesync">Save</button>
+        <button id="syncnow" class="ghost">Sync now</button>
+        <button id="unpair" class="ghost">Disconnect</button>
+      </div>
+    </div>
+  </div>
+
+  <footer>You will sign in on the next screen, in your server’s own login page.</footer>
+
+<script type="module">
+  const { invoke } = window.__TAURI__.core;
+
+  const $server  = document.getElementById('server');
+  const $mailto  = document.getElementById('mailto');
+  const $connect = document.getElementById('connect');
+  const $cancel  = document.getElementById('cancel');
+  const $status  = document.getElementById('status');
+
+  const say = (text, kind = '') => {
+    $status.textContent = text;
+    $status.className = `status ${kind}`;
+  };
+
+  // Re-opening Preferences should show what is configured, not a blank form.
+  try {
+    const config = await invoke('get_config');
+    if (config.server_url) {
+      $server.value = config.server_url;
+      $cancel.hidden = false;
+      // Only reflect the real state once there is a real state. On first run
+      // the box stays ticked, because offering the integration is the point.
+      $mailto.checked = await invoke('is_mailto_registered');
+    }
+  } catch { /* first run, nothing stored */ }
+
+  async function connect() {
+    const url = $server.value.trim();
+    if (!url) { say('Enter your server address.', 'bad'); $server.focus(); return; }
+
+    $connect.disabled = true;
+    say('Checking…', 'busy');
+    try {
+      // Prove the address answers, and answers as MeCloud, before storing it —
+      // a typo caught here beats a blank window that never loads.
+      const name = await invoke('probe_server', { url });
+      say(`Found ${name}. Opening…`, 'ok');
+      await invoke('save_server', { url, handleMailto: $mailto.checked });
+    } catch (e) {
+      say(String(e), 'bad');
+    } finally {
+      $connect.disabled = false;
+    }
+  }
+
+  // ── Sync ────────────────────────────────────────────────────────────────
+  const $syncPanel  = document.getElementById('syncpanel');
+  const $pairRow    = document.getElementById('pairrow');
+  const $folderRow  = document.getElementById('folderrow');
+  const $pair       = document.getElementById('pair');
+  const $unpair     = document.getElementById('unpair');
+  const $folder     = document.getElementById('folder');
+  const $syncOn     = document.getElementById('syncon');
+  const $saveSync   = document.getElementById('savesync');
+  const $syncNow    = document.getElementById('syncnow');
+  const $syncState  = document.getElementById('syncstate');
+  const $syncDetail = document.getElementById('syncdetail');
+
+  const STATE_LABEL = {
+    not_configured: ['not set up', ''],
+    paused:         ['off', ''],
+    idle:           ['on', 'on'],
+    syncing:        ['syncing…', 'on'],
+    problems:       ['problems', 'bad'],
+    error:          ['error', 'bad'],
+  };
+
+  async function refreshSync() {
+    const config = await invoke('get_config').catch(() => ({}));
+    if (!config.server_url) { $syncPanel.hidden = true; return; }
+    $syncPanel.hidden = false;
+
+    const paired = await invoke('is_paired').catch(() => false);
+    $pairRow.hidden = paired;
+    $folderRow.hidden = !paired;
+    if (config.sync_folder) $folder.value = config.sync_folder;
+    $syncOn.checked = !!config.sync_enabled;
+
+    const status = await invoke('sync_status').catch(() => null);
+    if (status) {
+      const [label, cls] = STATE_LABEL[status.state] ?? ['—', ''];
+      $syncState.textContent = label;
+      $syncState.className = `pill ${cls}`;
+      $syncDetail.textContent = status.problems?.length
+        ? `${status.detail} — ${status.problems[0]}`
+        : status.detail;
+      $syncDetail.className = `status ${cls === 'bad' ? 'bad' : ''}`;
+    }
+  }
+
+  $pair.addEventListener('click', async () => {
+    $pair.disabled = true;
+    $pair.textContent = 'Waiting for approval in your browser…';
+    try {
+      const name = await invoke('pair_device');
+      $syncDetail.textContent = `Connected as ${name}.`;
+      $syncDetail.className = 'status ok';
+      // A sensible default the user can change before switching sync on.
+      if (!$folder.value) $folder.value = '';
+      await refreshSync();
+    } catch (e) {
+      $syncDetail.textContent = String(e);
+      $syncDetail.className = 'status bad';
+    } finally {
+      $pair.disabled = false;
+      $pair.textContent = 'Connect this computer…';
+    }
+  });
+
+  $unpair.addEventListener('click', async () => {
+    await invoke('unpair_device').catch(() => {});
+    await refreshSync();
+  });
+
+  $saveSync.addEventListener('click', async () => {
+    $saveSync.disabled = true;
+    try {
+      await invoke('set_sync', { folder: $folder.value.trim(), enabled: $syncOn.checked });
+      $syncDetail.textContent = $syncOn.checked ? 'Sync is on.' : 'Sync is off.';
+      $syncDetail.className = 'status ok';
+    } catch (e) {
+      $syncDetail.textContent = String(e);
+      $syncDetail.className = 'status bad';
+    } finally {
+      $saveSync.disabled = false;
+      await refreshSync();
+    }
+  });
+
+  $syncNow.addEventListener('click', async () => {
+    $syncDetail.textContent = 'Syncing…';
+    $syncDetail.className = 'status busy';
+    await invoke('sync_now').catch(() => {});
+    await refreshSync();
+  });
+
+  await refreshSync();
+  // The engine runs on its own schedule; poll so the panel reflects it.
+  setInterval(refreshSync, 3000);
+
+  $connect.addEventListener('click', connect);
+  $server.addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
+  $cancel.addEventListener('click', () => window.__TAURI__.core.invoke('plugin:window|hide'));
+  $server.focus();
+</script>
+</body>
+</html>

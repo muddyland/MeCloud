@@ -35,6 +35,16 @@ attached by blob reference, so nothing is downloaded or re-uploaded:*
 
 ![Contacts](docs/screenshot-contacts.png)
 
+*And a desktop client — the same web UI in a native window, with a tray icon and
+`mailto:` handling. A link clicked anywhere on the desktop opens compose:*
+
+![Desktop client](docs/screenshot-desktop-mailto.png)
+
+*It is served by the app itself. Linux is a direct download; Windows and macOS
+are built from the source archive, because each uses its own system webview:*
+
+![Get the desktop app](docs/screenshot-downloads.png)
+
 ## Features
 
 - **Dashboard** at `/` — unread count, storage used, contacts, today's agenda
@@ -72,6 +82,16 @@ attached by blob reference, so nothing is downloaded or re-uploaded:*
   clients, with the secret shown exactly once
 - **vCard import** — drop a `.vcf` file onto Contacts to bulk-import an address
   book
+- **Desktop client** (Linux, [`desktop/`](desktop/)) — a Tauri shell hosting the
+  same web UI in a native window: tray icon, stays resident when closed, and
+  registers as the system `mailto:` handler so mail links from any app open a
+  pre-filled compose window. 4.6 MB, because the window is the OS's own webview.
+  File sync is not implemented yet
+- **The client ships with the server** — the Linux binary and a source archive
+  are built into the Docker image and offered under *Get the desktop app*.
+  Downloads are gated: the session buys a signed link that expires in five
+  minutes, so nothing is served unauthenticated and the transfer still works
+  outside the app
 - **In-app documentation** — the **?** in the top bar opens a searchable help
   modal covering all six apps plus privacy and security, available from every
   page and from the command palette
@@ -161,8 +181,21 @@ The Vite dev server proxies `/api` and `/auth` to `http://localhost:8000`, so bo
 The image uses a true multi-stage build:
 
 1. **`frontend-builder`** (Node 24) — runs `npm run build`, producing a static SvelteKit output
-2. **`python-deps`** (Python 3.13-slim) — installs Python packages into a prefix directory
-3. **Final stage** (Python 3.13-slim) — copies packages and built frontend, runs as a non-root user
+2. **`desktop-builder`** (Rust 1, trixie) — builds the Linux desktop client and
+   packages it, plus a source archive for Windows and macOS, into `/out`
+3. **`python-deps`** (Python 3.13-slim) — installs Python packages into a prefix directory
+4. **Final stage** (Python 3.13-slim) — copies packages, built frontend and desktop
+   artefacts, runs as a non-root user
+
+The Rust stage is by far the slowest, and only depends on `desktop/`, so it
+caches independently of the web app. Skip it while iterating:
+
+```bash
+docker build --build-arg WITH_DESKTOP=0 -t mecloud .
+```
+
+The image is still valid without it — the download screen reports that this
+build shipped nothing to download.
 
 ```bash
 # Build manually
@@ -303,6 +336,13 @@ mecloud/
 │       │   ├── files/+page.svelte          # Files (Drive) view
 │       │   └── notes/+page.svelte          # Notes (Markdown) view
 │       └── tests/                          # vitest, pure-module unit tests
+├── desktop/                        # Tauri desktop client (Linux) — see desktop/README.md
+│   ├── src-tauri/src/
+│   │   ├── lib.rs                  # windows, tray, commands
+│   │   ├── config.rs               # server address (pure, unit-tested)
+│   │   ├── deeplink.rs             # mailto: → compose URL (pure, unit-tested)
+│   │   └── handlers.rs             # .desktop entry + xdg-mime (unit-tested)
+│   └── ui/index.html               # local setup page
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
@@ -384,6 +424,10 @@ allow-list and would otherwise keep blocking the frame regardless of the CSP.
 ## Testing
 
 ```bash
+# Desktop client (Rust, in its build container — see desktop/README.md)
+cd desktop && docker run --rm -e CARGO_HOME=/cargo -v "$PWD":/src \
+  -v "$PWD/.cargo-cache":/cargo -w /src/src-tauri mecloud-rust:trixie cargo test
+
 # Backend
 cd backend && pip install -r requirements-dev.txt && pytest
 

@@ -1,3 +1,4 @@
+import html
 import logging
 import mimetypes
 import os
@@ -5,11 +6,14 @@ import time
 
 mimetypes.add_type('application/manifest+json', '.webmanifest')
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qs, quote
 
 import httpx
 from fastapi import FastAPI, Request, HTTPException, Depends
 from pydantic import BaseModel, Field
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse, FileResponse
+from fastapi.responses import (
+    JSONResponse, RedirectResponse, StreamingResponse, FileResponse, HTMLResponse,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -20,7 +24,10 @@ from slowapi.errors import RateLimitExceeded
 
 from . import http as upstream
 from .config import get_settings
-from .auth import get_authorization_url, exchange_code, refresh_access_token, _discover_endpoints
+from .auth import (
+    get_authorization_url, exchange_code, refresh_access_token, _discover_endpoints,
+    safe_local_path,
+)
 from .http import UpstreamError
 from .jmap import (
     get_jmap_session, jmap_request, jmap_event_stream,
@@ -31,6 +38,7 @@ from .blobs import (
     upload_blob,
 )
 from .models import JMAPRequest
+from . import downloads, devices
 from .session import EncryptedSessionMiddleware
 
 logger = logging.getLogger(__name__)
@@ -283,7 +291,36 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
 
+async def _device_access_token(request: Request) -> str | None:
+    """Trade a device token for a live Stalwart access token, or None.
+
+    The device token carries an OAuth *refresh* token, so every call refreshes.
+    That is one extra upstream request per API call and is why the sync client
+    is expected to batch its work rather than chatter — but it means a device
+    holds nothing that grants access on its own for longer than the mail server
+    allows, and revoking upstream takes effect immediately.
+    """
+    presented = devices.bearer_token(request.headers.get("authorization"))
+    if not presented:
+        return None
+    device = devices.read(settings.session_secret, presented)
+    if device is None:
+        raise HTTPException(status_code=401, detail="This device is no longer paired")
+    try:
+        tokens = await refresh_access_token(device.refresh_token)
+    except Exception:
+        raise HTTPException(status_code=401, detail="This device is no longer paired")
+    return tokens["access_token"]
+
+
 async def require_auth(request: Request) -> str:
+    # A paired desktop client authenticates with a bearer token rather than the
+    # session cookie: it syncs with no window open, so there is no browser
+    # session to borrow.
+    from_device = await _device_access_token(request)
+    if from_device:
+        return from_device
+
     token = request.session.get("access_token")
     if not token:
         raise HTTPException(status_code=401, detail="Not authenticated")
@@ -318,6 +355,174 @@ async def health():
 @app.get("/api/config")
 async def public_config():
     return {"appName": settings.app_name, "stalwartUrl": settings.stalwart_url}
+
+
+def _pairing_page(*, name: str, sealed: str, username: str) -> HTMLResponse:
+    """The approval screen.
+
+    Deliberately plain server-rendered HTML with a form POST. There is no
+    JavaScript, nothing to fetch, and the only action is a button the user
+    presses — so what is approved is exactly what is displayed.
+    """
+    safe_name = html.escape(name)
+    safe_user = html.escape(username or "this account")
+    body = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect a device</title>
+<style>
+ :root {{ color-scheme: light dark; }}
+ body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+        background:#f6f7f9; color:#111827;
+        font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }}
+ @media (prefers-color-scheme: dark) {{ body {{ background:#0b1220; color:#f3f4f6; }}
+   .card {{ background:#111827 !important; border-color:#1f2937 !important; }}
+   .muted {{ color:#9ca3af !important; }} li {{ color:#d1d5db; }} }}
+ .card {{ max-width:26rem; width:100%; margin:1rem; padding:1.75rem;
+          background:#fff; border:1px solid #e5e7eb; border-radius:14px; }}
+ h1 {{ font-size:1.05rem; margin:0 0 .35rem; }}
+ .muted {{ color:#6b7280; font-size:.85rem; margin:0 0 1.1rem; }}
+ ul {{ margin:0 0 1.3rem; padding-left:1.1rem; font-size:.9rem; }}
+ li {{ margin-bottom:.3rem; }}
+ .row {{ display:flex; gap:.6rem; align-items:center; }}
+ button {{ padding:.6rem 1.15rem; border:0; border-radius:9px; font-size:.95rem;
+           font-weight:600; background:#3b82f6; color:#fff; cursor:pointer; }}
+ a.cancel {{ color:#6b7280; font-size:.9rem; text-decoration:none; padding:.6rem; }}
+</style></head><body>
+<div class="card">
+  <h1>Connect {safe_name}?</h1>
+  <p class="muted">Signed in as {safe_user}</p>
+  <ul>
+    <li>Read and change the files in your drive</li>
+    <li>Stay connected in the background, until you disconnect it on the mail server</li>
+  </ul>
+  <form method="post" action="/auth/device/approve" class="row">
+    <input type="hidden" name="request_token" value="{html.escape(sealed)}">
+    <button type="submit">Connect</button>
+    <a class="cancel" href="/">Cancel</a>
+  </form>
+</div></body></html>"""
+    return HTMLResponse(body, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/auth/device")
+@limiter.limit("20/minute")
+async def device_pairing(request: Request, redirect: str = "", name: str = "MeCloud Desktop"):
+    """Ask the signed-in user to approve a device.
+
+    Reached by the desktop client opening a browser here. Requiring the session
+    is the whole point: it proves a person with an account is present, rather
+    than a process that happens to run on the machine.
+    """
+    if not devices.is_loopback_redirect(redirect):
+        raise HTTPException(
+            status_code=400,
+            detail="A device can only be paired to an address on this computer.",
+        )
+    if not request.session.get("access_token"):
+        # Sign in first, then come back to this exact request. Path and query
+        # only: the callback refuses anything absolute, since that value is the
+        # one an open redirect would abuse.
+        query = request.url.query
+        request.session["after_login"] = f"/auth/device?{query}" if query else "/auth/device"
+        return RedirectResponse(url="/auth/login", status_code=302)
+
+    sealed = devices.seal_pairing(settings.session_secret, redirect=redirect, name=name)
+    return _pairing_page(name=name, sealed=sealed, username=request.session.get("username", ""))
+
+
+@app.post("/auth/device/approve")
+@limiter.limit("20/minute")
+async def device_approve(request: Request):
+    """Mint the device token and hand it back over the loopback redirect."""
+    if not request.session.get("access_token"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+    # Parsed from the raw body rather than through request.form(): Starlette
+    # requires python-multipart for form parsing even when the body is plain
+    # url-encoded, and one hidden field does not justify the dependency. The
+    # body-size middleware has already capped what can arrive here.
+    raw = (await request.body()).decode("utf-8", "replace")
+    fields = parse_qs(raw, keep_blank_values=True)
+    request_token = (fields.get("request_token") or [""])[0]
+
+    opened = devices.open_pairing(settings.session_secret, request_token)
+    if opened is None:
+        raise HTTPException(status_code=400, detail="This pairing request has expired. Try again.")
+    redirect, name = opened
+    # Checked again after unsealing: the value acted on must be the checked one.
+    if not devices.is_loopback_redirect(redirect):
+        raise HTTPException(status_code=400, detail="Invalid pairing address.")
+
+    refresh = request.session.get("refresh_token")
+    if not refresh:
+        raise HTTPException(
+            status_code=400,
+            detail="This session has no refresh token, so a device cannot be paired from it.",
+        )
+
+    token = devices.issue(
+        settings.session_secret,
+        refresh_token=refresh,
+        username=request.session.get("username", ""),
+        name=name,
+    )
+    joiner = "&" if "?" in redirect else "?"
+    return RedirectResponse(url=f"{redirect}{joiner}token={quote(token)}", status_code=303)
+
+
+@app.get("/api/desktop/releases")
+@limiter.limit("60/minute")
+async def desktop_releases(request: Request, _: str = Depends(require_auth)):
+    """What this build shipped, so the UI can offer only what exists."""
+    return {"artifacts": downloads.available()}
+
+
+@app.post("/api/desktop/token")
+@limiter.limit("30/minute")
+async def desktop_token(request: Request, artifact: str, _: str = Depends(require_auth)):
+    """Trade the session for a short-lived link to one artefact.
+
+    The session is checked here, once. The link it returns then works on its
+    own, which is what makes the download survive leaving the app — a browser
+    download manager, or a curl on another machine.
+    """
+    art = downloads.artifact(artifact)
+    if art is None or not downloads.path_for(art).is_file():
+        raise HTTPException(status_code=404, detail="No such download")
+    return {
+        "token": downloads.mint(settings.session_secret, art.key),
+        "url": f"/api/desktop/download/{art.key}",
+        "expires_in": downloads.TOKEN_TTL_SECONDS,
+        "filename": art.filename,
+    }
+
+
+@app.get("/api/desktop/download/{artifact}")
+@limiter.limit(settings.rate_limit_download)
+async def desktop_download(request: Request, artifact: str, token: str = ""):
+    """Serve an artefact against a signed token.
+
+    Deliberately no session dependency: the token *is* the authorisation, and
+    requiring both would break the case the token exists for.
+    """
+    art = downloads.artifact(artifact)
+    if art is None:
+        raise HTTPException(status_code=404, detail="No such download")
+    if not downloads.verify(settings.session_secret, token, art.key):
+        # One message for missing, malformed and expired alike.
+        raise HTTPException(status_code=403, detail="This download link is not valid or has expired.")
+
+    path = downloads.path_for(art)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="No such download")
+
+    return FileResponse(
+        path,
+        media_type=art.media_type,
+        filename=art.filename,
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/manifest.webmanifest", response_class=JSONResponse)
@@ -376,6 +581,10 @@ async def callback(request: Request, code: str, state: str):
         logger.error("OAuth token endpoint returned no access_token")
         raise HTTPException(status_code=502, detail="Authentication failed")
 
+    # Where to go once signed in. Read before the rotation below clears it,
+    # and validated, because it came in on a query parameter.
+    destination = safe_local_path(request.session.get("after_login")) or "/"
+
     # Rotate the session on privilege change so a pre-login cookie handed to the
     # browser by an attacker cannot be upgraded into an authenticated one.
     request.session.clear()
@@ -384,7 +593,7 @@ async def callback(request: Request, code: str, state: str):
     if "refresh_token" in tokens:
         request.session["refresh_token"] = tokens["refresh_token"]
 
-    return RedirectResponse("/")
+    return RedirectResponse(destination)
 
 
 @app.post("/auth/logout")

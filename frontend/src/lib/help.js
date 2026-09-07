@@ -43,6 +43,13 @@ export const HELP = [
         ],
       },
       {
+        title: 'The desktop client',
+        body: [
+          'There is a desktop version: the same apps in their own window, with a tray icon, and registered with your system so mail links from any program open here. Your avatar menu → Get the desktop app has it.',
+          'Linux is a direct download. Windows and macOS are built from the source archive on the same screen — the client uses each system’s own webview, which cannot be cross-compiled, so the build has to happen on the machine that will run it.',
+        ],
+      },
+      {
         title: 'Installing it as an app',
         body: [
           'This is a progressive web app: your browser can install it to your dock, taskbar or home screen, where it opens in its own window without browser chrome. Look for “Install” or “Add to Home Screen” in your browser’s menu.',

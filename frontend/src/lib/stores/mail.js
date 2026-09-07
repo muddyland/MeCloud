@@ -66,16 +66,18 @@ export const newFolderOpen       = writable(false);
 export const appPasswordsOpen    = writable(false);
 export const shortcutsOpen       = writable(false);
 export const helpOpen            = writable(false);
+export const downloadsOpen       = writable(false);
 export const commandPaletteOpen  = writable(false);
 
 // True while any modal owns the screen — keyboard shortcuts stand down so they
 // don't fire while the user is typing into a dialog.
 export const anyModalOpen = derived(
   [composeOpen, sieveOpen, newFolderOpen, appPasswordsOpen, shortcutsOpen,
-   helpOpen, commandPaletteOpen, movePickerOpen, contextMenu],
-  ([$compose, $sieve, $folder, $passwords, $shortcuts, $help, $palette, $picker, $menu]) =>
-    $compose || $sieve || $folder || $passwords || $shortcuts || $help || $palette
-    || $picker !== null || $menu !== null
+   helpOpen, downloadsOpen, commandPaletteOpen, movePickerOpen, contextMenu],
+  ([$compose, $sieve, $folder, $passwords, $shortcuts, $help, $downloads,
+    $palette, $picker, $menu]) =>
+    $compose || $sieve || $folder || $passwords || $shortcuts || $help
+    || $downloads || $palette || $picker !== null || $menu !== null
 );
 
 // The list the user is actually looking at (search results or the mailbox),

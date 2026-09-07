@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import {
     appName, currentUser, darkMode, sieveOpen, appPasswordsOpen, shortcutsOpen,
-    commandPaletteOpen, helpOpen
+    commandPaletteOpen, helpOpen, downloadsOpen
   } from '$lib/stores/mail.js';
   import { logout } from '$lib/api.js';
   import Avatar from './Avatar.svelte';
@@ -246,6 +246,18 @@
               <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
             </svg>
             Search and commands
+          </button>
+
+          <button
+            on:click={() => { downloadsOpen.set(true); close(); }}
+            class="flex items-center gap-3 w-full px-4 py-2 text-sm text-gray-700 dark:text-gray-300
+                   hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors duration-100"
+          >
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3v12m0 0-4-4m4 4 4-4M5 19h14" />
+            </svg>
+            Get the desktop app
           </button>
 
           <button

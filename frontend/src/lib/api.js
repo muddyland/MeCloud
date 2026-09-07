@@ -221,6 +221,38 @@ export async function sendEmail(accountId, identityId, {
   return { emailId };
 }
 
+/** What desktop artefacts this server actually shipped. */
+export async function getDesktopReleases() {
+  const res = await fetch('/api/desktop/releases', { credentials: 'include' });
+  if (!res.ok) throw new Error('Could not check for desktop downloads.');
+  const data = await res.json();
+  return data?.artifacts ?? [];
+}
+
+/**
+ * Start a download.
+ *
+ * The session buys a short-lived signed link rather than the bytes, so the
+ * transfer itself is an ordinary browser download — it survives leaving the
+ * page and shows up in the download manager, which a fetch() into memory
+ * would not.
+ */
+export async function downloadDesktopArtifact(key) {
+  const res = await fetch(`/api/desktop/token?artifact=${encodeURIComponent(key)}`, {
+    method: 'POST',
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error('Could not start that download.');
+  const { url, token } = await res.json();
+
+  const a = document.createElement('a');
+  a.href = `${url}?token=${encodeURIComponent(token)}`;
+  a.rel = 'noopener';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 export async function getMailboxes(accountId) {
   const data = await post([
     ['Mailbox/get', { accountId, ids: null }, 'mb']

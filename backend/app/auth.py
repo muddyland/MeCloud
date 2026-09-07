@@ -126,3 +126,27 @@ async def refresh_access_token(refresh_token: str) -> dict:
     )
     raise_for_status(response, "OAuth token refresh")
     return response.json()
+
+
+def safe_local_path(value: str | None) -> str | None:
+    """A post-login destination that cannot leave this site.
+
+    The value arrives from a query parameter the client chose, so it is
+    attacker-controlled in the general case. Anything absolute, scheme-relative
+    ("//evil.example"), backslash-smuggled, or not starting with a single "/"
+    is refused — an open redirect on a login flow hands attackers a credible
+    phishing link on the real domain.
+    """
+    if not value or not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate.startswith("/"):
+        return None
+    if candidate.startswith("//") or candidate.startswith("/\\"):
+        return None
+    if "\\" in candidate or "\n" in candidate or "\r" in candidate:
+        return None
+    # A scheme cannot appear in a path-only URL.
+    if urlparse(candidate).scheme or urlparse(candidate).netloc:
+        return None
+    return candidate

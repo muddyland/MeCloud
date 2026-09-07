@@ -10,6 +10,7 @@
   import BrandMark from '$lib/components/BrandMark.svelte';
   import CommandPalette from '$lib/components/CommandPalette.svelte';
   import HelpModal from '$lib/components/HelpModal.svelte';
+  import DownloadsModal from '$lib/components/DownloadsModal.svelte';
   import ShortcutsHelp from '$lib/components/ShortcutsHelp.svelte';
 
   let checkingAuth = true;
@@ -67,5 +68,6 @@
   <!-- Likewise: the navbar carries help and shortcuts on every page, so the
        dialogs they open have to exist on every page too. -->
   <HelpModal />
+  <DownloadsModal />
   <ShortcutsHelp />
 {/if}

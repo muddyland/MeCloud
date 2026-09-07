@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Setup window only. The main window shows the server's own web UI, and remote origins are deliberately absent from `windows` below, so nothing served over the network can call into the client. Note that `withGlobalTauri` is on in tauri.conf.json so the bundler-free setup page can call in: the global is injected everywhere, but THIS file is the boundary, and it grants the remote window nothing.",
+  "windows": ["setup"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "opener:default"
+  ]
+}

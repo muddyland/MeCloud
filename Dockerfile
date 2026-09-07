@@ -24,7 +24,42 @@ COPY frontend/ ./
 RUN node scripts/gen-icons.mjs && npm run build
 
 
-# ── Stage 2: Install Python dependencies ─────────────────────────────────────
+# ── Stage 2: Build and package the Linux desktop client ─────────────────────
+#
+# Pinned to trixie deliberately: Tauri links against the system WebKitGTK, and
+# a binary built against a newer one will not start on an older target. This is
+# also why the client is Linux-only here — Windows and macOS binaries cannot be
+# cross-compiled from this image and are built by the user from the source
+# archive this stage also produces (see desktop/README.md).
+#
+# Skippable with --build-arg WITH_DESKTOP=0 when iterating on the web app: the
+# Rust build is by far the slowest part of this Dockerfile. The image is still
+# valid without it — /api/desktop/releases simply reports nothing to download.
+FROM ${BASE_REGISTRY}rust:1-trixie AS desktop-builder
+
+ARG WITH_DESKTOP=1
+
+RUN if [ "$WITH_DESKTOP" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends \
+        libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev \
+        librsvg2-dev libsoup-3.0-dev libssl-dev pkg-config build-essential \
+        zip ca-certificates \
+      && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+WORKDIR /build
+COPY desktop/ ./desktop/
+
+RUN mkdir -p /out && \
+    if [ "$WITH_DESKTOP" = "1" ]; then \
+      cd desktop/src-tauri && cargo build --release --locked || cargo build --release; \
+      cd /build && sh desktop/package-linux.sh /out; \
+    else \
+      echo "WITH_DESKTOP=0 — skipping the desktop client"; \
+    fi
+
+
+# ── Stage 3: Install Python dependencies ─────────────────────────────────────
 FROM ${BASE_REGISTRY}python:3.13-slim AS python-deps
 
 WORKDIR /deps
@@ -33,7 +68,7 @@ COPY backend/requirements.txt ./
 RUN pip install --no-cache-dir --prefix=/deps/install -r requirements.txt
 
 
-# ── Stage 3: Final image ──────────────────────────────────────────────────────
+# ── Stage 4: Final image ──────────────────────────────────────────────────────
 FROM ${BASE_REGISTRY}python:3.13-slim
 
 RUN useradd -m -u 1000 appuser
@@ -49,12 +84,17 @@ COPY backend/ ./
 # Copy built frontend static files
 COPY --from=frontend-builder /app/build ./static
 
+# The desktop client, served over a signed short-lived link (app/downloads.py).
+# An empty directory is a valid outcome — see WITH_DESKTOP above.
+COPY --from=desktop-builder /out/ ./downloads/
+
 RUN chown -R appuser:appuser /app
 
 USER appuser
 
 ENV ENVIRONMENT=production \
     FRONTEND_STATIC_DIR=/app/static \
+    DESKTOP_DOWNLOAD_DIR=/app/downloads \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 

@@ -1,0 +1,8 @@
+# Runtime image for verifying the GUI without a desktop: the Tauri runtime
+# libraries plus a virtual X server and a screenshot tool.
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1 librsvg2-2 \
+      xvfb openbox imagemagick x11-apps xauth xdotool dbus-x11 curl ca-certificates \
+      adwaita-icon-theme fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*

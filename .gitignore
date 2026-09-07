@@ -31,3 +31,6 @@ frontend/static/
 *.swp
 *.swo
 .DS_Store
+desktop/**/target/
+desktop/.cargo-cache/
+desktop/src-tauri/gen/

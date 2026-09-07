@@ -23,6 +23,9 @@
   } from '$lib/stores/mail.js';
   import { getJMAPSession, getMailboxes, getMailboxCounts, getEmails, getAppConfig } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
+  // A mailto: body is plain text from whatever handed us the link, so it is
+  // escaped before it becomes the editor's HTML.
+  import { escapeText } from '$lib/urls.js';
 
   const MIN_SIDEBAR  = 180;  const MAX_SIDEBAR  = 380;
   const MIN_MSGLIST  = 220;  const MAX_MSGLIST  = 520;
@@ -332,6 +335,19 @@
       const params = $page.url.searchParams;
       pendingEmailId = params.get('email');
       const wanted = params.get('mailbox');
+
+      // ?compose= is how the desktop client hands over a mailto: link the OS
+      // gave it. The parameters are the mailto headers, already decoded.
+      if (params.get('compose')) {
+        composeContext.set({
+          mode: 'compose',
+          to: params.get('to') ?? '',
+          cc: params.get('cc') ?? '',
+          subject: params.get('subject') ?? '',
+          body: escapeText(params.get('body') ?? '').replace(/\n/g, '<br>'),
+        });
+        composeOpen.set(true);
+      }
 
       const start = (wanted && mboxList.find((m) => m.id === wanted))
         ?? mboxList.find((m) => m.role === 'inbox')
