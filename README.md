@@ -2,9 +2,27 @@
 
 A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), designed for [Stalwart Mail Server](https://stalw.art/). Inspired by iCloud Mail's three-pane layout with full dark mode support.
 
+![Dashboard](docs/screenshot.png)
+
 ![Mail](docs/screenshot-mail.png)
 
-![Compose](docs/screenshot.png)
+*Files — images preview in place of their icon, in both grid and list views:*
+
+![Files](docs/screenshot-files.png)
+
+*Right-click any item for the common actions, including sharing it by email:*
+
+![Files context menu](docs/screenshot-files-menu.png)
+
+*…which opens compose with the file already attached. The same picker is
+reachable the other way round, from inside compose:*
+
+![Attach from Files](docs/screenshot-attach-from-files.png)
+
+*Either route, plus the ordinary file picker, on one message — a drive file is
+attached by blob reference, so nothing is downloaded or re-uploaded:*
+
+![Compose with attachments](docs/screenshot-compose.png)
 
 ![Calendar](docs/screenshot-calendar.png)
 
@@ -25,8 +43,13 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
   code), autosave, full-text search, and front-matter aware titles. Relative
   image links are resolved against the note's own folder, so wiki-style
   attachment paths (`.attachments.NNN/image%20(4).png`) render
-- **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio and video
-- Mail attachments are downloadable, through the same authenticated blob proxy
+- **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio and video. Images thumbnail in place of their icon in both views, and a right-click menu carries the per-item actions — open, download, rename, delete, and share via email
+- Mail attachments — downloadable through the same authenticated blob proxy, and
+  sendable from either source: **from this device**, by picker or by dropping onto
+  the compose window, with per-file upload progress; or **from Files**, browsing
+  the drive in a picker inside compose (or starting from the file's own
+  right-click menu). A file already in the drive is attached by blob reference —
+  nothing is downloaded or re-uploaded however large it is
 - OAuth2 authentication via Stalwart's built-in OAuth2 server
 - Three-pane layout: mailboxes / message list / reading pane — collapsing to a
   single pane with drill-down navigation and an off-canvas sidebar below 1024px
@@ -35,10 +58,19 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 - Dark mode (system preference + manual toggle, persisted)
 - Real-time push via JMAP EventSource (SSE), with an exponential-backoff reconnect and a polling fallback
 - **Remote images blocked by default** — tracking pixels do not load until you ask, per message or per sender
+- **Mail filters** — a rule builder (From/To/Cc/Subject conditions, file-into /
+  mark / discard actions) compiled to a Sieve script, so rules run server-side
+  and apply to mail arriving from any client
+- **App passwords** — create and revoke app-specific passwords for IMAP/SMTP
+  clients, with the secret shown exactly once
+- **vCard import** — drop a `.vcf` file onto Contacts to bulk-import an address
+  book
 - **Command palette** (`Ctrl`/`Cmd` + `K`) — fuzzy jump to any app, mailbox, contact, calendar or file, plus commands like compose and toggle theme
 - **Keyboard shortcuts** — `j`/`k` to move, `r`/`a`/`f` to reply, `c` to compose, `?` for the full list
 - Correct reply threading (`In-Reply-To` / `References`), Cc and Bcc
 - Loading indicators throughout — a global activity bar, skeleton lists, and a spinner on every action that talks to the server
+- Installable as a PWA — web manifest, generated icons and a service worker that
+  precaches the built assets
 - Single Docker image — FastAPI serves both the API and the compiled frontend
 
 ## Stack
@@ -52,6 +84,7 @@ A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), de
 | Session | Encrypted cookie (Fernet: AES-CBC + HMAC-SHA256) |
 | Markdown | marked (GFM), sanitised through DOMPurify |
 | Protocol | JMAP (RFC 8620, RFC 8621, RFC 8984, RFC 9553, draft-ietf-jmap-filenode) |
+| Tested against | Stalwart 0.16 (JMAP core, mail, submission, calendars, contacts, filenode, sieve) |
 | Runtime | Single Docker image (multi-stage build) |
 
 ## Quick Start
@@ -185,54 +218,78 @@ minireg audit frontend
 ```
 jmap-mail/
 ├── backend/
-│   └── app/
-│       ├── main.py       # FastAPI app, security middleware, routes, static serving
-│       ├── blobs.py      # Authenticated blob upload/download proxy
-│       ├── auth.py       # OAuth2 authorization code flow (PKCE)
-│       ├── jmap.py       # JMAP session cache, request proxy, SSE stream
-│       ├── http.py       # Pooled upstream httpx clients + error mapping
-│       ├── session.py    # Encrypted session cookie middleware
-│       ├── models.py     # Request envelope validation
-│       └── config.py     # Settings (pydantic-settings)
+│   ├── app/
+│   │   ├── main.py       # FastAPI app, security middleware, routes, static serving
+│   │   ├── blobs.py      # Authenticated blob upload/download proxy
+│   │   ├── auth.py       # OAuth2 authorization code flow (PKCE)
+│   │   ├── jmap.py       # JMAP session cache, request proxy, SSE stream
+│   │   ├── http.py       # Pooled upstream httpx clients + error mapping
+│   │   ├── session.py    # Encrypted session cookie middleware
+│   │   ├── models.py     # Request envelope validation
+│   │   └── config.py     # Settings (pydantic-settings)
+│   └── tests/            # pytest: api, blobs, jmap, session
 ├── frontend/
+│   ├── scripts/gen-icons.mjs       # PWA + Apple touch icons, generated at build
 │   └── src/
+│       ├── service-worker.js       # Precaches the built assets
 │       ├── lib/
-│       │   ├── api.js                   # JMAP API helpers (mail, calendar, contacts)
-│       │   ├── sanitize.js              # DOMPurify config + remote-content blocking
-│       │   ├── dashboard.js             # Batched overview query + summarising
-│       │   ├── files.js                 # JMAP FileNode calls + blob transfer
-│       │   ├── notes.js                 # Notes over FileNode (.md in a Notes folder)
-│       │   ├── markdown.js              # Markdown render + sanitise
-│       │   ├── fileTypes.js             # File classification (pure, unit-tested)
-│       │   ├── fuzzy.js                 # Palette ranking (pure, unit-tested)
-│       │   ├── apps.js                  # The app list, shared by tabs + palette
-│       │   ├── urls.js                  # Remote-URL classification (pure, unit-tested)
-│       │   ├── trustedSenders.js        # "Always show images from…" list
+│       │   ├── api.js              # JMAP helpers (mail, calendar, contacts, sieve)
+│       │   ├── sanitize.js         # DOMPurify config + remote-content blocking
+│       │   ├── urls.js             # Remote-URL classification (pure, unit-tested)
+│       │   ├── dashboard.js        # Batched overview query + summarising
+│       │   ├── files.js            # JMAP FileNode calls + blob transfer
+│       │   ├── fileTypes.js        # File classification (pure, unit-tested)
+│       │   ├── attachments.js      # Attachment selection rules (pure, unit-tested)
+│       │   ├── notes.js            # Notes over FileNode (.md in a Notes folder)
+│       │   ├── markdown.js         # Markdown render + sanitise
+│       │   ├── markdownEdit.js     # Toolbar text transforms (pure, unit-tested)
+│       │   ├── jmapErrors.js       # RFC 8620 error mapping (pure, unit-tested)
+│       │   ├── layout.js           # Pane sizing (pure, unit-tested)
+│       │   ├── fuzzy.js            # Palette ranking (pure, unit-tested)
+│       │   ├── vcardParser.js      # vCard import parsing
+│       │   ├── mailboxRefresh.js   # Shared mailbox counter refresh
+│       │   ├── trustedSenders.js   # "Always show images from…" list
+│       │   ├── apps.js             # The app list, shared by tabs + palette
 │       │   ├── stores/
-│       │   │   ├── mail.js              # Mail state (mailboxes, emails, session)
-│       │   │   ├── activity.js          # In-flight request counter → progress bar
-│       │   │   ├── calendar.js          # Calendar state (events, view, selection)
-│       │   │   └── contacts.js          # Contacts state (address books, search)
+│       │   │   ├── mail.js         # Mail state (mailboxes, emails, session)
+│       │   │   ├── files.js        # Files state (nodes, selection, preview, menu)
+│       │   │   ├── notes.js        # Notes state
+│       │   │   ├── calendar.js     # Calendar state (events, view, selection)
+│       │   │   ├── contacts.js     # Contacts state (address books, search)
+│       │   │   ├── activity.js     # In-flight request counter → progress bar
+│       │   │   ├── viewport.js     # Compact-layout + sidebar drawer state
+│       │   │   └── toast.js        # Transient notifications
 │       │   └── components/
-│       │       ├── Modal.svelte          # Accessible dialog shell (focus trap, Esc)
-│       │       ├── Spinner.svelte        # Shared loading indicator
-│       │       ├── ProgressBar.svelte    # Global activity bar
-│       │       ├── ShortcutsHelp.svelte  # Keyboard shortcut reference
-│       │       ├── AppTabs.svelte        # Top-bar app switcher
-│       │       ├── CommandPalette.svelte # Ctrl/Cmd+K launcher
-│       │       ├── AppNav.svelte         # Bottom app switcher
-│       │       ├── CalendarGrid.svelte   # Month-view calendar grid
-│       │       ├── EventModal.svelte     # Create / edit calendar event
-│       │       ├── ContactModal.svelte   # Create / edit contact
-│       │       └── ...                  # Sidebar, MessageList, MessagePane, …
-│       └── routes/
-│           ├── +layout.svelte            # Auth guard, dark mode, activity bar, tab badge
-│           ├── +page.svelte              # Dashboard
-│           ├── mail/+page.svelte         # Mail three-pane view, realtime, shortcuts
-│           ├── calendar/+page.svelte     # Calendar view
-│           ├── files/+page.svelte        # Files (Drive) view
-│           ├── notes/+page.svelte        # Notes (Markdown) view
-│           └── contacts/+page.svelte     # Contacts view
+│       │       ├── Modal.svelte             # Accessible dialog shell (focus trap, Esc)
+│       │       ├── ComposeModal.svelte      # Compose, rich text, attachments
+│       │       ├── MessageList.svelte       # Message list, multi-select, drag
+│       │       ├── MessagePane.svelte       # Reading pane, sandboxed body iframe
+│       │       ├── ContextMenu.svelte       # Right-click menu for messages
+│       │       ├── FileContextMenu.svelte   # Right-click menu for files
+│       │       ├── FilePicker.svelte        # Browse the drive to attach files
+│       │       ├── FileThumbnail.svelte     # Image preview, icon fallback
+│       │       ├── FilePreview.svelte       # Preview / edit a stored file
+│       │       ├── FileIcon.svelte          # Per-kind icon + accent
+│       │       ├── FolderTree.svelte        # Recursive folder tree
+│       │       ├── SieveEditor.svelte       # Mail filter rule builder → Sieve
+│       │       ├── AppPasswordsModal.svelte # App-specific passwords
+│       │       ├── ContactImportModal.svelte# vCard import
+│       │       ├── CommandPalette.svelte    # Ctrl/Cmd+K launcher
+│       │       ├── AppTabs.svelte           # Top-bar app switcher
+│       │       ├── AppMenu.svelte           # Mobile app sheet
+│       │       ├── CalendarGrid.svelte      # Month-view calendar grid
+│       │       ├── EventModal.svelte        # Create / edit calendar event
+│       │       ├── ContactModal.svelte      # Create / edit contact
+│       │       └── ...                     # Sidebar, Navbar, Toasts, Spinner, …
+│       ├── routes/
+│       │   ├── +layout.svelte              # Auth guard, dark mode, activity bar, tab badge
+│       │   ├── +page.svelte                # Dashboard
+│       │   ├── mail/+page.svelte           # Mail three-pane view, realtime, shortcuts
+│       │   ├── calendar/+page.svelte       # Calendar view
+│       │   ├── contacts/+page.svelte       # Contacts view
+│       │   ├── files/+page.svelte          # Files (Drive) view
+│       │   └── notes/+page.svelte          # Notes (Markdown) view
+│       └── tests/                          # vitest, pure-module unit tests
 ├── Dockerfile
 ├── docker-compose.yml
 ├── .env.example
@@ -318,8 +375,16 @@ allow-list and would otherwise keep blocking the frame regardless of the CSP.
 cd backend && pip install -r requirements-dev.txt && pytest
 
 # Frontend
-cd frontend && npm install && npm test
+cd frontend && npm install && npm test        # 287 unit tests
+cd frontend && npm run check                  # svelte-check
 ```
+
+The frontend tests deliberately cover the *pure* modules — file classification,
+Markdown rendering and editing, URL classification, JMAP error mapping, palette
+ranking, layout maths, upload retry/backoff, attachment selection, the dashboard
+summary — rather than
+rendering components. Anything with a decision worth getting wrong is factored
+out of the `.svelte` file so it can be tested directly.
 
 ## Upgrading dependencies
 
