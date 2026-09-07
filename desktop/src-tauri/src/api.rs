@@ -62,13 +62,14 @@ impl Api {
 
     /// One JMAP request, with the device token as a bearer credential.
     fn jmap(&self, using: &[&str], calls: Value) -> Result<Value, String> {
-        let response = self
-            .http
-            .post(self.url("/api/jmap"))
-            .bearer_auth(&self.token)
-            .json(&json!({ "using": using, "methodCalls": calls }))
-            .send()
-            .map_err(|e| format!("Could not reach the server: {e}"))?;
+        let body = json!({ "using": using, "methodCalls": calls });
+        let response = with_retry(|| {
+            self.http
+                .post(self.url("/api/jmap"))
+                .bearer_auth(&self.token)
+                .json(&body)
+                .send()
+        })?;
 
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -176,14 +177,14 @@ impl Api {
         let mut body = Vec::new();
         file.read_to_end(&mut body).map_err(|e| format!("{}: {e}", path.display()))?;
 
-        let response = self
-            .http
-            .post(self.url("/api/files/blob"))
-            .bearer_auth(&self.token)
-            .header("Content-Type", "application/octet-stream")
-            .body(body)
-            .send()
-            .map_err(|e| format!("Upload failed: {e}"))?;
+        let response = with_retry(|| {
+            self.http
+                .post(self.url("/api/files/blob"))
+                .bearer_auth(&self.token)
+                .header("Content-Type", "application/octet-stream")
+                .body(body.clone())
+                .send()
+        })?;
 
         let status = response.status();
         if status == reqwest::StatusCode::UNAUTHORIZED {
@@ -205,12 +206,7 @@ impl Api {
             urlencode(blob_id),
             urlencode(name)
         );
-        let mut response = self
-            .http
-            .get(url)
-            .bearer_auth(&self.token)
-            .send()
-            .map_err(|e| format!("Download failed: {e}"))?;
+        let mut response = with_retry(|| self.http.get(&url).bearer_auth(&self.token).send())?;
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(UNPAIRED.to_string());
@@ -313,6 +309,70 @@ impl Api {
 }
 
 pub const UNPAIRED: &str = "This computer is no longer connected to your account.";
+
+/// A first sync of a real drive is hundreds of requests in a few seconds, and
+/// the server rate-limits per IP. Being told to slow down is an expected part
+/// of normal use here, not an error — the same reasoning the web client's
+/// upload path already applies.
+const MAX_ATTEMPTS: u32 = 5;
+const MAX_BACKOFF_SECS: u64 = 30;
+
+/// How long to wait after a 429.
+///
+/// The server's `Retry-After` wins when it sends one, because it knows when the
+/// window actually reopens. Otherwise exponential backoff, capped, with a
+/// little jitter so a folder full of files does not resume in lockstep and trip
+/// the limit again on the same tick.
+pub fn retry_delay(attempt: u32, retry_after: Option<&str>) -> Duration {
+    if let Some(advised) = retry_after.and_then(|v| v.trim().parse::<u64>().ok()) {
+        return Duration::from_secs(advised.min(MAX_BACKOFF_SECS));
+    }
+    let backoff = 2u64.saturating_pow(attempt).min(MAX_BACKOFF_SECS);
+    // Jitter from the clock: no rng dependency for something this rough.
+    let jitter = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_millis() as u64 % 500)
+        .unwrap_or(0);
+    Duration::from_millis(backoff * 1000 + jitter)
+}
+
+/// True for a status worth trying again rather than reporting.
+fn is_transient(status: reqwest::StatusCode) -> bool {
+    status == reqwest::StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+/// Run a request, waiting out rate limits.
+fn with_retry<F>(mut send: F) -> Result<reqwest::blocking::Response, String>
+where
+    F: FnMut() -> Result<reqwest::blocking::Response, reqwest::Error>,
+{
+    let mut last = String::new();
+    for attempt in 0..MAX_ATTEMPTS {
+        match send() {
+            Ok(response) => {
+                let status = response.status();
+                if !is_transient(status) || attempt + 1 == MAX_ATTEMPTS {
+                    return Ok(response);
+                }
+                let advised = response
+                    .headers()
+                    .get(reqwest::header::RETRY_AFTER)
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                last = format!("the server is busy ({status})");
+                std::thread::sleep(retry_delay(attempt, advised.as_deref()));
+            }
+            Err(e) => {
+                last = e.to_string();
+                if attempt + 1 == MAX_ATTEMPTS {
+                    return Err(format!("Could not reach the server: {last}"));
+                }
+                std::thread::sleep(retry_delay(attempt, None));
+            }
+        }
+    }
+    Err(format!("Gave up after {MAX_ATTEMPTS} attempts: {last}"))
+}
 const CORE: &str = "urn:ietf:params:jmap:core";
 const FILENODE: &str = "urn:ietf:params:jmap:filenode";
 
@@ -442,6 +502,39 @@ mod tests {
         ];
         let (tree, _) = to_tree(&nodes);
         assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn a_server_supplied_retry_after_is_honoured() {
+        assert_eq!(retry_delay(0, Some("7")), Duration::from_secs(7));
+        // ...but not to an unbounded degree.
+        assert_eq!(retry_delay(0, Some("9999")), Duration::from_secs(MAX_BACKOFF_SECS));
+    }
+
+    #[test]
+    fn without_advice_the_wait_grows_and_is_capped() {
+        let first = retry_delay(0, None).as_millis();
+        let later = retry_delay(3, None).as_millis();
+        assert!(later > first, "backoff should grow: {first} then {later}");
+        assert!(retry_delay(20, None) <= Duration::from_millis(MAX_BACKOFF_SECS * 1000 + 500));
+    }
+
+    #[test]
+    fn nonsense_retry_after_falls_back_to_backoff() {
+        // An HTTP-date Retry-After is legal and not parsed here; it must not
+        // become a zero-second wait.
+        assert!(retry_delay(1, Some("Wed, 21 Oct 2026 07:28:00 GMT")) >= Duration::from_secs(2));
+        assert!(retry_delay(1, Some("")) >= Duration::from_secs(2));
+    }
+
+    #[test]
+    fn rate_limiting_and_server_errors_are_worth_retrying_but_refusals_are_not() {
+        use reqwest::StatusCode;
+        assert!(is_transient(StatusCode::TOO_MANY_REQUESTS));
+        assert!(is_transient(StatusCode::BAD_GATEWAY));
+        // A 401 means the pairing is gone; retrying it just delays the truth.
+        assert!(!is_transient(StatusCode::UNAUTHORIZED));
+        assert!(!is_transient(StatusCode::NOT_FOUND));
     }
 
     #[test]

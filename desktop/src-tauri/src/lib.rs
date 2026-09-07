@@ -178,7 +178,10 @@ async fn pair_device(app: AppHandle, state: tauri::State<'_, AppState>) -> Resul
         .map_err(|e| e.to_string())??;
 
     config::save_token(&token)?;
-    let _ = app.get_webview_window(SETUP).map(|w| w.set_focus());
+    let ui = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        let _ = ui.get_webview_window(SETUP).map(|w| w.set_focus());
+    });
     Ok(device_name)
 }
 
@@ -518,10 +521,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             ),
             "settings" => open_setup(app),
             "updates" => {
+                // The check is network work and cannot run on the main thread;
+                // opening the window afterwards may only run there.
                 let handle = app.clone();
                 std::thread::spawn(move || {
                     update_pass(&handle);
-                    open_setup(&handle);
+                    let ui = handle.clone();
+                    let _ = handle.run_on_main_thread(move || open_setup(&ui));
                 });
             }
             "syncnow" => {
@@ -592,6 +598,14 @@ fn spawn_update_loop(app: AppHandle) {
 }
 
 /// Reflect the current status in the tray, the way a desktop client does.
+///
+/// **Must not touch the tray directly.** This is called from the sync and
+/// update loops, which are ordinary background threads, and on Linux the tray
+/// and every window are GTK objects that may only be used from the thread that
+/// initialised GTK. Calling into them from anywhere else does not fail loudly —
+/// it corrupts GTK's state, and the symptom is a window that stops responding
+/// and cannot even be closed. Everything below is computed here and applied
+/// there.
 fn update_tray_label(app: &AppHandle) {
     let status = app.state::<AppState>().status.lock().map(|s| s.clone()).unwrap_or_default();
     let label = match status.state {
@@ -609,9 +623,13 @@ fn update_tray_label(app: &AppHandle) {
         (Some(v), true) => format!("\nUpdate available: {v}"),
         _ => String::new(),
     };
-    if let Some(tray) = app.tray_by_id("tray") {
-        let _ = tray.set_tooltip(Some(&format!("MeCloud — {label}{suffix}")));
-    }
+    let tooltip = format!("MeCloud — {label}{suffix}");
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Some(tray) = handle.tray_by_id("tray") {
+            let _ = tray.set_tooltip(Some(&tooltip));
+        }
+    });
 }
 
 pub fn run() {

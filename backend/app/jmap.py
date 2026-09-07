@@ -54,8 +54,18 @@ def invalidate_session(access_token: str) -> None:
     _session_locks.pop(key, None)
 
 
-def _auth(access_token: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {access_token}"}
+def _auth(credential: str) -> dict[str, str]:
+    """The Authorization header for an upstream call.
+
+    Takes either a bare OAuth access token, or a complete credential that
+    already names its scheme. A paired desktop client authenticates with an app
+    password over Basic, not a bearer token, and this is the single place the
+    header is built — so accepting both here is what keeps that from spreading
+    through every caller.
+    """
+    if credential.startswith(("Bearer ", "Basic ")):
+        return {"Authorization": credential}
+    return {"Authorization": f"Bearer {credential}"}
 
 
 async def get_jmap_session(access_token: str) -> dict:
@@ -109,6 +119,63 @@ async def jmap_request(access_token: str, payload: dict) -> dict:
         invalidate_session(access_token)
     raise_for_status(response, "JMAP request")
     return response.json()
+
+
+async def create_app_password(access_token: str, description: str) -> dict:
+    """Create an app password, and return {id, secret}.
+
+    A paired device gets one of these rather than a copy of the browser's OAuth
+    refresh token. Two reasons, and the second is the bug that made this
+    necessary: a refresh token is shared with the session it came from, so the
+    browser refreshing or signing out invalidates the device with it; and an app
+    password is listed and revocable in the app's own App Passwords screen, so
+    "disconnect that computer" becomes something the user can actually do.
+    """
+    session = await _session_for(access_token)
+    account_id = _account_id(session)
+    # Every advertised capability, rather than guessing the URI for Stalwart's
+    # x:AppPassword extension — the same approach the web client takes.
+    using = list(session.get("capabilities", {}).keys()) or ["urn:ietf:params:jmap:core"]
+
+    data = await jmap_request(access_token, {
+        "using": using,
+        "methodCalls": [[
+            "x:AppPassword/set",
+            {"accountId": account_id,
+             "create": {"new": {"description": description[:120], "expiresAt": None}}},
+            "0",
+        ]],
+    })
+    response = (data.get("methodResponses") or [[None, {}]])[0][1]
+    if response.get("notCreated", {}).get("new"):
+        raise UpstreamError("The mail server would not create a password for this device")
+    created = (response.get("created") or {}).get("new") or {}
+    if not created.get("secret"):
+        raise UpstreamError("The mail server created a device password but did not return it")
+
+    # The account name to pair the password with. It comes from the JMAP session
+    # document rather than our own session, which never stored one — leaving the
+    # username empty produced a credential of ":secret" that the mail server
+    # rejected on the very first call.
+    username = session.get("username")
+    if not username:
+        raise UpstreamError("The mail server did not say which account this session belongs to")
+    return {**created, "username": username}
+
+
+async def delete_app_password(access_token: str, password_id: str) -> None:
+    """Remove a device's app password, so disconnecting actually disconnects."""
+    session = await _session_for(access_token)
+    account_id = _account_id(session)
+    using = list(session.get("capabilities", {}).keys()) or ["urn:ietf:params:jmap:core"]
+    await jmap_request(access_token, {
+        "using": using,
+        "methodCalls": [[
+            "x:AppPassword/set",
+            {"accountId": account_id, "destroy": [password_id]},
+            "0",
+        ]],
+    })
 
 
 async def get_sieve_script(access_token: str) -> dict | None:

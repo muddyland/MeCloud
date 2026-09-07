@@ -38,11 +38,24 @@ PAIRING_MAX_AGE = 300
 
 @dataclass(frozen=True)
 class Device:
-    """What a decrypted device token tells us."""
-    refresh_token: str
+    """What a decrypted device token tells us.
+
+    The credential is an app password created for this device alone. It used to
+    be the session's OAuth refresh token, which was wrong twice over: that token
+    belongs to the browser session it came from, so a refresh or a sign-out
+    there silently killed the device, and there was no way to revoke one device
+    without revoking everything.
+    """
     username: str
+    secret: str
+    password_id: str
     name: str
     issued_at: int
+
+    def basic_credential(self) -> str:
+        """An Authorization header value for the mail server."""
+        raw = f"{self.username}:{self.secret}".encode()
+        return "Basic " + base64.b64encode(raw).decode()
 
     @property
     def age(self) -> int:
@@ -65,10 +78,11 @@ def _fernet(secret: str) -> Fernet:
     return Fernet(base64.urlsafe_b64encode(raw))
 
 
-def issue(secret: str, *, refresh_token: str, username: str, name: str) -> str:
+def issue(secret: str, *, app_password: str, password_id: str, username: str, name: str) -> str:
     """Mint a token for one paired device."""
     payload = json.dumps({
-        "rt": refresh_token,
+        "s": app_password,
+        "pid": password_id,
         "u": username,
         "n": name[:120],
         "iat": int(time.time()),
@@ -89,8 +103,9 @@ def read(secret: str, token: str, *, max_age: int = DEVICE_TOKEN_MAX_AGE) -> Dev
         raw = _fernet(secret).decrypt(token.encode(), ttl=max_age)
         data = json.loads(raw)
         return Device(
-            refresh_token=str(data["rt"]),
-            username=str(data.get("u", "")),
+            username=str(data["u"]),
+            secret=str(data["s"]),
+            password_id=str(data.get("pid", "")),
             name=str(data.get("n", "")),
             issued_at=int(data.get("iat", 0)),
         )

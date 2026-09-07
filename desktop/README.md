@@ -252,6 +252,21 @@ a conflict would litter a perfectly good folder with copies of every file.
   downloads are written to a scratch name and renamed into place, so a half file
   is never mistaken for the real thing, but the next pass starts it again.
 
+### Rate limits
+
+A first sync is hundreds of requests in a few seconds, and the server limits
+per IP. Being told to slow down is part of normal use here, not a failure: the
+client honours `Retry-After`, falls back to capped exponential backoff with
+jitter so a folder does not resume in lockstep, and retries five times before
+giving up on a file.
+
+A 401 is deliberately *not* retried — that means the pairing is gone, and
+retrying only delays the truth.
+
+Measured: 132 files against a 40/minute download limit completed in four
+minutes with every file transferred, absorbing the refusals rather than
+reporting them.
+
 ### Credentials
 
 The sync engine runs when no window is open, so it cannot borrow the webview's
@@ -263,13 +278,22 @@ session cookie. It has its own **device token**, obtained by pairing:
    person with an account is present, not merely a process on the machine.
 3. Approving redirects the token back to that loopback port.
 
-The token is a Fernet blob holding the OAuth refresh token, encrypted with a key
-derived from the server's `SESSION_SECRET` under its own HKDF label — so it is
-unrelated to the session cookie and to download links, and none can be
-substituted for another. The server stores nothing; there is no device registry
-to back up or leak. The cost is that a single device cannot be revoked from the
-app: revocation is the mail server's job, where dropping the OAuth token stops
-that device, and rotating `SESSION_SECRET` stops all of them.
+Approving creates an **app password on the mail server for that device alone**,
+and the device token is a Fernet blob holding it, encrypted under its own HKDF
+label so it is unrelated to the session cookie and to download links.
+
+It used to hold the session's OAuth refresh token instead, and that was wrong
+twice over. The refresh token belongs to the browser session it came from, so
+the browser refreshing or signing out invalidated the device with it. Worse, the
+device refreshed on *every* API call — so a first sync of a few hundred files
+fired a few hundred token requests in seconds, the mail server started refusing
+them, and the client reported every affected file as "no longer connected to
+your account". A per-device password removes the refresh entirely: one
+credential, valid until revoked.
+
+Revoking is now something the user can actually do. Each device shows up in the
+app's own **App Passwords** screen by name, and deleting it stops that device
+and nothing else. Rotating `SESSION_SECRET` still stops all of them.
 
 On disk the token is `~/.config/mecloud/device.token`, mode `0600`, separate
 from `config.json` so "forget this computer" is deleting one file.

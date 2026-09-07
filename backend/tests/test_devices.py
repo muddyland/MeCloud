@@ -10,16 +10,28 @@ OTHER = "o" * 64
 
 
 def test_a_device_token_round_trips():
-    token = devices.issue(SECRET, refresh_token="rt-123", username="ada@x.test", name="Laptop")
+    token = devices.issue(SECRET, app_password="pw-123", password_id="p1",
+                          username="ada@x.test", name="Laptop")
     device = devices.read(SECRET, token)
     assert device is not None
-    assert device.refresh_token == "rt-123"
+    assert device.secret == "pw-123"
+    assert device.password_id == "p1"
     assert device.username == "ada@x.test"
     assert device.name == "Laptop"
 
 
+def test_the_device_credential_is_basic_auth_for_the_mail_server():
+    import base64
+    token = devices.issue(SECRET, app_password="pw", password_id="p1",
+                          username="ada@x.test", name="Laptop")
+    header = devices.read(SECRET, token).basic_credential()
+    scheme, _, value = header.partition(" ")
+    assert scheme == "Basic"
+    assert base64.b64decode(value).decode() == "ada@x.test:pw"
+
+
 def test_a_device_token_is_bound_to_the_secret():
-    token = devices.issue(SECRET, refresh_token="rt", username="a", name="n")
+    token = devices.issue(SECRET, app_password="pw", password_id="p", username="a", name="n")
     assert devices.read(OTHER, token) is None
 
 
@@ -29,7 +41,7 @@ def test_malformed_device_tokens_are_refused_rather_than_raising(token):
 
 
 def test_a_device_token_expires():
-    token = devices.issue(SECRET, refresh_token="rt", username="a", name="n")
+    token = devices.issue(SECRET, app_password="pw", password_id="p", username="a", name="n")
     # Readable now under the real lifetime...
     assert devices.read(SECRET, token) is not None
     # ...and refused once its age passes the window it is checked against.
@@ -60,7 +72,7 @@ def test_each_token_scheme_uses_its_own_key():
 
 def test_a_device_token_is_not_a_download_token():
     from app import downloads
-    token = devices.issue(SECRET, refresh_token="rt", username="a", name="n")
+    token = devices.issue(SECRET, app_password="pw", password_id="p", username="a", name="n")
     assert downloads.verify(SECRET, token, "source") is False
 
 

@@ -30,6 +30,7 @@ from .auth import (
 )
 from .http import UpstreamError
 from .jmap import (
+    create_app_password, delete_app_password,
     get_jmap_session, jmap_request, jmap_event_stream,
     get_sieve_script, save_sieve_script, invalidate_session,
 )
@@ -187,7 +188,16 @@ async def _empty_receive() -> Message:
     return {"type": "http.disconnect"}
 
 
-limiter = Limiter(key_func=get_remote_address)
+# key_style="endpoint", not the default "url".
+#
+# slowapi keys its buckets on the concrete request path unless told otherwise,
+# so every distinct path parameter gets its own allowance. That silently
+# defeated RATE_LIMIT_DOWNLOAD on the two routes that need it most: a blob id
+# and an artefact key are in the path, so downloading a thousand different
+# files was a thousand separate buckets of one request each. Keying on the view
+# function gives the endpoint a single bucket, which is what the setting has
+# always claimed to do.
+limiter = Limiter(key_func=get_remote_address, key_style="endpoint")
 
 
 @asynccontextmanager
@@ -291,14 +301,12 @@ app.add_middleware(SecurityHeadersMiddleware)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
 
 
-async def _device_access_token(request: Request) -> str | None:
-    """Trade a device token for a live Stalwart access token, or None.
+async def _device_credential(request: Request) -> str | None:
+    """The upstream credential for a paired device, or None if this is not one.
 
-    The device token carries an OAuth *refresh* token, so every call refreshes.
-    That is one extra upstream request per API call and is why the sync client
-    is expected to batch its work rather than chatter — but it means a device
-    holds nothing that grants access on its own for longer than the mail server
-    allows, and revoking upstream takes effect immediately.
+    Returns a Basic credential built from the device's own app password. No
+    refresh, no round trip: the password is valid until the user revokes it in
+    App Passwords, which is also what makes revoking a single device possible.
     """
     presented = devices.bearer_token(request.headers.get("authorization"))
     if not presented:
@@ -306,18 +314,14 @@ async def _device_access_token(request: Request) -> str | None:
     device = devices.read(settings.session_secret, presented)
     if device is None:
         raise HTTPException(status_code=401, detail="This device is no longer paired")
-    try:
-        tokens = await refresh_access_token(device.refresh_token)
-    except Exception:
-        raise HTTPException(status_code=401, detail="This device is no longer paired")
-    return tokens["access_token"]
+    return device.basic_credential()
 
 
 async def require_auth(request: Request) -> str:
     # A paired desktop client authenticates with a bearer token rather than the
     # session cookie: it syncs with no window open, so there is no browser
     # session to borrow.
-    from_device = await _device_access_token(request)
+    from_device = await _device_credential(request)
     if from_device:
         return from_device
 
@@ -465,7 +469,13 @@ async def device_pairing(request: Request, redirect: str = "", name: str = "MeCl
         return RedirectResponse(url="/auth/login", status_code=302)
 
     sealed = devices.seal_pairing(settings.session_secret, redirect=redirect, name=name)
-    return _pairing_page(name=name, sealed=sealed, username=request.session.get("username", ""))
+    # Named from the JMAP session for the same reason: our own session record
+    # has no username in it.
+    try:
+        who = (await get_jmap_session(request.session["access_token"])).get("username", "")
+    except Exception:
+        who = ""
+    return _pairing_page(name=name, sealed=sealed, username=who)
 
 
 @app.post("/auth/device/approve")
@@ -491,17 +501,18 @@ async def device_approve(request: Request):
     if not devices.is_loopback_redirect(redirect):
         raise HTTPException(status_code=400, detail="Invalid pairing address.")
 
-    refresh = request.session.get("refresh_token")
-    if not refresh:
-        raise HTTPException(
-            status_code=400,
-            detail="This session has no refresh token, so a device cannot be paired from it.",
-        )
+    # A credential of the device's own, so nothing that happens to this browser
+    # session can invalidate it, and revoking it later does not sign anyone out.
+    try:
+        created = await create_app_password(request.session["access_token"], name)
+    except UpstreamError as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
     token = devices.issue(
         settings.session_secret,
-        refresh_token=refresh,
-        username=request.session.get("username", ""),
+        app_password=created["secret"],
+        password_id=str(created.get("id", "")),
+        username=created["username"],
         name=name,
     )
     joiner = "&" if "?" in redirect else "?"
