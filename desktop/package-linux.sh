@@ -33,6 +33,51 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 BIN_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
 ICON_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/128x128/apps"
 
+# ── Check the runtime libraries before installing anything ──────────────────
+#
+# Tauri renders in the system's WebKitGTK rather than bundling a browser, which
+# is why this binary is 4.6 MB — but it means three libraries have to be
+# present. Without this check the first symptom is the dynamic linker's
+# "cannot open shared object file", which tells the user nothing about what to
+# install.
+missing=""
+if command -v ldd >/dev/null 2>&1; then
+    missing="$(ldd "$HERE/mecloud-desktop" 2>/dev/null | awk '/not found/ {print $1}' | sort -u)"
+fi
+
+if [ -n "$missing" ]; then
+    echo "MeCloud needs some system libraries that are not installed:" >&2
+    echo "$missing" | sed 's/^/  /' >&2
+    echo >&2
+
+    # Name the packages for the distribution actually in front of us.
+    distro=""
+    [ -r /etc/os-release ] && . /etc/os-release && distro="${ID:-} ${ID_LIKE:-}"
+    case "$distro" in
+      *debian*|*ubuntu*)
+        echo "  sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1" >&2 ;;
+      *fedora*|*rhel*)
+        echo "  sudo dnf install webkit2gtk4.1 gtk3 libappindicator-gtk3" >&2 ;;
+      *arch*)
+        echo "  sudo pacman -S webkit2gtk-4.1 gtk3 libappindicator-gtk3" >&2 ;;
+      *suse*)
+        echo "  sudo zypper install libwebkit2gtk-4_1-0 gtk3 libayatana-appindicator3-1" >&2 ;;
+      *)
+        echo "  Install WebKitGTK 4.1, GTK 3 and libayatana-appindicator3 with your" >&2
+        echo "  package manager." >&2 ;;
+    esac
+
+    case "$missing" in
+      *webkit2gtk-4.1*)
+        echo >&2
+        echo "If your distribution only offers webkit2gtk 4.0, it is too old for this" >&2
+        echo "build. 4.1 is present from Debian 12, Ubuntu 22.04 and Fedora 36 onward." >&2 ;;
+    esac
+    echo >&2
+    echo "Nothing was installed. Run this script again afterwards." >&2
+    exit 1
+fi
+
 mkdir -p "$BIN_DIR" "$ICON_DIR"
 install -m 0755 "$HERE/mecloud-desktop" "$BIN_DIR/mecloud-desktop"
 install -m 0644 "$HERE/mecloud-desktop.png" "$ICON_DIR/mecloud-desktop.png"

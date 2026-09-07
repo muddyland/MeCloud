@@ -140,8 +140,31 @@ result. This is how the client is checked in CI and in a headless workspace.
 
 ## Runtime requirements (Linux)
 
-`libwebkit2gtk-4.1-0`, `libgtk-3-0`, `libayatana-appindicator3-1`. The `.deb`
-declares them; an AppImage bundles what it can.
+The client renders in the system's WebKitGTK rather than bundling a browser,
+which is what keeps it at 4.6 MB — but it means three libraries have to be
+installed:
+
+| | |
+|---|---|
+| Debian / Ubuntu | `sudo apt install libwebkit2gtk-4.1-0 libgtk-3-0 libayatana-appindicator3-1` |
+| Fedora | `sudo dnf install webkit2gtk4.1 gtk3 libappindicator-gtk3` |
+| Arch | `sudo pacman -S webkit2gtk-4.1 gtk3 libappindicator-gtk3` |
+| openSUSE | `sudo zypper install libwebkit2gtk-4_1-0 gtk3 libayatana-appindicator3-1` |
+
+`install.sh` checks for them with `ldd` before installing anything and prints
+the right line for the distribution it finds itself on. Without that check the
+first symptom is the dynamic linker's
+
+```
+error while loading shared libraries: libwebkit2gtk-4.1.so.0: cannot open shared object file
+```
+
+which says nothing about what to install.
+
+**webkit2gtk 4.1 is required, not 4.0.** It is present from Debian 12, Ubuntu
+22.04 and Fedora 36 onward; on anything older this binary will not start at all,
+and the client has to be rebuilt against 4.0 (`libwebkit2gtk-4.0-dev`, and the
+matching feature on the `tauri` crate).
 
 ## Desktop integration
 
