@@ -196,7 +196,7 @@ async def lifespan(app: FastAPI):
         await upstream.shutdown()
 
 
-app = FastAPI(title="JMAP Mail", lifespan=lifespan, docs_url=None, redoc_url=None)
+app = FastAPI(title="MeCloud", lifespan=lifespan, docs_url=None, redoc_url=None)
 
 app.state.limiter = limiter
 
@@ -323,11 +323,11 @@ async def public_config():
 @app.get("/manifest.webmanifest", response_class=JSONResponse)
 async def web_manifest():
     name = settings.app_name
-    short = name.split()[0] if name else "Mail"
+    short = name.split()[0] if name else "MeCloud"
     return {
         "name": name,
         "short_name": short,
-        "description": f"{name} webmail client",
+        "description": f"{name} — mail, calendar, contacts, notes and files",
         "start_url": "/",
         "scope": "/",
         "display": "standalone",

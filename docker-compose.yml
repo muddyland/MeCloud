@@ -1,7 +1,7 @@
 services:
-  jmap-mail:
+  mecloud:
     build: .
-    image: jmap-mail:latest
+    image: mecloud:latest
     ports:
       - "8000:8000"
     env_file: .env
@@ -15,8 +15,8 @@ services:
 
 # Production: pull a specific image from the registry instead of building locally:
 #
-#   jmap-mail:
-#     image: registry.gitlab.com/yourgroup/jmap-mail:latest
+#   mecloud:
+#     image: registry.gitlab.com/yourgroup/mecloud:latest
 #     ports:
 #       - "8000:8000"
 #     env_file: .env

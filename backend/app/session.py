@@ -36,6 +36,9 @@ def _derive_key(secret: str) -> bytes:
         algorithm=hashes.SHA256(),
         length=32,
         salt=None,
+        # Domain separation for the HKDF, not branding: this string is an
+        # input to the key derivation, so renaming it re-keys every session
+        # cookie in existence and signs everyone out. It stays as it is.
         info=b"jmap-webmail.session.v1",
     ).derive(secret.encode())
     return base64.urlsafe_b64encode(raw)

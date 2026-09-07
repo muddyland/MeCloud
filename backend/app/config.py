@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
-    app_name: str = "JMAP Mail"
+    app_name: str = "MeCloud"
     stalwart_url: str = "https://mail.example.com"
     oauth_client_id: str
     oauth_client_secret: str

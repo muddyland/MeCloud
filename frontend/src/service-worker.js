@@ -1,7 +1,7 @@
 /// <reference types="@sveltejs/kit" />
 import { build, files, version } from '$service-worker';
 
-const CACHE = `jmap-mail-${version}`;
+const CACHE = `mecloud-${version}`;
 const PRECACHE = [...new Set([...build, ...files])];
 
 self.addEventListener('install', e => {

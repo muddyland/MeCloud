@@ -1,5 +1,5 @@
 """
-Unit tests for the JMAP Mail API.
+Unit tests for the MeCloud API.
 
 All upstream HTTP calls (Stalwart JMAP server) are mocked so these tests run
 without any external dependencies.

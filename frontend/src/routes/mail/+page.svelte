@@ -180,7 +180,7 @@
   async function notify(count, subject) {
     if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
     const title = count === 1 ? 'New message' : `${count} new messages`;
-    const opts  = { body: subject, icon: '/icons/icon-192.png', tag: 'jmap-mail', renotify: true };
+    const opts  = { body: subject, icon: '/icons/icon-192.png', tag: 'mecloud', renotify: true };
     try {
       // Prefer SW notification — required in Chrome when a service worker is active
       if ('serviceWorker' in navigator) {

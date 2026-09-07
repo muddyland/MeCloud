@@ -91,7 +91,7 @@ export async function getJMAPSession() {
 
 export async function getAppConfig() {
   const res = await fetch('/api/config');
-  if (!res.ok) return { appName: 'JMAP Mail' };
+  if (!res.ok) return { appName: 'MeCloud' };
   return res.json();
 }
 

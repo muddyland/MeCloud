@@ -1,6 +1,9 @@
-# JMAP Mail
+# MeCloud
 
-A clean, minimal webmail client built on [JMAP](https://jmap.io/) (RFC 8620), designed for [Stalwart Mail Server](https://stalw.art/). Inspired by iCloud Mail's three-pane layout with full dark mode support.
+A clean, minimal personal cloud built on [JMAP](https://jmap.io/) (RFC 8620),
+designed for [Stalwart Mail Server](https://stalw.art/): mail, calendar,
+contacts, notes and files in one app, sharing one session and one account.
+Inspired by iCloud's three-pane layout, with full dark mode support.
 
 ![Dashboard](docs/screenshot.png)
 
@@ -156,10 +159,10 @@ The image uses a true multi-stage build:
 
 ```bash
 # Build manually
-docker build -t jmap-mail .
+docker build -t mecloud .
 
 # Run
-docker run -p 8000:8000 --env-file .env jmap-mail
+docker run -p 8000:8000 --env-file .env mecloud
 ```
 
 ## CI/CD (GitLab)
@@ -216,7 +219,7 @@ minireg audit frontend
 ## Project Structure
 
 ```
-jmap-mail/
+mecloud/
 ├── backend/
 │   ├── app/
 │   │   ├── main.py       # FastAPI app, security middleware, routes, static serving

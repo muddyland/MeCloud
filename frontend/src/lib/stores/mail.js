@@ -39,7 +39,7 @@ function persisted(key, defaultValue, { min, max } = {}) {
   return store;
 }
 
-export const appName          = writable('JMAP Mail');
+export const appName          = writable('MeCloud');
 export const currentUser      = writable('');
 export const darkMode         = createDarkModeStore();
 export const selectedMailbox  = writable(null);
