@@ -270,6 +270,22 @@ a conflict would litter a perfectly good folder with copies of every file.
   downloads are written to a scratch name and renamed into place, so a half file
   is never mistaken for the real thing, but the next pass starts it again.
 
+### Cost of a pass
+
+A pass does not re-read files it has already seen. Each baseline row carries the
+file's size and modification time; a file matching both is taken as unchanged
+and its recorded hash reused. Hashing everything every thirty seconds meant a
+5 GB folder was read from disk 120 times an hour, which is what made the client
+feel heavy.
+
+The trade is explicit: a file edited in place, within the same second, without
+changing length or timestamp, is missed until something else touches it. Every
+sync client makes this bargain — the alternative is reading the whole folder
+continuously.
+
+Measured with 1006 files tracked: an idle pass takes about 1.1 s, nearly all of
+it fetching the remote listing.
+
 ### Rate limits
 
 A first sync is hundreds of requests in a few seconds, and the server limits
@@ -330,6 +346,8 @@ bridge and only the namespace differs, so it binds to whichever is loading it.
 `install.sh` puts it in place only where that bridge is already installed —
 creating directories for a file manager that is not there would leave dead
 files behind for nothing.
+
+![MeCloud in Dolphin's context menu](../docs/screenshot-desktop-dolphin.png)
 
 **Dolphin (KDE)** gets the right-click menu through a *service menu* —
 `file-manager/mecloud-dolphin.desktop`. KDE runs a command rather than hosting

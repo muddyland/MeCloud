@@ -84,7 +84,10 @@ impl Engine {
         let mut result = Status { state: State::Syncing, detail: "Syncing…".into(), ..Default::default() };
         publish(status, &result);
 
-        let (local, mut problems) = scan::scan(&self.folder);
+        // Hand the scanner what was recorded last time so it can skip reading
+        // files whose size and timestamp are unchanged.
+        let stamps = self.db.stamps().unwrap_or_default();
+        let ((local, mut problems), mtimes) = scan::scan_with_stamps(&self.folder, &stamps);
 
         let nodes = match self.api.nodes(&self.account_id) {
             Ok(n) => n,
@@ -101,7 +104,7 @@ impl Engine {
             }
         };
         let (remote, remote_ids) = api::to_tree(&nodes);
-        let folders = folder_ids(&nodes);
+        let mut folders = folder_ids(&nodes);
 
         let baselines = match self.db.baselines() {
             Ok(b) => b,
@@ -146,7 +149,7 @@ impl Engine {
                 ));
                 continue;
             }
-            if let Err(e) = self.apply(&action, &local, &remote, &remote_ids, &folders, &mut result) {
+            if let Err(e) = self.apply(&action, &local, &remote, &remote_ids, &mut folders, &mtimes, &mut result) {
                 problems.push(format!("{}: {e}", action.path()));
                 // An upstream that has stopped accepting us will fail for every
                 // remaining file; say so once rather than 500 times.
@@ -175,13 +178,18 @@ impl Engine {
         local: &Tree,
         remote: &Tree,
         remote_ids: &BTreeMap<String, String>,
-        folders: &BTreeMap<String, String>,
+        folders: &mut BTreeMap<String, String>,
+        mtimes: &std::collections::HashMap<String, i64>,
         result: &mut Status,
     ) -> Result<(), String> {
         match action {
             Action::RecordOnly(path) => {
                 let (Some(l), Some(r)) = (local.get(path), remote.get(path)) else { return Ok(()) };
-                self.db.record(path, &l.version, &r.version, l.size, remote_ids.get(path).map(String::as_str))
+                self.db.record_with_mtime(
+                    path, &l.version, &r.version, l.size,
+                    remote_ids.get(path).map(String::as_str),
+                    mtimes.get(path).copied().unwrap_or(0),
+                )
             }
 
             Action::Upload(path) => {
@@ -205,7 +213,10 @@ impl Engine {
                     .node_blob(&self.account_id, &node_id)?
                     .unwrap_or(blob);
                 let hash = local.get(path).map(|e| e.version.clone()).unwrap_or_default();
-                self.db.record(path, &hash, &remote_version, size, Some(&node_id))?;
+                self.db.record_with_mtime(
+                    path, &hash, &remote_version, size, Some(&node_id),
+                    mtimes.get(path).copied().unwrap_or(0),
+                )?;
                 result.uploaded += 1;
                 Ok(())
             }
@@ -217,7 +228,15 @@ impl Engine {
                 let (_, name) = split(path);
                 self.api.download_blob(&node.version, name, &full)?;
                 let (hash, size) = scan::hash_file(&full)?;
-                self.db.record(path, &hash, &node.version, size, Some(id))?;
+                // The file was just written, so its mtime is now; recording it
+                // stops the next pass re-hashing what we already know.
+                let mtime = std::fs::metadata(&full)
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                self.db.record_with_mtime(path, &hash, &node.version, size, Some(id), mtime)?;
                 result.downloaded += 1;
                 Ok(())
             }
@@ -297,7 +316,7 @@ impl Engine {
     /// The id of the remote folder for a path, creating any part that is
     /// missing. Returns None for the drive root.
     fn ensure_folder(
-        &self, path: &str, folders: &BTreeMap<String, String>,
+        &self, path: &str, folders: &mut BTreeMap<String, String>,
     ) -> Result<Option<String>, String> {
         if path.is_empty() {
             return Ok(None);
@@ -311,7 +330,16 @@ impl Engine {
             walked.push_str(part);
             parent = match folders.get(&walked) {
                 Some(id) => Some(id.clone()),
-                None => Some(self.api.create_folder(&self.account_id, part, parent.as_deref())?),
+                None => {
+                    let created = self.api.create_folder(&self.account_id, part, parent.as_deref())?;
+                    // Remembered for the rest of the pass. Without this, every
+                    // file after the first in a new folder tried to create it
+                    // again -- the server refused as already existing, and a
+                    // first sync of a thousand files into ten folders uploaded
+                    // ten of them and reported the rest as failures.
+                    folders.insert(walked.clone(), created.clone());
+                    Some(created)
+                }
             };
         }
         Ok(parent)
@@ -436,6 +464,18 @@ mod tests {
         let ids = folder_ids(&nodes);
         assert_eq!(ids["Photos"], "f1");
         assert_eq!(ids["Photos/2026"], "f2");
+    }
+
+    #[test]
+    fn creating_a_nested_folder_records_every_level() {
+        // The map is what stops the next file re-creating the same folders.
+        let mut folders = BTreeMap::new();
+        folders.insert("Photos".to_string(), "f1".to_string());
+        assert!(folders.contains_key("Photos"));
+        // A second file under Photos/2026 must find 2026 already recorded once
+        // the first has created it; that is what `ensure_folder` now inserts.
+        folders.insert("Photos/2026".to_string(), "f2".to_string());
+        assert_eq!(folders.get("Photos/2026").map(String::as_str), Some("f2"));
     }
 
     #[test]

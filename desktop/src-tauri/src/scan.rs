@@ -71,8 +71,40 @@ pub fn hash_file(path: &Path) -> Result<(String, u64), String> {
 /// single unreadable file should not stop everything else from syncing. They
 /// are returned alongside so the caller can report them.
 pub fn scan(root: &Path) -> (Tree, Vec<String>) {
+    scan_with_stamps(root, &std::collections::HashMap::new()).0
+}
+
+/// The modification time of an entry, in whole seconds since the epoch.
+fn mtime_of(meta: &std::fs::Metadata) -> i64 {
+    meta.modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Walk the folder, reusing a recorded hash when a file looks untouched.
+///
+/// Hashing every file on every pass is correct but expensive: a pass runs every
+/// thirty seconds, so a 5 GB folder means re-reading 5 GB from disk 120 times an
+/// hour, which is what made the client feel heavy. A file whose size *and*
+/// modification time both match what was recorded is taken as unchanged and its
+/// stored hash reused.
+///
+/// The trade is explicit: a file edited in place, in under a second, without
+/// changing its length, keeping its mtime, would be missed until something else
+/// touches it. Every sync client makes this bargain, because the alternative is
+/// reading the whole folder continuously.
+///
+/// Returns the tree and problems, plus the fresh (size, mtime, hash) stamps to
+/// record.
+pub fn scan_with_stamps(
+    root: &Path,
+    known: &std::collections::HashMap<String, (u64, i64, String)>,
+) -> ((Tree, Vec<String>), std::collections::HashMap<String, i64>) {
     let mut tree = Tree::new();
     let mut problems = Vec::new();
+    let mut mtimes = std::collections::HashMap::new();
 
     for entry in WalkDir::new(root)
         .follow_links(false)
@@ -103,15 +135,31 @@ pub fn scan(root: &Path) -> (Tree, Vec<String>) {
             problems.push(format!("{}: name is not valid UTF-8", entry.path().display()));
             continue;
         };
+        let key = rel.replace('\\', "/");
+        let meta = entry.metadata().ok();
+        let mtime = meta.as_ref().map(mtime_of).unwrap_or(0);
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+
+        // Unchanged length and timestamp: trust the recorded hash rather than
+        // reading the file again.
+        if let Some((known_size, known_mtime, known_hash)) = known.get(&key) {
+            if *known_size == size && *known_mtime == mtime && mtime != 0 {
+                tree.insert(key.clone(), Entry { version: known_hash.clone(), size });
+                mtimes.insert(key, mtime);
+                continue;
+            }
+        }
+
         match hash_file(entry.path()) {
-            Ok((hash, size)) => {
-                tree.insert(rel.replace('\\', "/"), Entry { version: hash, size });
+            Ok((hash, hashed_size)) => {
+                tree.insert(key.clone(), Entry { version: hash, size: hashed_size });
+                mtimes.insert(key, mtime);
             }
             Err(e) => problems.push(e),
         }
     }
 
-    (tree, problems)
+    ((tree, problems), mtimes)
 }
 
 /// Turn a relative sync path into an absolute one, refusing anything that
@@ -189,6 +237,49 @@ mod tests {
         fs::write(dir.join(".Trash-1000/deep/x.txt"), b"x").unwrap();
         let (tree, _) = scan(&dir);
         assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn an_unchanged_file_is_not_read_again() {
+        let dir = tempdir();
+        let path = dir.join("a.txt");
+        fs::write(&path, b"hello").unwrap();
+
+        let ((first, _), stamps) = scan_with_stamps(&dir, &Default::default());
+        let real = first["a.txt"].version.clone();
+
+        // Claim a different hash for the same size and mtime: if the scan
+        // re-read the file it would disagree with us.
+        let mut known = std::collections::HashMap::new();
+        known.insert("a.txt".to_string(), (5u64, stamps["a.txt"], "PRETEND".to_string()));
+        let ((second, _), _) = scan_with_stamps(&dir, &known);
+        assert_eq!(second["a.txt"].version, "PRETEND", "should have trusted the stamp");
+        assert_ne!(real, "PRETEND");
+    }
+
+    #[test]
+    fn a_changed_size_forces_a_re_read() {
+        let dir = tempdir();
+        let path = dir.join("a.txt");
+        fs::write(&path, b"hello").unwrap();
+        let ((_, _), stamps) = scan_with_stamps(&dir, &Default::default());
+
+        let mut known = std::collections::HashMap::new();
+        // Recorded as a different length, so the stamp cannot be trusted.
+        known.insert("a.txt".to_string(), (999u64, stamps["a.txt"], "PRETEND".to_string()));
+        let ((tree, _), _) = scan_with_stamps(&dir, &known);
+        assert_ne!(tree["a.txt"].version, "PRETEND");
+    }
+
+    #[test]
+    fn a_file_with_no_usable_timestamp_is_always_hashed() {
+        // mtime 0 means "unknown"; trusting it would skip the file forever.
+        let dir = tempdir();
+        fs::write(dir.join("a.txt"), b"hello").unwrap();
+        let mut known = std::collections::HashMap::new();
+        known.insert("a.txt".to_string(), (5u64, 0i64, "PRETEND".to_string()));
+        let ((tree, _), _) = scan_with_stamps(&dir, &known);
+        assert_ne!(tree["a.txt"].version, "PRETEND");
     }
 
     #[test]

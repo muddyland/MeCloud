@@ -88,11 +88,17 @@ pub fn parse_request(line: &str) -> Option<Request> {
 /// The runtime directory: per-user, already mode 0700, and cleaned up at
 /// logout — none of which is true of a path in /tmp.
 pub fn socket_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).or_else(|| {
-        // No runtime dir (a bare session, a container): fall back to a
-        // directory of our own that only this user can enter.
-        Some(std::env::temp_dir().join(format!("mecloud-{}", uid())))
-    })?;
+    // Set but pointing at nothing is common — a container, a session started
+    // outside a login manager — and is not the same as usable. Checking rather
+    // than trusting it is what keeps the file manager working there.
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir());
+
+    let base = runtime.unwrap_or_else(|| {
+        // Ours alone, and created 0700 by `serve`.
+        std::env::temp_dir().join(format!("mecloud-{}", uid()))
+    });
     Some(base.join("mecloud").join("socket"))
 }
 
@@ -219,6 +225,17 @@ mod tests {
 
     fn p(s: &str) -> PathBuf {
         PathBuf::from(s)
+    }
+
+    #[test]
+    fn an_unusable_runtime_dir_falls_back_rather_than_failing() {
+        // XDG_RUNTIME_DIR set to something that does not exist is common in a
+        // container; trusting it left the file manager with no socket at all.
+        std::env::set_var("XDG_RUNTIME_DIR", "/definitely/not/here");
+        let path = socket_path().unwrap();
+        assert!(!path.starts_with("/definitely/not/here"), "got {}", path.display());
+        assert!(path.ends_with("mecloud/socket"));
+        std::env::remove_var("XDG_RUNTIME_DIR");
     }
 
     #[test]

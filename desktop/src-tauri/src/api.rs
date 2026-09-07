@@ -330,7 +330,19 @@ pub const UNPAIRED: &str = "This computer is no longer connected to your account
 /// of normal use here, not an error — the same reasoning the web client's
 /// upload path already applies.
 const MAX_ATTEMPTS: u32 = 5;
+
+/// Ceiling for backoff we invent ourselves, with no advice from the server.
 const MAX_BACKOFF_SECS: u64 = 30;
+
+/// Ceiling for a wait the server explicitly asked for.
+///
+/// Much higher than our own backoff, and that distinction matters: the server
+/// answers a rate limit with `Retry-After: 60`, and capping its advice at 30
+/// meant every retry landed inside the still-closed window. All five attempts
+/// were spent without one of them being able to succeed, so a first sync of a
+/// few hundred files reported almost all of them as failures — then tried the
+/// whole thing again thirty seconds later, forever.
+const MAX_ADVISED_WAIT_SECS: u64 = 300;
 
 /// How long to wait after a 429.
 ///
@@ -340,7 +352,9 @@ const MAX_BACKOFF_SECS: u64 = 30;
 /// the limit again on the same tick.
 pub fn retry_delay(attempt: u32, retry_after: Option<&str>) -> Duration {
     if let Some(advised) = retry_after.and_then(|v| v.trim().parse::<u64>().ok()) {
-        return Duration::from_secs(advised.min(MAX_BACKOFF_SECS));
+        // Waiting exactly as long as asked is the only wait that works: the
+        // window does not reopen early because we were impatient.
+        return Duration::from_secs(advised.min(MAX_ADVISED_WAIT_SECS));
     }
     let backoff = 2u64.saturating_pow(attempt).min(MAX_BACKOFF_SECS);
     // Jitter from the clock: no rng dependency for something this rough.
@@ -539,10 +553,15 @@ mod tests {
     }
 
     #[test]
-    fn a_server_supplied_retry_after_is_honoured() {
+    fn a_server_supplied_retry_after_is_honoured_in_full() {
         assert_eq!(retry_delay(0, Some("7")), Duration::from_secs(7));
-        // ...but not to an unbounded degree.
-        assert_eq!(retry_delay(0, Some("9999")), Duration::from_secs(MAX_BACKOFF_SECS));
+        // The real case: a per-minute limit answers with 60. Shortening that
+        // to our own 30-second ceiling retried into a closed window and failed
+        // every attempt.
+        assert_eq!(retry_delay(0, Some("60")), Duration::from_secs(60));
+        assert!(retry_delay(0, Some("60")) > Duration::from_secs(MAX_BACKOFF_SECS));
+        // Still bounded, so a hostile value cannot park the client for a day.
+        assert_eq!(retry_delay(0, Some("99999")), Duration::from_secs(MAX_ADVISED_WAIT_SECS));
     }
 
     #[test]

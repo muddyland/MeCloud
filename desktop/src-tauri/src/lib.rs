@@ -632,10 +632,25 @@ fn spawn_sync_loop(app: AppHandle) {
 /// The status comes from the sync database rather than the last run's summary:
 /// the file manager asks about whatever the user happens to be looking at, and
 /// only the baseline knows about a file that was synced days ago.
+/// Look one path up in the baseline, opening the database at most once.
+fn status_db(handle: &std::sync::Mutex<Option<syncdb::SyncDb>>, relative: &str) -> bool {
+    let Ok(mut slot) = handle.lock() else { return false };
+    if slot.is_none() {
+        let Some(path) = config::sync_db_path() else { return false };
+        *slot = syncdb::SyncDb::open(&path).ok();
+    }
+    slot.as_ref().and_then(|db| db.is_tracked(relative).ok()).unwrap_or(false)
+}
+
 fn start_file_manager_socket(app: AppHandle) {
     let handle = app.clone();
+    // Opened lazily and reused. Reads only, and SQLite is in WAL mode, so it
+    // never blocks the sync thread's writes.
+    let db_handle: std::sync::Arc<std::sync::Mutex<Option<syncdb::SyncDb>>> =
+        std::sync::Arc::new(std::sync::Mutex::new(None));
     let result = socket::serve(move |request| {
         let state = handle.state::<AppState>();
+        let db_handle = db_handle.clone();
         match request {
             socket::Request::Version => Some(format!("VERSION:{}", update::CURRENT)),
 
@@ -650,17 +665,17 @@ fn start_file_manager_socket(app: AppHandle) {
                     .and_then(|r| full.strip_prefix(r).ok())
                     .map(|r| r.to_string_lossy().replace('\\', "/"));
 
-                // Opening the database per question rather than holding it: the
-                // sync thread owns its own connection, and two writers to one
-                // SQLite handle is not a race worth inventing for a badge.
-                let tracked = match (&relative, config::sync_db_path()) {
-                    (Some(rel), Some(db_path)) => syncdb::SyncDb::open(&db_path)
-                        .ok()
-                        .and_then(|db| db.baselines().ok())
-                        .map(|b| b.contains_key(rel.as_str()))
-                        .unwrap_or(false),
-                    _ => false,
-                };
+                // One indexed lookup on a connection opened once and kept.
+                //
+                // This is asked once per visible file, on the file manager's
+                // own main thread. Opening the database per question and
+                // reading the whole baseline to test one key cost 40 ms each:
+                // a folder of 200 files froze the file manager for eight
+                // seconds. It is now a single SELECT on a shared read handle.
+                let tracked = relative
+                    .as_ref()
+                    .map(|rel| status_db(&db_handle, rel))
+                    .unwrap_or(false);
                 let has_problem = relative
                     .as_ref()
                     .map(|rel| status.problems.iter().any(|p| p.starts_with(rel.as_str())))
@@ -908,14 +923,32 @@ pub fn run() {
         ])
         .setup(move |app| {
             let handle = app.handle().clone();
-            build_tray(&handle)?;
+
+            // A tray is a convenience, not a dependency. This used to be `?`,
+            // so a desktop that could not give us one — KDE with no
+            // StatusNotifier host yet, a bare window manager, a session with no
+            // writable XDG_RUNTIME_DIR — did not lose the tray icon, it lost
+            // the whole client: Tauri turns a setup-hook error into a panic and
+            // the process aborts before any window exists.
+            let has_tray = match build_tray(&handle) {
+                Ok(()) => true,
+                Err(e) => {
+                    eprintln!("[mecloud] no tray icon available ({e}); continuing without one");
+                    false
+                }
+            };
             // `--settings` goes straight to Preferences. The tray menu is the
             // usual route, but a tray needs a system tray to exist, and a
             // headless check or a broken desktop has neither.
-            if std::env::args().any(|a| a == "--background") {
+            if std::env::args().any(|a| a == "--background") && has_tray {
                 // Launched by the session at login: the tray and the sync loop
                 // are the point, and a window would land on top of whatever the
                 // user was doing while they were still logging in.
+            } else if std::env::args().any(|a| a == "--background") {
+                // No tray to minimise to. Starting invisibly here would leave
+                // the client running with no way at all to reach it.
+                eprintln!("[mecloud] starting with a window, since there is no tray to hide in");
+                handle_target(&handle, None);
             } else if std::env::args().any(|a| a == "--settings") {
                 open_setup(&handle);
             } else {
