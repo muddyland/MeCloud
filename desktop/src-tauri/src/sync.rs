@@ -44,6 +44,9 @@ pub struct Status {
     pub downloaded: usize,
     pub deleted: usize,
     pub conflicts: usize,
+    /// Deletions waiting out their window rather than applied.
+    pub trashed: usize,
+    pub pending_deletions: usize,
     pub problems: Vec<String>,
     pub tracked: i64,
     pub last_sync: Option<u64>,
@@ -58,6 +61,8 @@ impl Default for Status {
             downloaded: 0,
             deleted: 0,
             conflicts: 0,
+            trashed: 0,
+            pending_deletions: 0,
             problems: Vec::new(),
             tracked: 0,
             last_sync: None,
@@ -76,6 +81,10 @@ pub struct Engine {
     /// Set once by the user to let a refused pass through, and cleared as soon
     /// as it is used — a standing exemption would defeat the guard.
     pub allow_bulk_delete: bool,
+    /// Whether a local deletion should ever reach the server.
+    pub delete_on_server: bool,
+    /// How long it waits first.
+    pub trash_days: i64,
 }
 
 impl Engine {
@@ -115,8 +124,16 @@ impl Engine {
             }
         };
 
+        // Anything already waiting in the trash is out of scope for this pass:
+        // it is neither present locally nor deleted remotely yet, and planning
+        // for it would either download it back or delete it early.
+        let pending = self.db.pending_paths().unwrap_or_default();
+
         let stamp = timestamp();
-        let actions = reconcile::plan(&local, &remote, &baselines, &stamp);
+        let actions: Vec<Action> = reconcile::plan(&local, &remote, &baselines, &stamp)
+            .into_iter()
+            .filter(|a| !pending.contains(a.path()))
+            .collect();
 
         // Before doing anything at all. A pass that would remove most of what
         // is tracked is far more likely to be one side failing to report its
@@ -163,7 +180,18 @@ impl Engine {
             }
         }
 
+        // Deletions whose window has closed are applied now.
+        if self.delete_on_server {
+            for due in self.db.expired_pending(self.trash_days).unwrap_or_default() {
+                match self.apply_pending(&due) {
+                    Ok(()) => result.deleted += 1,
+                    Err(e) => problems.push(format!("{}: {e}", due.path)),
+                }
+            }
+        }
+
         result.problems = problems;
+        result.pending_deletions = self.db.pending().map(|p| p.len()).unwrap_or(0);
         result.tracked = self.db.count().unwrap_or(0);
         result.last_sync = Some(now());
         result.state = if result.problems.is_empty() { State::Idle } else { State::Problems };
@@ -252,12 +280,20 @@ impl Engine {
                 Ok(())
             }
 
+            // Never destroys anything immediately. A file deleted here goes to
+            // the trash and stays visible until the user says otherwise or the
+            // window closes on it -- because "gone from this folder" and "the
+            // user wants the only other copy destroyed" are not the same claim.
             Action::DeleteRemote(path) => {
-                if let Some(id) = remote_ids.get(path) {
-                    self.api.destroy(&self.account_id, id)?;
+                if !self.delete_on_server {
+                    // Turned off entirely: leave the server alone and stop
+                    // reporting it every pass by forgetting our record of it.
+                    self.db.forget(path)?;
+                    return Ok(());
                 }
-                self.db.forget(path)?;
-                result.deleted += 1;
+                let size = remote.get(path).map(|e| e.size).unwrap_or(0);
+                self.db.mark_pending(path, remote_ids.get(path).map(String::as_str), size)?;
+                result.trashed += 1;
                 Ok(())
             }
 
@@ -313,6 +349,15 @@ impl Engine {
         }
     }
 
+    /// Carry out one deferred deletion on the server.
+    pub fn apply_pending(&self, due: &crate::syncdb::PendingDeletion) -> Result<(), String> {
+        if let Some(id) = &due.node_id {
+            self.api.destroy(&self.account_id, id)?;
+        }
+        self.db.clear_pending(&due.path)?;
+        self.db.forget(&due.path)
+    }
+
     /// The id of the remote folder for a path, creating any part that is
     /// missing. Returns None for the drive root.
     fn ensure_folder(
@@ -353,7 +398,7 @@ fn publish(status: &SharedStatus, next: &Status) {
 }
 
 fn summarise(s: &Status) -> String {
-    if s.uploaded + s.downloaded + s.deleted + s.conflicts == 0 {
+    if s.uploaded + s.downloaded + s.deleted + s.conflicts + s.trashed == 0 {
         return "Up to date".into();
     }
     let mut parts = Vec::new();
@@ -361,6 +406,7 @@ fn summarise(s: &Status) -> String {
     if s.downloaded > 0 { parts.push(format!("{} downloaded", s.downloaded)); }
     if s.deleted > 0 { parts.push(format!("{} removed", s.deleted)); }
     if s.conflicts > 0 { parts.push(format!("{} conflicted", s.conflicts)); }
+    if s.trashed > 0 { parts.push(format!("{} awaiting deletion", s.trashed)); }
     parts.join(", ")
 }
 

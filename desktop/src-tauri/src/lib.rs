@@ -200,8 +200,21 @@ fn unpair_device(state: tauri::State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+/// Count files under a path, stopping at `cap` — the question is "is there
+/// anything here", not "how much", and a huge tree should not delay an answer.
+fn count_files(root: &std::path::Path, cap: usize) -> usize {
+    walkdir::WalkDir::new(root)
+        .max_depth(6)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .take(cap)
+        .count()
+}
+
+#[tauri::command]
 fn set_sync(
-    state: tauri::State<'_, AppState>, folder: String, enabled: bool,
+    state: tauri::State<'_, AppState>, folder: String, enabled: bool, acknowledged: bool,
 ) -> Result<(), String> {
     let mut config = state.config.lock().unwrap().clone();
 
@@ -215,6 +228,26 @@ fn set_sync(
         // that does not exist yet.
         std::fs::create_dir_all(&path)
             .map_err(|e| format!("Could not use {}: {e}", path.display()))?;
+
+        // An existing folder with things already in it is the dangerous case,
+        // and the one that cost a user their files: if it is an *incomplete*
+        // copy of the drive, everything missing from it looks deleted. Said
+        // plainly, once, before anything syncs.
+        let changing = config.sync_folder.as_deref() != Some(trimmed);
+        if changing && !acknowledged {
+            let existing = count_files(&path, 200);
+            if existing > 0 {
+                return Err(format!(
+                    "NEEDS_ACKNOWLEDGEMENT:{path_display} already contains {existing}{more} \
+                     file(s).\n\nIf this is an incomplete copy of your drive, the files it is \
+                     missing will look deleted. Deletions go to the trash rather than straight \
+                     to the server, so nothing is lost immediately — but check the folder is \
+                     what you expect before continuing.",
+                    path_display = path.display(),
+                    more = if existing >= 200 { "+" } else { "" },
+                ));
+            }
+        }
         if config::load_token().is_none() {
             return Err("Connect this computer to your account first.".into());
         }
@@ -255,6 +288,66 @@ async fn sync_now(state: tauri::State<'_, AppState>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || run_pass(&config, &status))
         .await
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn pending_deletions() -> Vec<syncdb::PendingDeletion> {
+    config::sync_db_path()
+        .and_then(|p| syncdb::SyncDb::open(&p).ok())
+        .and_then(|db| db.pending().ok())
+        .unwrap_or_default()
+}
+
+/// Put a file back: the deletion is cancelled and the next pass fetches it.
+///
+/// The baseline is dropped rather than kept, so the planner sees "on the
+/// server, absent here, no history" and downloads it — keeping the baseline
+/// would instead read as a fresh local deletion and trash it again.
+#[tauri::command]
+fn restore_deletion(path: String) -> Result<(), String> {
+    let db_path = config::sync_db_path().ok_or("No database")?;
+    let db = syncdb::SyncDb::open(&db_path)?;
+    db.clear_pending(&path)?;
+    db.forget(&path)
+}
+
+/// Apply one waiting deletion to the server now, without waiting out the window.
+#[tauri::command]
+async fn apply_deletion(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
+    let config = state.config.lock().unwrap().clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let db_path = config::sync_db_path().ok_or("No database")?;
+        let db = syncdb::SyncDb::open(&db_path)?;
+        let Some(due) = db.pending()?.into_iter().find(|p| p.path == path) else {
+            return Err("That file is no longer waiting to be deleted.".into());
+        };
+        let (Some(server), Some(token)) = (config.server_url.clone(), config::load_token()) else {
+            return Err("Not connected.".into());
+        };
+        let api = api::Api::new(&server, &token)?;
+        let account_id = api.account_id()?;
+        if let Some(id) = &due.node_id {
+            api.destroy(&account_id, id)?;
+        }
+        db.clear_pending(&due.path)?;
+        db.forget(&due.path)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[tauri::command]
+fn set_deletion_policy(
+    state: tauri::State<'_, AppState>, enabled: bool, days: i64,
+) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap().clone();
+    config.delete_on_server = enabled;
+    // Zero would mean "delete on the next pass", which is the behaviour the
+    // trash exists to prevent; a floor of one day keeps a way back.
+    config.trash_days = days.clamp(1, 365);
+    config::save(&config)?;
+    *state.config.lock().unwrap() = config;
     Ok(())
 }
 
@@ -404,6 +497,8 @@ pub fn run_pass(config: &Config, status: &SharedStatus) {
         account_id,
         db,
         allow_bulk_delete: config.allow_bulk_delete_once,
+        delete_on_server: config.delete_on_server,
+        trash_days: config.trash_days,
     };
     let outcome = engine.run_once(status);
 
@@ -917,6 +1012,10 @@ pub fn run() {
             install_update,
             set_auto_update,
             confirm_bulk_delete,
+            pending_deletions,
+            restore_deletion,
+            apply_deletion,
+            set_deletion_policy,
             unpair_device,
             set_sync,
             sync_now,
@@ -968,4 +1067,51 @@ pub fn run() {
                 api.prevent_exit();
             }
         });
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::count_files;
+
+    fn tempdir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("mecloud-count-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_empty_folder_raises_no_warning() {
+        // Nothing there means nothing to lose; setup should not interrupt.
+        assert_eq!(count_files(&tempdir("empty"), 200), 0);
+    }
+
+    #[test]
+    fn an_existing_folder_with_files_is_detected() {
+        // This is the case that cost a user their files: an incomplete copy of
+        // the drive makes everything missing from it look deleted.
+        let dir = tempdir("full");
+        std::fs::create_dir_all(dir.join("nested/deeper")).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        std::fs::write(dir.join("nested/b.txt"), b"x").unwrap();
+        std::fs::write(dir.join("nested/deeper/c.txt"), b"x").unwrap();
+        assert_eq!(count_files(&dir, 200), 3);
+    }
+
+    #[test]
+    fn counting_stops_at_the_cap() {
+        // The question is "is anything here", not "how much" — a huge tree must
+        // not make the setup window sit there.
+        let dir = tempdir("many");
+        for i in 0..50 {
+            std::fs::write(dir.join(format!("f{i}.txt")), b"x").unwrap();
+        }
+        assert_eq!(count_files(&dir, 10), 10);
+    }
+
+    #[test]
+    fn a_folder_that_does_not_exist_counts_as_empty() {
+        assert_eq!(count_files(std::path::Path::new("/definitely/not/here"), 200), 0);
+    }
 }

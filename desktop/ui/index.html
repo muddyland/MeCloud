@@ -61,6 +61,14 @@
   .pill.on   { color: var(--ok);  border-color: var(--ok); }
   .pill.bad  { color: var(--bad); border-color: var(--bad); }
   #syncdetail { font-size: 12px; }
+  #trashlist { list-style: none; margin: 6px 0 0; padding: 0;
+               max-height: 9rem; overflow-y: auto; }
+  #trashlist li { display: flex; align-items: center; gap: 8px; padding: 4px 0;
+                  border-top: 1px solid var(--line); font-size: 12px; }
+  #trashlist .name { flex: 1; min-width: 0; overflow: hidden;
+                     text-overflow: ellipsis; white-space: nowrap; }
+  #trashlist .age { color: var(--muted); flex-shrink: 0; }
+  #trashlist button { padding: 2px 8px; font-size: 11px; border-radius: 6px; }
 </style>
 </head>
 <body>
@@ -127,6 +135,25 @@
           <small>Runs in the background, every 30 seconds.</small>
         </div>
       </div>
+      <div class="row">
+        <input id="deleteon" type="checkbox" />
+        <div>
+          <label for="deleteon" style="display:inline; font-weight:600;">Delete on the server too</label>
+          <small>Files you delete here are removed from the server after
+            <input id="trashdays" type="number" min="1" max="365" value="30"
+                   style="width:3.6rem; padding:1px 4px; font-size:12px" /> days.
+            Until then they wait below and can be put back.</small>
+        </div>
+      </div>
+
+      <div id="trash" hidden>
+        <div class="row" style="justify-content:space-between; align-items:center">
+          <strong style="font-size:12px">Waiting to be deleted from the server</strong>
+          <span id="trashcount" class="pill"></span>
+        </div>
+        <ul id="trashlist"></ul>
+      </div>
+
       <p id="syncdetail" class="status"></p>
       <div class="actions" style="margin-top:10px">
         <button id="confirmdelete" class="danger" hidden>Delete them anyway</button>
@@ -245,6 +272,10 @@
     $folderRow.hidden = !paired;
     if (config.sync_folder) $folder.value = config.sync_folder;
     $syncOn.checked = !!config.sync_enabled;
+    $deleteOn.checked = config.delete_on_server !== false;
+    $trashDays.value = config.trash_days ?? 30;
+    $trashDays.disabled = !$deleteOn.checked;
+    await refreshTrash();
 
     const status = await invoke('sync_status').catch(() => null);
     if (status) {
@@ -288,7 +319,7 @@
   $saveSync.addEventListener('click', async () => {
     $saveSync.disabled = true;
     try {
-      await invoke('set_sync', { folder: $folder.value.trim(), enabled: $syncOn.checked });
+      await saveSync(false);
       $syncDetail.textContent = $syncOn.checked ? 'Sync is on.' : 'Sync is off.';
       $syncDetail.className = 'status ok';
     } catch (e) {
@@ -315,6 +346,88 @@
       await refreshSync();
     }
   });
+
+  // Save, surfacing "this folder already has files in it" as a question rather
+  // than an error the user cannot get past.
+  async function saveSync(acknowledged) {
+    try {
+      await invoke('set_sync', {
+        folder: $folder.value.trim(), enabled: $syncOn.checked, acknowledged,
+      });
+    } catch (e) {
+      const message = String(e);
+      const marker = 'NEEDS_ACKNOWLEDGEMENT:';
+      if (message.includes(marker)) {
+        const detail = message.slice(message.indexOf(marker) + marker.length);
+        if (!window.confirm(`${detail}\n\nUse this folder anyway?`)) {
+          throw new Error('Cancelled — nothing was changed.');
+        }
+        return saveSync(true);
+      }
+      throw e;
+    }
+  }
+
+  const $deleteOn   = document.getElementById('deleteon');
+  const $trashDays  = document.getElementById('trashdays');
+  const $trash      = document.getElementById('trash');
+  const $trashList  = document.getElementById('trashlist');
+  const $trashCount = document.getElementById('trashcount');
+
+  async function saveDeletionPolicy() {
+    await invoke('set_deletion_policy', {
+      enabled: $deleteOn.checked, days: Number($trashDays.value) || 30,
+    }).catch(() => {});
+    $trashDays.disabled = !$deleteOn.checked;
+  }
+  $deleteOn.addEventListener('change', saveDeletionPolicy);
+  $trashDays.addEventListener('change', saveDeletionPolicy);
+
+  async function refreshTrash() {
+    const items = await invoke('pending_deletions').catch(() => []);
+    $trash.hidden = items.length === 0;
+    $trashCount.textContent = String(items.length);
+    if (!items.length) { $trashList.replaceChildren(); return; }
+
+    const days = Number($trashDays.value) || 30;
+    $trashList.replaceChildren(...items.map((item) => {
+      const li = document.createElement('li');
+
+      const name = document.createElement('span');
+      name.className = 'name';
+      // textContent, not innerHTML: these are file names from the drive.
+      name.textContent = item.path;
+      name.title = item.path;
+
+      const age = document.createElement('span');
+      age.className = 'age';
+      const left = Math.max(0, days - item.days_waiting);
+      age.textContent = left === 0 ? 'due now' : `${left}d left`;
+
+      const restore = document.createElement('button');
+      restore.className = 'ghost';
+      restore.textContent = 'Put back';
+      restore.addEventListener('click', async () => {
+        await invoke('restore_deletion', { path: item.path }).catch(() => {});
+        await refreshTrash();
+      });
+
+      const now = document.createElement('button');
+      now.className = 'danger';
+      now.textContent = 'Delete now';
+      now.addEventListener('click', async () => {
+        if (!window.confirm(`Delete "${item.path}" from the server? This cannot be undone.`)) return;
+        await invoke('apply_deletion', { path: item.path }).catch((e) => {
+          $syncDetail.textContent = String(e);
+          $syncDetail.className = 'status bad';
+        });
+        await refreshTrash();
+      });
+
+      li.append(name, age, restore, now);
+      return li;
+    }));
+  }
 
   $syncNow.addEventListener('click', async () => {
     $syncDetail.textContent = 'Syncing…';

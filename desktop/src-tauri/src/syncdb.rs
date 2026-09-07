@@ -16,6 +16,16 @@ pub struct SyncDb {
     conn: Connection,
 }
 
+/// A file deleted here, still present on the server.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingDeletion {
+    pub path: String,
+    pub node_id: Option<String>,
+    pub size: u64,
+    pub marked_at: i64,
+    pub days_waiting: i64,
+}
+
 impl SyncDb {
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(dir) = path.parent() {
@@ -42,6 +52,16 @@ impl SyncDb {
                  node_id      TEXT,
                  mtime        INTEGER NOT NULL DEFAULT 0,
                  synced_at    INTEGER NOT NULL
+             );
+             -- Files deleted locally, not yet deleted on the server. A local
+             -- deletion is only evidence that something happened here; it is
+             -- not proof the user wants the only other copy destroyed. These
+             -- wait, visibly, until the user says so or the delay expires.
+             CREATE TABLE IF NOT EXISTS pending_deletion (
+                 path      TEXT PRIMARY KEY,
+                 node_id   TEXT,
+                 size      INTEGER NOT NULL DEFAULT 0,
+                 marked_at INTEGER NOT NULL
              );",
         )
         .map_err(|e| e.to_string())?;
@@ -190,6 +210,84 @@ impl SyncDb {
             })
     }
 
+    // ── Deferred server-side deletions ──────────────────────────────────────
+
+    /// Mark a path as deleted locally and awaiting deletion on the server.
+    ///
+    /// The baseline row is deliberately kept. Dropping it would make the next
+    /// pass see "on the server, absent here, no history" and download the file
+    /// straight back, undoing the deletion the user actually made.
+    pub fn mark_pending(&self, path: &str, node_id: Option<&str>, size: u64) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO pending_deletion (path, node_id, size, marked_at)
+                 VALUES (?1, ?2, ?3, strftime('%s','now'))
+                 ON CONFLICT(path) DO NOTHING",
+                params![path, node_id, size as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn is_pending(&self, path: &str) -> Result<bool, String> {
+        self.conn
+            .query_row("SELECT 1 FROM pending_deletion WHERE path = ?1", params![path], |_| Ok(()))
+            .map(|_| true)
+            .or_else(|e| match e {
+                rusqlite::Error::QueryReturnedNoRows => Ok(false),
+                other => Err(other.to_string()),
+            })
+    }
+
+    pub fn pending_paths(&self) -> Result<std::collections::HashSet<String>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM pending_deletion")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        let mut out = std::collections::HashSet::new();
+        for row in rows {
+            out.insert(row.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    }
+
+    /// Everything waiting, newest first, with how long it has been waiting.
+    pub fn pending(&self) -> Result<Vec<PendingDeletion>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT path, node_id, size, marked_at,
+                        CAST((strftime('%s','now') - marked_at) / 86400 AS INTEGER)
+                 FROM pending_deletion ORDER BY marked_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PendingDeletion {
+                    path: row.get(0)?,
+                    node_id: row.get(1)?,
+                    size: row.get::<_, i64>(2)? as u64,
+                    marked_at: row.get(3)?,
+                    days_waiting: row.get::<_, i64>(4)?.max(0),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    /// Those that have waited longer than `days`.
+    pub fn expired_pending(&self, days: i64) -> Result<Vec<PendingDeletion>, String> {
+        Ok(self.pending()?.into_iter().filter(|p| p.days_waiting >= days).collect())
+    }
+
+    pub fn clear_pending(&self, path: &str) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM pending_deletion WHERE path = ?1", params![path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
     pub fn count(&self) -> Result<i64, String> {
         self.conn
             .query_row("SELECT COUNT(*) FROM baseline", [], |r| r.get(0))
@@ -231,6 +329,50 @@ mod tests {
         let db = SyncDb::from_connection(conn).unwrap();
         db.record_with_mtime("a.txt", "L", "R", 1, None, 7).unwrap();
         assert_eq!(db.stamp("a.txt").unwrap().1, 7);
+    }
+
+    #[test]
+    fn a_pending_deletion_keeps_its_baseline() {
+        // Dropping the baseline would make the next pass treat the file as new
+        // on the server and download it straight back.
+        let db = SyncDb::in_memory().unwrap();
+        db.record("a.txt", "L1", "R1", 5, Some("n1")).unwrap();
+        db.mark_pending("a.txt", Some("n1"), 5).unwrap();
+        assert!(db.is_tracked("a.txt").unwrap(), "baseline must survive");
+        assert!(db.is_pending("a.txt").unwrap());
+        assert_eq!(db.pending().unwrap().len(), 1);
+        assert_eq!(db.pending_paths().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn marking_the_same_path_twice_does_not_restart_the_clock() {
+        // Otherwise a file could sit in the trash forever, re-marked by every
+        // pass and never reaching its expiry.
+        let db = SyncDb::in_memory().unwrap();
+        db.mark_pending("a.txt", None, 1).unwrap();
+        let first = db.pending().unwrap()[0].marked_at;
+        db.mark_pending("a.txt", None, 1).unwrap();
+        assert_eq!(db.pending().unwrap().len(), 1);
+        assert_eq!(db.pending().unwrap()[0].marked_at, first);
+    }
+
+    #[test]
+    fn nothing_is_expired_before_its_time() {
+        let db = SyncDb::in_memory().unwrap();
+        db.mark_pending("a.txt", None, 1).unwrap();
+        assert!(db.expired_pending(30).unwrap().is_empty());
+        // Everything qualifies at zero days, which is what "delete now" uses.
+        assert_eq!(db.expired_pending(0).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn clearing_a_pending_deletion_removes_only_that_one() {
+        let db = SyncDb::in_memory().unwrap();
+        db.mark_pending("a.txt", None, 1).unwrap();
+        db.mark_pending("b.txt", None, 1).unwrap();
+        db.clear_pending("a.txt").unwrap();
+        let left: Vec<String> = db.pending().unwrap().into_iter().map(|p| p.path).collect();
+        assert_eq!(left, vec!["b.txt"]);
     }
 
     #[test]

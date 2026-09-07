@@ -32,6 +32,27 @@ pub struct Config {
     /// One-shot permission to run a pass the mass-deletion guard refused.
     #[serde(default)]
     pub allow_bulk_delete_once: bool,
+    /// Whether deleting a file here should eventually delete it on the server.
+    ///
+    /// On by default, because a sync that never removes anything is not a sync
+    /// — but never immediate: see `trash_days`.
+    #[serde(default = "default_true")]
+    pub delete_on_server: bool,
+    /// How long a deletion waits before it is applied to the server.
+    ///
+    /// The window exists because a local deletion is weak evidence: an
+    /// unmounted drive, a half-restored backup or a folder swapped underneath
+    /// the client all look exactly like "the user deleted these".
+    #[serde(default = "default_trash_days")]
+    pub trash_days: i64,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_trash_days() -> i64 {
+    30
 }
 
 impl Config {
@@ -244,6 +265,15 @@ mod tests {
         assert!(normalise_server_url("   ").is_err());
         assert!(normalise_server_url("ftp://example.com").is_err());
         assert!(normalise_server_url("mailto:a@b.c").is_err());
+    }
+
+    #[test]
+    fn deletion_defaults_are_safe_for_a_config_written_by_an_older_version() {
+        // serde defaults apply to fields absent from an existing config.json,
+        // so an upgrade must not silently turn deletion into an immediate one.
+        let old: Config = serde_json::from_str(r#"{"server_url":"https://x"}"#).unwrap();
+        assert!(old.delete_on_server, "deletion still propagates");
+        assert_eq!(old.trash_days, 30, "but never immediately");
     }
 
     #[test]

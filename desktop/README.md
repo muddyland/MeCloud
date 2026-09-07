@@ -224,7 +224,7 @@ the *same side* reported last time. That is why the baseline records both.
 | changed | unchanged | upload |
 | unchanged | changed | download |
 | changed | changed | **conflict** — local copy renamed, both kept |
-| deleted | unchanged | delete on the server |
+| deleted | unchanged | queued for server deletion — see [Deleting is deferred](#deleting-is-deferred) |
 | unchanged | deleted | delete locally |
 | deleted | changed | download; the edit wins over the deletion |
 | changed | deleted | upload; the edit wins over the deletion |
@@ -258,6 +258,57 @@ when a folder is reconnected to an account it already matches, and calling that
 a conflict would litter a perfectly good folder with copies of every file.
 
 `reconcile.rs` holds all of this, is pure, and is where the tests are.
+
+### Warned before it adopts a folder
+
+Pointing sync at a folder that already has files in it is the single most
+dangerous thing you can do with this client, and it does not look dangerous.
+An incomplete copy of the drive — an old backup, a partial download, a folder
+someone stopped syncing halfway — is indistinguishable, to the reconciler, from
+a complete copy that has had everything else deleted from it. So the first sync
+after adopting one queues a deletion for every file the folder is missing.
+
+Saving a sync folder that is not empty therefore asks first, and says how many
+files are already there. Answering no leaves sync off and changes nothing.
+The question is asked once, when the folder is first set; it is not asked again
+on every save, and it is not asked for a folder the client created itself.
+
+This is a warning rather than a refusal because adopting a folder is also the
+normal way to reconnect a machine that already has the drive on it. The
+"never synced, same size" row above is what makes that case cheap; the warning
+is for when it is *not* that case.
+
+### Deleting is deferred
+
+A file you delete locally is **not** deleted from the server that pass. It goes
+on a waiting list, and the deletion is applied 30 days later. Until then the
+file is still on the server and on your other machines, and Preferences lists
+it with two buttons:
+
+- **Put back** — drops it from the list and downloads it again on the next pass.
+- **Delete now** — applies the server-side deletion immediately.
+
+Both the delay and the behaviour are settings. **Delete on the server too** can
+be turned off entirely, which makes this machine upload-and-download only:
+deleting a file locally then means it comes back on the next pass, which is the
+right shape if the local folder is on a laptop you occasionally clear out.
+
+The waiting period exists because the failure mode this client already had —
+one bad pass proposing thousands of deletions — is only unrecoverable at the
+moment the deletions are applied. The [mass-deletion guard](#it-will-not-empty-an-account)
+catches the large version of that; the waiting list catches the small version,
+which is the one nobody notices until later. Both can be wrong, so neither is
+the only thing standing between a mistake and the data.
+
+Marking a file as waiting does not restart its clock if it is deleted again, and
+files on the list are held out of every plan, so the client does not spend 30
+days re-proposing the same deletion or re-downloading a file you meant to
+remove.
+
+Local deletions are still immediate and permanent — the waiting list is about
+what happens to the *server's* copy. A file deleted on the server by another
+machine is removed here on the next pass, and your desktop's own trash is not
+involved.
 
 ### What it does not do yet
 
