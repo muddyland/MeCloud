@@ -161,3 +161,32 @@ def test_a_destination_that_could_leave_the_site_is_refused(value):
     # An open redirect on a login flow is a phishing link on the real domain.
     from app.auth import safe_local_path
     assert safe_local_path(value) is None
+
+
+# ── the hand-off back to the client ─────────────────────────────────────────
+
+def test_the_handoff_is_a_navigation_not_a_redirect():
+    """A 303 here is blocked by our own `form-action 'self'`.
+
+    The response to a form POST is still governed by the submission's
+    form-action in WebKit and Firefox, and the loopback port is cross-origin,
+    so a redirect never reaches the waiting client.
+    """
+    from app.main import _handoff_page
+
+    target = "http://127.0.0.1:41234/paired?token=abc"
+    response = _handoff_page(target)
+    assert response.status_code == 200
+    body = response.body.decode()
+    assert 'http-equiv="refresh"' in body
+    assert target in body
+    # A visible link too, for a browser with meta refresh disabled.
+    assert f'href="{target}"' in body
+
+
+def test_the_handoff_escapes_what_it_puts_in_the_page():
+    from app.main import _handoff_page
+
+    body = _handoff_page('http://127.0.0.1:1/p?token=a"><script>x</script>').body.decode()
+    assert "<script>" not in body
+    assert "&lt;script&gt;" in body

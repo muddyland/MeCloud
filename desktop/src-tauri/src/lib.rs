@@ -21,6 +21,7 @@ pub mod reconcile;
 pub mod scan;
 pub mod sync;
 pub mod syncdb;
+pub mod update;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -32,11 +33,13 @@ use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use config::Config;
 use deeplink::Target;
 use sync::{SharedStatus, State, Status};
+use update::UpdateInfo;
 
 /// Live state, so the tray, the setup window and the sync thread agree.
 pub struct AppState {
     pub config: Mutex<Config>,
     pub status: SharedStatus,
+    pub update: Mutex<UpdateInfo>,
 }
 
 /// How often a pass runs when nothing else prompts one.
@@ -46,6 +49,10 @@ pub struct AppState {
 /// thousand files costs milliseconds. Watching is worth adding for
 /// responsiveness, not for correctness.
 const SYNC_INTERVAL: Duration = Duration::from_secs(30);
+
+/// How often to ask the server whether it ships a newer client. Rarely: an
+/// update is not urgent, and this runs on someone else's machine.
+const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 const MAIN: &str = "main";
 const SETUP: &str = "setup";
@@ -233,6 +240,92 @@ async fn sync_now(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_autostart() -> bool {
+    handlers::is_autostart_enabled()
+}
+
+#[tauri::command]
+fn set_autostart(enabled: bool) -> Result<(), String> {
+    handlers::set_autostart(enabled)
+}
+
+#[tauri::command]
+fn update_info(state: tauri::State<'_, AppState>) -> UpdateInfo {
+    state.update.lock().map(|u| u.clone()).unwrap_or_default()
+}
+
+#[tauri::command]
+async fn check_for_update(state: tauri::State<'_, AppState>) -> Result<UpdateInfo, String> {
+    let base = state.config.lock().unwrap().server_url.clone().ok_or("Connect to a server first.")?;
+    let token = config::load_token().ok_or("Connect this computer to your account first.")?;
+    let found = tauri::async_runtime::spawn_blocking(move || update::check(&base, &token))
+        .await
+        .map_err(|e| e.to_string())??;
+    if let Ok(mut slot) = state.update.lock() {
+        *slot = found.clone();
+    }
+    Ok(found)
+}
+
+/// Download, verify and install. The caller is told to restart; nothing is
+/// restarted underneath them mid-sync.
+#[tauri::command]
+async fn install_update(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let base = state.config.lock().unwrap().server_url.clone().ok_or("Connect to a server first.")?;
+    let token = config::load_token().ok_or("Connect this computer to your account first.")?;
+    let info = state.update.lock().map(|u| u.clone()).unwrap_or_default();
+    if !info.newer {
+        return Err("This is already the current version.".into());
+    }
+    let version = info.available.clone().unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || update::install(&base, &token, &info))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(version)
+}
+
+#[tauri::command]
+fn set_auto_update(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap().clone();
+    config.auto_update = enabled;
+    config::save(&config)?;
+    *state.config.lock().unwrap() = config;
+    Ok(())
+}
+
+/// Check, and install if the user asked for that.
+///
+/// Installing replaces the binary on disk; the running process is untouched
+/// and keeps going until it is next started. Restarting underneath someone
+/// mid-sync to save them one manual step is not a trade worth making.
+fn update_pass(app: &AppHandle) {
+    let state = app.state::<AppState>();
+    let (Some(base), auto) = ({
+        let config = state.config.lock().unwrap();
+        (config.server_url.clone(), config.auto_update)
+    }) else { return };
+    let Some(token) = config::load_token() else { return };
+
+    let Ok(found) = update::check(&base, &token) else { return };
+    if let Ok(mut slot) = state.update.lock() {
+        *slot = found.clone();
+    }
+    if found.newer && auto {
+        match update::install(&base, &token, &found) {
+            Ok(_) => log_update(&format!(
+                "Installed {} — it will be running after the next restart.",
+                found.available.unwrap_or_default()
+            )),
+            Err(e) => log_update(&format!("Update failed: {e}")),
+        }
+    }
+}
+
+fn log_update(message: &str) {
+    eprintln!("[mecloud] {message}");
+}
+
 fn config_now(state: &tauri::State<'_, AppState>) -> Config {
     state.config.lock().unwrap().clone()
 }
@@ -386,6 +479,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     // The status line is not clickable; "Sync now" beneath it is.
     let sync = MenuItem::with_id(app, "syncstatus", "Sync: starting…", false, None::<&str>)?;
     let sync_now_item = MenuItem::with_id(app, "syncnow", "Sync now", true, None::<&str>)?;
+    let updates = MenuItem::with_id(app, "updates", "Check for updates…", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "Preferences…", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit MeCloud", true, None::<&str>)?;
 
@@ -399,6 +493,7 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             &PredefinedMenuItem::separator(app)?,
             &sync,
             &sync_now_item,
+            &updates,
             &settings,
             &PredefinedMenuItem::separator(app)?,
             &quit,
@@ -422,6 +517,13 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
                 }),
             ),
             "settings" => open_setup(app),
+            "updates" => {
+                let handle = app.clone();
+                std::thread::spawn(move || {
+                    update_pass(&handle);
+                    open_setup(&handle);
+                });
+            }
             "syncnow" => {
                 let config = app.state::<AppState>().config.lock().unwrap().clone();
                 let status = app.state::<AppState>().status.clone();
@@ -475,6 +577,20 @@ fn spawn_sync_loop(app: AppHandle) {
     });
 }
 
+/// The update check, on its own slow loop.
+fn spawn_update_loop(app: AppHandle) {
+    std::thread::spawn(move || {
+        // Not at the same moment as the first sync: two network jobs racing on
+        // a cold start makes the first sync look slower than it is.
+        std::thread::sleep(Duration::from_secs(20));
+        loop {
+            update_pass(&app);
+            update_tray_label(&app);
+            std::thread::sleep(UPDATE_INTERVAL);
+        }
+    });
+}
+
 /// Reflect the current status in the tray, the way a desktop client does.
 fn update_tray_label(app: &AppHandle) {
     let status = app.state::<AppState>().status.lock().map(|s| s.clone()).unwrap_or_default();
@@ -486,8 +602,15 @@ fn update_tray_label(app: &AppHandle) {
         State::Problems => format!("Sync: {} problem(s)", status.problems.len()),
         State::Error => format!("Sync: {}", status.detail),
     };
+    // An available update belongs in the tooltip: it is the one thing the user
+    // has to act on, and the tray is where they will see it.
+    let update = app.state::<AppState>().update.lock().map(|u| u.clone()).unwrap_or_default();
+    let suffix = match (&update.available, update.newer) {
+        (Some(v), true) => format!("\nUpdate available: {v}"),
+        _ => String::new(),
+    };
     if let Some(tray) = app.tray_by_id("tray") {
-        let _ = tray.set_tooltip(Some(&format!("MeCloud — {label}")));
+        let _ = tray.set_tooltip(Some(&format!("MeCloud — {label}{suffix}")));
     }
 }
 
@@ -497,6 +620,38 @@ pub fn run() {
     // A headless single pass, for a cron job or for working out why a sync is
     // not doing what was expected. Exits with the result rather than starting
     // a window.
+    // Update handling without a window, for a scripted rollout or for finding
+    // out why a client is not taking one.
+    if std::env::args().any(|a| a == "--check-update" || a == "--update") {
+        let install = std::env::args().any(|a| a == "--update");
+        let (Some(base), Some(token)) = (loaded.server_url.clone(), config::load_token()) else {
+            eprintln!("Not connected to a server, or this computer is not paired.");
+            std::process::exit(1);
+        };
+        match update::check(&base, &token) {
+            Ok(info) => {
+                println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
+                if install && info.newer {
+                    match update::install(&base, &token, &info) {
+                        Ok(path) => {
+                            println!("installed to {}", path.display());
+                            std::process::exit(0);
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                            std::process::exit(1);
+                        }
+                    }
+                }
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     if std::env::args().any(|a| a == "--sync-once") {
         let status: SharedStatus = Arc::new(Mutex::new(Status::default()));
         run_pass(&loaded, &status);
@@ -519,6 +674,7 @@ pub fn run() {
         .manage(AppState {
             config: Mutex::new(loaded.clone()),
             status: Arc::new(Mutex::new(Status::default())),
+            update: Mutex::new(UpdateInfo { current: update::CURRENT.into(), ..Default::default() }),
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
@@ -528,6 +684,12 @@ pub fn run() {
             sync_status,
             is_paired,
             pair_device,
+            get_autostart,
+            set_autostart,
+            update_info,
+            check_for_update,
+            install_update,
+            set_auto_update,
             unpair_device,
             set_sync,
             sync_now,
@@ -538,12 +700,17 @@ pub fn run() {
             // `--settings` goes straight to Preferences. The tray menu is the
             // usual route, but a tray needs a system tray to exist, and a
             // headless check or a broken desktop has neither.
-            if std::env::args().any(|a| a == "--settings") {
+            if std::env::args().any(|a| a == "--background") {
+                // Launched by the session at login: the tray and the sync loop
+                // are the point, and a window would land on top of whatever the
+                // user was doing while they were still logging in.
+            } else if std::env::args().any(|a| a == "--settings") {
                 open_setup(&handle);
             } else {
                 handle_target(&handle, deeplink::first_target(std::env::args()));
             }
-            spawn_sync_loop(handle);
+            spawn_sync_loop(handle.clone());
+            spawn_update_loop(handle);
             Ok(())
         })
         // Closing every window leaves the tray running rather than exiting.

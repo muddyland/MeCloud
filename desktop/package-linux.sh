@@ -116,4 +116,23 @@ tar -cf - \
 (cd "$SRC" && zip -qr "$OUT/mecloud-desktop-source.zip" "mecloud-desktop")
 rm -rf "$SRC"
 
+# ── Manifest ────────────────────────────────────────────────────────────────
+# What the server needs to answer "is there an update, and did I get the file
+# intact?" without unpacking anything. The digests are what the client checks
+# before it replaces its own binary.
+{
+  printf '{\n  "version": "%s",\n  "artifacts": {\n' "$VERSION"
+  first=1
+  for f in "$OUT"/mecloud-desktop-*.tar.gz "$OUT"/mecloud-desktop-*.zip; do
+    [ -f "$f" ] || continue
+    [ "$first" = 1 ] || printf ',\n'
+    first=0
+    printf '    "%s": { "sha256": "%s", "size": %s }' \
+      "$(basename "$f")" \
+      "$(sha256sum "$f" | cut -d' ' -f1)" \
+      "$(wc -c < "$f" | tr -d ' ')"
+  done
+  printf '\n  }\n}\n'
+} > "$OUT/manifest.json"
+
 ls -l "$OUT"

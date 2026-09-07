@@ -196,8 +196,12 @@ Two-way, between a local folder and the drive. Runs in the background while the
 client is open, and can be run once from the command line:
 
 ```bash
-mecloud-desktop --sync-once      # one pass, prints JSON, exits non-zero on error
+mecloud-desktop                  # normal start
+mecloud-desktop --background     # start in the tray, no window (used at login)
 mecloud-desktop --settings       # open Preferences without going via the tray
+mecloud-desktop --sync-once      # one pass, prints JSON, exits non-zero on error
+mecloud-desktop --check-update   # print what the server ships, and whether it is newer
+mecloud-desktop --update         # check, and install if there is one
 ```
 
 ### How it decides
@@ -273,6 +277,51 @@ from `config.json` so "forget this computer" is deleting one file.
 Requests go to the server's own `/api/jmap` and `/api/files/blob` — the same
 endpoints the web UI uses. The client never holds a mail-server credential and
 never needs to know where the mail server is.
+## Starting with the session
+
+*Preferences → Start when I log in* writes an XDG autostart entry to
+`~/.config/autostart/`, launching the client with `--background` so the session
+begins with a tray icon and a running sync rather than a window landing on top
+of whatever the user is doing while they are still logging in.
+
+Nothing system-wide, no elevation, and turning it off deletes the file. It is a
+separate entry from the `mailto:` registration on purpose: disabling the mail
+handler must not also stop the client starting, and vice versa.
+
+## Updates
+
+The server ships the client, so the server is what "current" means:
+`/api/desktop/releases` reports the version it packaged and the SHA-256 of each
+artefact, and the client compares that with its own `CARGO_PKG_VERSION`.
+
+The tray tooltip names an available version. *Preferences → This app* has a
+manual check, and *Install updates automatically* — off by default, because
+replacing a binary on someone's machine is something they should opt into.
+
+Installing downloads the tarball through the same signed short-lived link the
+web UI uses, checks the digest **before unpacking anything**, and replaces the
+running binary with `rename()`, which is atomic — the installed path never holds
+a half-written file, and the running process keeps its own inode until it exits.
+
+Nothing restarts underneath you. An update applies the next time the client
+starts; interrupting a sync to save one manual step is not a good trade.
+
+Version comparison refuses to act on anything it cannot parse. A server sending
+`latest`, or `v0.2.0`, or nonsense, cannot talk a client into replacing its own
+binary — the safe direction is "no update".
+
+### What the checksum does and does not prove
+
+It is fetched over the same authenticated TLS channel as the file, so it proves
+the download arrived intact. It does **not** prove the server is honest.
+
+A client that installs what this server sends is already trusting it completely:
+it hands the same server a device token and syncs every file through it. What a
+separate signing key would add is protection against a *compromised* server,
+which is a larger promise than anything else here makes. That is worth adding —
+Tauri's updater plugin does exactly this with Ed25519 — and it is not what this
+does today.
+
 ## Layout
 
 ```
@@ -288,6 +337,7 @@ desktop/
 │   │   ├── reconcile.rs   # what to do, given what changed where (pure, tested)
 │   │   ├── scan.rs        # hashing the local folder, path safety (tested)
 │   │   ├── syncdb.rs      # the baseline, in SQLite (tested)
+│   │   ├── update.rs      # version compare, digest, self-replace (tested)
 │   │   ├── api.rs         # JMAP + blobs via the server's proxy (tested)
 │   │   └── sync.rs        # the executor: does what reconcile decided (tested)
 │   ├── capabilities/      # IPC scope — setup window only

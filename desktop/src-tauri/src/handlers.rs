@@ -82,9 +82,76 @@ pub fn unregister_mailto() -> Result<(), String> {
     Ok(())
 }
 
+// ── Starting with the session ───────────────────────────────────────────────
+//
+// The XDG autostart spec: a .desktop entry in ~/.config/autostart is launched
+// when the session begins. Same mechanism as the applications entry, different
+// directory, and still nothing system-wide.
+
+const AUTOSTART_FILE: &str = "mecloud-desktop-autostart.desktop";
+
+fn autostart_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|d| d.join("autostart"))
+}
+
+pub fn is_autostart_enabled() -> bool {
+    autostart_dir().map(|d| d.join(AUTOSTART_FILE).exists()).unwrap_or(false)
+}
+
+/// The entry to launch at login.
+///
+/// `--background` rather than a bare launch: starting with the session should
+/// put the client in the tray and begin syncing, not throw a window in the
+/// user's face before they have finished logging in.
+fn autostart_entry() -> String {
+    format!(
+        "[Desktop Entry]\n\
+         Type=Application\n\
+         Name=MeCloud\n\
+         Comment=Keep your files in sync\n\
+         Exec={exec} --background\n\
+         Icon=mecloud-desktop\n\
+         Terminal=false\n\
+         Categories=Network;\n\
+         X-GNOME-Autostart-enabled=true\n\
+         StartupNotify=false\n",
+        exec = exec_path()
+    )
+}
+
+pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    let dir = autostart_dir().ok_or("No autostart directory on this system")?;
+    let path = dir.join(AUTOSTART_FILE);
+
+    if !enabled {
+        if path.exists() {
+            fs::remove_file(&path).map_err(|e| format!("Could not remove {}: {e}", path.display()))?;
+        }
+        return Ok(());
+    }
+
+    fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    fs::write(&path, autostart_entry())
+        .map_err(|e| format!("Could not write {}: {e}", path.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_autostart_entry_starts_quietly_and_is_enabled() {
+        let entry = autostart_entry();
+        // Without --background the session begins by opening a window over
+        // whatever the user was doing.
+        assert!(entry.lines().any(|l| l.starts_with("Exec=") && l.ends_with(" --background")));
+        // GNOME honours this key; without it the entry is written and ignored.
+        assert!(entry.contains("X-GNOME-Autostart-enabled=true"));
+        assert!(entry.starts_with("[Desktop Entry]\n"));
+        // It must not claim mailto: as well, or disabling the mail handler
+        // would leave a second entry still claiming it.
+        assert!(!entry.contains("MimeType="));
+    }
 
     #[test]
     fn the_entry_registers_for_mailto_and_passes_the_url_through() {

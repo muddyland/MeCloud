@@ -23,6 +23,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -84,6 +85,28 @@ def path_for(art: Artifact) -> Path:
     return DOWNLOAD_DIR / art.filename
 
 
+def manifest() -> dict:
+    """What the packaging step recorded about this build.
+
+    Read on each call rather than cached: the directory is baked into the image
+    and never changes at runtime, so there is nothing to gain from caching, and
+    a stale cache after a rolling deploy would be a real bug.
+    """
+    path = DOWNLOAD_DIR / "manifest.json"
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        # A build with WITH_DESKTOP=0 has no manifest, which is not an error:
+        # it means there is nothing to offer and nothing to update to.
+        return {}
+
+
+def version() -> str | None:
+    """The client version this server ships, or None if it ships none."""
+    value = manifest().get("version")
+    return str(value) if value else None
+
+
 def available() -> list[dict]:
     """The artefacts this build actually shipped, with their sizes.
 
@@ -91,18 +114,25 @@ def available() -> list[dict]:
     offering a link that 404s.
     """
     out = []
+    recorded = manifest().get("artifacts", {})
     for art in ARTIFACTS:
         path = path_for(art)
         if not path.is_file():
             continue
-        out.append({
+        entry = {
             "key": art.key,
             "label": art.label,
             "description": art.description,
             "platform": art.platform,
             "filename": art.filename,
             "size": path.stat().st_size,
-        })
+        }
+        # The digest lets the desktop client check what it downloaded before it
+        # replaces its own binary with it.
+        digest = recorded.get(art.filename, {}).get("sha256")
+        if digest:
+            entry["sha256"] = digest
+        out.append(entry)
     return out
 
 

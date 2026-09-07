@@ -25,6 +25,10 @@ pub struct Config {
     /// Whether the user has sync switched on.
     #[serde(default)]
     pub sync_enabled: bool,
+    /// Install updates without asking. Off by default: replacing a binary on
+    /// someone's machine is something they should opt into.
+    #[serde(default)]
+    pub auto_update: bool,
 }
 
 impl Config {

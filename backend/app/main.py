@@ -405,6 +405,43 @@ def _pairing_page(*, name: str, sealed: str, username: str) -> HTMLResponse:
     return HTMLResponse(body, headers={"Cache-Control": "no-store"})
 
 
+def _handoff_page(target: str) -> HTMLResponse:
+    """Send the browser on to the waiting client.
+
+    Deliberately not a redirect. The response to a form POST is still part of
+    that form submission as far as `form-action` is concerned, and WebKit and
+    Firefox check redirects against it — so a 303 to the loopback port is
+    blocked outright by our own `form-action 'self'`:
+
+        Sending form data to '…/auth/device/approve' violates the following
+        Content Security Policy directive: "form-action 'self'"
+
+    Widening the directive to allow loopback would fix the symptom by making
+    the policy weaker everywhere, for one page. A meta refresh is an ordinary
+    top-level navigation instead: no CSP directive governs it, no script is
+    involved, and the visible link means it still works if a browser has
+    refreshes turned off.
+    """
+    safe = html.escape(target, quote=True)
+    body = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="0;url={safe}">
+<title>Connecting…</title>
+<style>
+ :root {{ color-scheme: light dark; }}
+ body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+        background:#f6f7f9; color:#111827;
+        font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; text-align:center; }}
+ @media (prefers-color-scheme: dark) {{ body {{ background:#0b1220; color:#f3f4f6; }} }}
+ p {{ margin:.4rem; }} .muted {{ color:#6b7280; font-size:.88rem; }}
+</style></head><body><div>
+  <p>Connecting to MeCloud on this computer…</p>
+  <p class="muted">If nothing happens, <a href="{safe}">finish connecting</a>.</p>
+</div></body></html>"""
+    return HTMLResponse(body, headers={"Cache-Control": "no-store"})
+
+
 @app.get("/auth/device")
 @limiter.limit("20/minute")
 async def device_pairing(request: Request, redirect: str = "", name: str = "MeCloud Desktop"):
@@ -468,14 +505,18 @@ async def device_approve(request: Request):
         name=name,
     )
     joiner = "&" if "?" in redirect else "?"
-    return RedirectResponse(url=f"{redirect}{joiner}token={quote(token)}", status_code=303)
+    return _handoff_page(f"{redirect}{joiner}token={quote(token)}")
 
 
 @app.get("/api/desktop/releases")
 @limiter.limit("60/minute")
 async def desktop_releases(request: Request, _: str = Depends(require_auth)):
-    """What this build shipped, so the UI can offer only what exists."""
-    return {"artifacts": downloads.available()}
+    """What this build shipped, so the UI can offer only what exists.
+
+    The version is what the desktop client compares against its own to decide
+    whether an update is available, so this endpoint answers both questions.
+    """
+    return {"version": downloads.version(), "artifacts": downloads.available()}
 
 
 @app.post("/api/desktop/token")

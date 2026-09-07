@@ -135,6 +135,33 @@
     </div>
   </div>
 
+  <div class="panel" id="apppanel" hidden>
+    <strong style="font-size:13px">This app</strong>
+
+    <div class="row">
+      <input id="startup" type="checkbox" />
+      <div>
+        <label for="startup" style="display:inline; font-weight:600;">Start when I log in</label>
+        <small>Opens in the tray and begins syncing, without a window.</small>
+      </div>
+    </div>
+
+    <div class="row">
+      <input id="autoupdate" type="checkbox" />
+      <div>
+        <label for="autoupdate" style="display:inline; font-weight:600;">Install updates automatically</label>
+        <small>Applied the next time MeCloud starts.</small>
+      </div>
+    </div>
+
+    <p id="version" class="hint" style="margin-top:12px"></p>
+    <p id="updatemsg" class="status"></p>
+    <div class="actions">
+      <button id="checkupdate" class="ghost">Check for updates</button>
+      <button id="installupdate" hidden>Install update</button>
+    </div>
+  </div>
+
   <footer>You will sign in on the next screen, in your server’s own login page.</footer>
 
 <script type="module">
@@ -273,6 +300,83 @@
     await refreshSync();
   });
 
+  // ── This app: startup and updates ───────────────────────────────────────
+  const $appPanel   = document.getElementById('apppanel');
+  const $startup    = document.getElementById('startup');
+  const $autoUpdate = document.getElementById('autoupdate');
+  const $version    = document.getElementById('version');
+  const $updateMsg  = document.getElementById('updatemsg');
+  const $check      = document.getElementById('checkupdate');
+  const $install    = document.getElementById('installupdate');
+
+  function showUpdate(info) {
+    if (!info) return;
+    $version.textContent = `Version ${info.current}`;
+    $install.hidden = !info.newer;
+    if (info.newer) {
+      $updateMsg.textContent = `Version ${info.available} is available.`;
+      $updateMsg.className = 'status ok';
+    } else if (info.available) {
+      $updateMsg.textContent = 'Up to date.';
+      $updateMsg.className = 'status';
+    }
+  }
+
+  async function refreshApp() {
+    const config = await invoke('get_config').catch(() => ({}));
+    if (!config.server_url) { $appPanel.hidden = true; return; }
+    $appPanel.hidden = false;
+    $startup.checked = await invoke('get_autostart').catch(() => false);
+    $autoUpdate.checked = !!config.auto_update;
+    showUpdate(await invoke('update_info').catch(() => null));
+  }
+
+  $startup.addEventListener('change', async () => {
+    try {
+      await invoke('set_autostart', { enabled: $startup.checked });
+    } catch (e) {
+      $updateMsg.textContent = String(e);
+      $updateMsg.className = 'status bad';
+      $startup.checked = !$startup.checked;
+    }
+  });
+
+  $autoUpdate.addEventListener('change', async () => {
+    await invoke('set_auto_update', { enabled: $autoUpdate.checked }).catch(() => {});
+  });
+
+  $check.addEventListener('click', async () => {
+    $check.disabled = true;
+    $updateMsg.textContent = 'Checking…';
+    $updateMsg.className = 'status busy';
+    try {
+      showUpdate(await invoke('check_for_update'));
+    } catch (e) {
+      $updateMsg.textContent = String(e);
+      $updateMsg.className = 'status bad';
+    } finally {
+      $check.disabled = false;
+    }
+  });
+
+  $install.addEventListener('click', async () => {
+    $install.disabled = true;
+    $updateMsg.textContent = 'Downloading…';
+    $updateMsg.className = 'status busy';
+    try {
+      const version = await invoke('install_update');
+      $updateMsg.textContent = `Version ${version} installed — restart MeCloud to use it.`;
+      $updateMsg.className = 'status ok';
+      $install.hidden = true;
+    } catch (e) {
+      $updateMsg.textContent = String(e);
+      $updateMsg.className = 'status bad';
+    } finally {
+      $install.disabled = false;
+    }
+  });
+
+  await refreshApp();
   await refreshSync();
   // The engine runs on its own schedule; poll so the panel reflects it.
   setInterval(refreshSync, 3000);
