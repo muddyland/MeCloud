@@ -384,6 +384,22 @@ The tray tooltip names an available version. *Preferences → This app* has a
 manual check, and *Install updates automatically* — off by default, because
 replacing a binary on someone's machine is something they should opt into.
 
+A check always says which of four things it found, because "no update" covers
+several situations that are not the same and the user has to be able to tell
+them apart:
+
+| | |
+|---|---|
+| Server ships a newer build | *Version 0.3.0 is available.* |
+| Server ships the same version | *Up to date — this server ships 0.2.0.* |
+| Server ships an **older** version | *…older than this client.* — a rollback, or a client from elsewhere |
+| Server publishes **no** client | *This server does not publish a desktop client…* — built with `WITH_DESKTOP=0` |
+
+The last one used to be reported as "up to date", which told the user their
+setup was fine when the server had simply never shipped a client at all.
+
+`mecloud-desktop --check-update` prints the same verdict as JSON.
+
 Installing downloads the tarball through the same signed short-lived link the
 web UI uses, checks the digest **before unpacking anything**, and replaces the
 running binary with `rename()`, which is atomic — the installed path never holds

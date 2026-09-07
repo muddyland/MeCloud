@@ -336,13 +336,13 @@
     if (!info) return;
     $version.textContent = `Version ${info.current}`;
     $install.hidden = !info.newer;
-    if (info.newer) {
-      $updateMsg.textContent = `Version ${info.available} is available.`;
-      $updateMsg.className = 'status ok';
-    } else if (info.available) {
-      $updateMsg.textContent = 'Up to date.';
-      $updateMsg.className = 'status';
-    }
+    // Always resolve to something. The old version left the message on
+    // "Checking…" whenever the server published no version at all, which
+    // looked stuck and read as "no update" — two states it could not tell
+    // apart. The client now says which it is.
+    if (!info.detail) return;
+    $updateMsg.textContent = info.detail;
+    $updateMsg.className = `status ${info.newer ? 'ok' : ''}`;
   }
 
   async function refreshApp() {

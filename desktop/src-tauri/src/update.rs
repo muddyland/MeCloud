@@ -27,6 +27,13 @@ pub struct UpdateInfo {
     pub current: String,
     pub available: Option<String>,
     pub newer: bool,
+    /// What the check actually concluded, in words.
+    ///
+    /// Needed because `newer: false` covers two quite different situations —
+    /// "you already have the current version" and "this server does not
+    /// publish a client at all" — and reporting the second as the first tells
+    /// the user their setup is fine when it is not.
+    pub detail: String,
     /// Set only when an update is both available and downloadable here.
     pub artifact_key: Option<String>,
     pub sha256: Option<String>,
@@ -99,16 +106,42 @@ pub fn check(base: &str, token: &str) -> Result<UpdateInfo, String> {
     let releases: Releases = response.json().map_err(|e| e.to_string())?;
 
     let mut info = UpdateInfo { current: CURRENT.to_string(), ..Default::default() };
-    let Some(available) = releases.version else { return Ok(info) };
-    info.newer = is_newer(&available, CURRENT);
-    info.available = Some(available);
 
-    if info.newer {
-        // Only offer to install what this platform can actually run.
-        if let Some(art) = releases.artifacts.iter().find(|a| a.platform == "linux") {
+    let Some(available) = releases.version else {
+        info.detail = "This server does not publish a desktop client, so there is nothing to \
+                       update to. It was probably built without one."
+            .into();
+        return Ok(info);
+    };
+
+    info.newer = is_newer(&available, CURRENT);
+    info.available = Some(available.clone());
+
+    if !info.newer {
+        info.detail = if available == CURRENT {
+            format!("Up to date — this server ships {available}.")
+        } else {
+            // Older on the server than here: a rollback, or a client installed
+            // from somewhere else. Saying so beats an unqualified "up to date".
+            format!("Up to date — this server ships {available}, older than this client.")
+        };
+        return Ok(info);
+    }
+
+    match releases.artifacts.iter().find(|a| a.platform == "linux") {
+        Some(art) => {
             info.artifact_key = Some(art.key.clone());
             info.sha256 = art.sha256.clone();
             info.size = art.size;
+            info.detail = format!("Version {available} is available.");
+        }
+        None => {
+            // A version with no download is not an update anyone can take.
+            info.newer = false;
+            info.detail = format!(
+                "This server reports version {available}, but publishes no download for this \
+                 platform, so it cannot be installed from here."
+            );
         }
     }
     Ok(info)
