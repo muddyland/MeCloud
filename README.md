@@ -85,8 +85,9 @@ are built from the source archive, because each uses its own system webview:*
 - **Desktop client** (Linux, [`desktop/`](desktop/)) — a Tauri shell hosting the
   same web UI in a native window: tray icon, stays resident when closed, and
   registers as the system `mailto:` handler so mail links from any app open a
-  pre-filled compose window. 4.6 MB, because the window is the OS's own webview.
-  File sync is not implemented yet
+  pre-filled compose window. Two-way file sync with conflict handling, sync
+  badges and a MeCloud menu in Nautilus / Nemo / Caja, start-at-login, and
+  self-updating from the server
 - **The client ships with the server** — the Linux binary and a source archive
   are built into the Docker image and offered under *Get the desktop app*.
   Downloads are gated: the session buys a signed link that expires in five

@@ -19,6 +19,7 @@ pub mod api;
 pub mod pairing;
 pub mod reconcile;
 pub mod scan;
+pub mod socket;
 pub mod sync;
 pub mod syncdb;
 pub mod update;
@@ -583,6 +584,123 @@ fn spawn_sync_loop(app: AppHandle) {
     });
 }
 
+/// Answer the file manager's questions about paths.
+///
+/// The status comes from the sync database rather than the last run's summary:
+/// the file manager asks about whatever the user happens to be looking at, and
+/// only the baseline knows about a file that was synced days ago.
+fn start_file_manager_socket(app: AppHandle) {
+    let handle = app.clone();
+    let result = socket::serve(move |request| {
+        let state = handle.state::<AppState>();
+        match request {
+            socket::Request::Version => Some(format!("VERSION:{}", update::CURRENT)),
+
+            socket::Request::Status(path) => {
+                let config = state.config.lock().ok()?.clone();
+                let status = state.status.lock().ok()?.clone();
+                let root = config.sync_path();
+
+                let full = std::path::PathBuf::from(&path);
+                let relative = root
+                    .as_ref()
+                    .and_then(|r| full.strip_prefix(r).ok())
+                    .map(|r| r.to_string_lossy().replace('\\', "/"));
+
+                // Opening the database per question rather than holding it: the
+                // sync thread owns its own connection, and two writers to one
+                // SQLite handle is not a race worth inventing for a badge.
+                let tracked = match (&relative, config::sync_db_path()) {
+                    (Some(rel), Some(db_path)) => syncdb::SyncDb::open(&db_path)
+                        .ok()
+                        .and_then(|db| db.baselines().ok())
+                        .map(|b| b.contains_key(rel.as_str()))
+                        .unwrap_or(false),
+                    _ => false,
+                };
+                let has_problem = relative
+                    .as_ref()
+                    .map(|rel| status.problems.iter().any(|p| p.starts_with(rel.as_str())))
+                    .unwrap_or(false);
+                let syncing = status.state == State::Syncing;
+
+                let verdict = socket::status_for(
+                    &full,
+                    root.as_deref(),
+                    tracked,
+                    has_problem,
+                    syncing,
+                );
+                Some(format!("STATUS:{}:{}", verdict.wire(), path))
+            }
+
+            // The client knows how to do these; the extension only has to ask.
+            socket::Request::Share(path) => {
+                open_relative(&handle, &path, true);
+                Some(format!("OK:SHARE:{path}"))
+            }
+            socket::Request::Open(path) => {
+                open_relative(&handle, &path, false);
+                Some(format!("OK:OPEN:{path}"))
+            }
+
+            socket::Request::Unknown(command) => Some(format!("ERROR:UNKNOWN:{command}")),
+        }
+    });
+    if let Err(e) = result {
+        eprintln!("[mecloud] file manager integration unavailable: {e}");
+    }
+}
+
+/// Show a synced path in the web UI, optionally starting a share.
+///
+/// Window work, so it is marshalled to the main thread like everything else
+/// the background touches.
+fn open_relative(app: &AppHandle, path: &str, share: bool) {
+    let state = app.state::<AppState>();
+    let Ok(config) = state.config.lock() else { return };
+    let (Some(root), Some(server)) = (config.sync_path(), config.server_url.clone()) else { return };
+    drop(config);
+
+    let full = std::path::PathBuf::from(path);
+    let Ok(relative) = full.strip_prefix(&root) else { return };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+
+    // The Files app already knows how to find a file by path and, from its own
+    // menu, how to share one — so this hands it the path rather than
+    // reimplementing either here.
+    let mut url = format!("{}/files?path={}", server.trim_end_matches('/'), urlencode(&relative));
+    if share {
+        url.push_str("&share=1");
+    }
+
+    let handle = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        if let Ok(parsed) = url.parse() {
+            if let Some(window) = handle.get_webview_window(MAIN) {
+                let _ = window.navigate(parsed);
+                let _ = window.show();
+                let _ = window.set_focus();
+            } else {
+                open_main(&handle, None);
+            }
+        }
+    });
+}
+
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(*byte as char)
+            }
+            other => out.push_str(&format!("%{other:02X}")),
+        }
+    }
+    out
+}
+
 /// The update check, on its own slow loop.
 fn spawn_update_loop(app: AppHandle) {
     std::thread::spawn(move || {
@@ -728,7 +846,8 @@ pub fn run() {
                 handle_target(&handle, deeplink::first_target(std::env::args()));
             }
             spawn_sync_loop(handle.clone());
-            spawn_update_loop(handle);
+            spawn_update_loop(handle.clone());
+            start_file_manager_socket(handle);
             Ok(())
         })
         // Closing every window leaves the tray running rather than exiting.

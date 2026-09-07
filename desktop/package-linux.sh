@@ -24,6 +24,7 @@ mkdir -p "$APP"
 install -m 0755 "$BIN" "$APP/mecloud-desktop"
 install -m 0644 desktop/src-tauri/icons/128x128.png "$APP/mecloud-desktop.png"
 install -m 0644 desktop/README.md "$APP/README.md"
+install -m 0644 desktop/file-manager/mecloud_extension.py "$APP/mecloud_extension.py"
 
 cat > "$APP/install.sh" <<'INNER'
 #!/bin/sh
@@ -83,6 +84,34 @@ install -m 0755 "$HERE/mecloud-desktop" "$BIN_DIR/mecloud-desktop"
 install -m 0644 "$HERE/mecloud-desktop.png" "$ICON_DIR/mecloud-desktop.png"
 
 echo "Installed to $BIN_DIR/mecloud-desktop"
+
+# ── File manager integration ────────────────────────────────────────────────
+#
+# Installed only where the corresponding <manager>-python bridge is already
+# present. Creating the directory for a file manager that is not installed
+# would leave dead files behind for no benefit.
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}"
+installed_for=""
+for fm in nautilus nemo caja; do
+    if [ -d "$DATA_DIR/$fm-python" ] \
+       || [ -d "/usr/share/$fm-python" ] \
+       || [ -d "/usr/lib/$fm/extensions-3.0" ] \
+       || python3 -c "import gi; gi.require_version('$(printf '%s' "$fm" | sed 's/^./\U&/')', '3.0')" 2>/dev/null; then
+        target="$DATA_DIR/$fm-python/extensions"
+        mkdir -p "$target"
+        install -m 0644 "$HERE/mecloud_extension.py" "$target/mecloud_extension.py"
+        installed_for="$installed_for $fm"
+    fi
+done
+
+if [ -n "$installed_for" ]; then
+    echo "File manager integration installed for:$installed_for"
+    echo "  Restart the file manager to pick it up (e.g. nautilus -q)."
+else
+    echo "No supported file manager found — skipping the badge integration."
+    echo "  Install python3-nautilus (or the nemo/caja equivalent) and re-run"
+    echo "  this script to add sync badges and the right-click menu."
+fi
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) echo "Note: $BIN_DIR is not on your PATH." ;;

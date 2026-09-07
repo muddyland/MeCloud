@@ -246,8 +246,6 @@ a conflict would litter a perfectly good folder with copies of every file.
   the poll is needed either way — the watcher is for responsiveness, not
   correctness.
 - **No selective sync.** The whole drive, or nothing.
-- **No file-manager overlay icons.** Nextcloud ships extensions for Nautilus,
-  Dolphin and others; that is a separate component per file manager.
 - **No partial transfers.** A file is uploaded or downloaded whole. Interrupted
   downloads are written to a scratch name and renamed into place, so a half file
   is never mistaken for the real thing, but the next pass starts it again.
@@ -301,6 +299,52 @@ from `config.json` so "forget this computer" is deleting one file.
 Requests go to the server's own `/api/jmap` and `/api/files/blob` — the same
 endpoints the web UI uses. The client never holds a mail-server credential and
 never needs to know where the mail server is.
+## File manager integration
+
+Files in the sync folder carry a sync badge, and get a MeCloud submenu on
+right-click — *Share via email…* and *Show in MeCloud*.
+
+`file-manager/mecloud_extension.py` covers **Nautilus, Nemo and Caja** in one
+file: all three expose the same extension API through their `<manager>-python`
+bridge and only the namespace differs, so it binds to whichever is loading it.
+`install.sh` puts it in place only where that bridge is already installed —
+creating directories for a file manager that is not there would leave dead
+files behind for nothing.
+
+Dolphin is not covered. KDE wants a `KVersionControlPlugin` in C++, which is a
+separate component rather than another import in this one.
+
+### How it knows
+
+The extension cannot ask the sync engine anything by itself, so the client
+answers on a Unix socket at `$XDG_RUNTIME_DIR/mecloud/socket` (mode `0600`).
+The protocol is newline-delimited `COMMAND:argument`, deliberately trivial to
+speak from Python with no library:
+
+```
+-> RETRIEVE_FILE_STATUS:/home/ada/MeCloud/notes.txt
+<- STATUS:SYNCED:/home/ada/MeCloud/notes.txt
+```
+
+`SYNCED`, `SYNCING`, `IGNORED`, `ERROR`, and `NOP` for anything outside the sync
+folder. `IGNORED` exists so the files we never sync say so rather than sitting
+under a spinner forever; `NOP` draws nothing at all, because a badge meaning "we
+have no opinion about this file" is noise on every other file the user owns.
+
+`SHARE` and `OPEN` ask the client to act — the Files app already knows how to
+find a file and how to share one, so the extension hands over a path rather than
+reimplementing either.
+
+### Written to be a guest
+
+This code runs **inside the file manager's process**. An exception there is the
+user's file manager misbehaving, and a blocking call there is their file manager
+hanging. So: every socket operation has a half-second timeout, a missing or
+unresponsive client degrades to no badge, results are cached briefly and the
+cache is bounded, and nothing is raised out of a callback. It is tested against
+a real `nautilus-python` for exactly that — it loads, it binds, and it does
+nothing harmful when the client is not running.
+
 ## Starting with the session
 
 *Preferences → Start when I log in* writes an XDG autostart entry to
@@ -360,6 +404,7 @@ desktop/
 │   │   ├── pairing.rs     # loopback listener for the device token (tested)
 │   │   ├── reconcile.rs   # what to do, given what changed where (pure, tested)
 │   │   ├── scan.rs        # hashing the local folder, path safety (tested)
+│   │   ├── socket.rs      # the file manager's status socket (tested)
 │   │   ├── syncdb.rs      # the baseline, in SQLite (tested)
 │   │   ├── update.rs      # version compare, digest, self-replace (tested)
 │   │   ├── api.rs         # JMAP + blobs via the server's proxy (tested)
@@ -367,6 +412,8 @@ desktop/
 │   ├── capabilities/      # IPC scope — setup window only
 │   ├── icons/
 │   └── tauri.conf.json
+├── file-manager/
+│   └── mecloud_extension.py   # badges and menu for Nautilus / Nemo / Caja
 ├── ui/index.html          # the local setup page
 ├── Dockerfile.build       # Rust + WebKitGTK toolchain
 ├── Dockerfile.run         # runtime + Xvfb, for headless verification
