@@ -229,6 +229,24 @@ the *same side* reported last time. That is why the baseline records both.
 | present | present, never synced, same size | fetch and compare before judging |
 | present | present, never synced, different size | conflict |
 
+### It will not empty an account
+
+A pass that would delete more than a handful of files **and** more than about a
+third of everything tracked is refused before it touches anything, and the
+client stops and says so. Confirming in Preferences lets exactly one pass
+through; the permission is consumed by that pass rather than kept, because a
+standing exemption would mean the guard never fires again for the one time it is
+right.
+
+This exists because every cause of a mass deletion looks identical from inside
+the reconciler — an empty listing that should have been an error, a sync folder
+pointed somewhere new while the baseline still describes the old one, a drive
+that failed to mount. Two of those were real bugs here and are fixed; the guard
+is what makes the next one survivable rather than final.
+
+Deliberately not applied to uploads and downloads. Moving data around is
+recoverable; removing it is not.
+
 Nothing is ever silently overwritten. A conflict renames the local file to
 `name (conflicted copy 2026-09-07 1431).ext`, takes the server's copy as the
 file of record, and uploads the renamed one so every machine sees both.

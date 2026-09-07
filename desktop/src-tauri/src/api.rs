@@ -130,16 +130,31 @@ impl Api {
             )?;
 
             let responses = data.get("methodResponses").and_then(Value::as_array).cloned().unwrap_or_default();
-            let ids_len = responses
+
+            // A method-level error must never be read as "the drive is empty".
+            // JMAP reports a failed call by replacing the response name with
+            // "error" (RFC 8620 section 3.6.2), which has no `ids` — so the
+            // old code saw zero ids, stopped, and returned an empty listing.
+            // Every file in the baseline then looked deleted on the server, and
+            // the reconciler dutifully planned to delete every local copy.
+            if let Some(problem) = method_error(&responses) {
+                return Err(format!("The server could not list your files: {problem}"));
+            }
+
+            let ids = responses
                 .first()
                 .and_then(|r| r.get(1))
                 .and_then(|r| r.get("ids"))
-                .and_then(Value::as_array)
-                .map(|a| a.len())
-                .unwrap_or(0);
-            if ids_len == 0 {
+                .and_then(Value::as_array);
+            let Some(ids) = ids else {
+                // No error, but no `ids` either: the response is not one we
+                // understand, and guessing "empty" is the dangerous guess.
+                return Err("The server returned a file listing this client could not read.".into());
+            };
+            if ids.is_empty() {
                 break;
             }
+            let ids_len = ids.len();
 
             let list = responses
                 .get(1)
@@ -376,6 +391,25 @@ where
 const CORE: &str = "urn:ietf:params:jmap:core";
 const FILENODE: &str = "urn:ietf:params:jmap:filenode";
 
+/// The first method-level error in a JMAP response, if any.
+///
+/// A failed call comes back as `["error", {"type": "..."}, "callId"]` rather
+/// than as a transport failure, so nothing above this notices unless it looks.
+fn method_error(responses: &[Value]) -> Option<String> {
+    for response in responses {
+        let Some(entry) = response.as_array() else { continue };
+        if entry.first().and_then(Value::as_str) == Some("error") {
+            let kind = entry
+                .get(1)
+                .and_then(|e| e.get("type"))
+                .and_then(Value::as_str)
+                .unwrap_or("unknown error");
+            return Some(kind.to_string());
+        }
+    }
+    None
+}
+
 fn created_id(data: &Value, key: &str) -> Option<String> {
     data.get("methodResponses")?
         .as_array()?
@@ -535,6 +569,26 @@ mod tests {
         // A 401 means the pairing is gone; retrying it just delays the truth.
         assert!(!is_transient(StatusCode::UNAUTHORIZED));
         assert!(!is_transient(StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn a_method_error_is_recognised_rather_than_read_as_an_empty_drive() {
+        // The bug that emptied an account: JMAP signals a failed call by
+        // replacing the response name, and an error carries no `ids`.
+        let responses = vec![serde_json::json!(["error", {"type": "accountNotFound"}, "q"])];
+        assert_eq!(method_error(&responses).as_deref(), Some("accountNotFound"));
+
+        let ok = vec![serde_json::json!(["FileNode/query", {"ids": []}, "q"])];
+        assert_eq!(method_error(&ok), None);
+    }
+
+    #[test]
+    fn an_error_anywhere_in_the_batch_counts() {
+        let responses = vec![
+            serde_json::json!(["FileNode/query", {"ids": ["a"]}, "q"]),
+            serde_json::json!(["error", {"type": "requestTooLarge"}, "g"]),
+        ];
+        assert_eq!(method_error(&responses).as_deref(), Some("requestTooLarge"));
     }
 
     #[test]

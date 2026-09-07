@@ -53,6 +53,7 @@
   .status.bad { color: var(--bad); }
   .status.busy { color: var(--muted); }
   footer { font-size: 11px; color: var(--muted); text-align: center; margin-top: 18px; }
+  button.danger { background: var(--bad); color: #fff; }
   button.secondary { background: transparent; color: var(--accent);
                      border: 1px solid var(--accent); font-weight: 600; }
   .pill { font-size: 11px; padding: 2px 9px; border-radius: 999px;
@@ -128,6 +129,7 @@
       </div>
       <p id="syncdetail" class="status"></p>
       <div class="actions" style="margin-top:10px">
+        <button id="confirmdelete" class="danger" hidden>Delete them anyway</button>
         <button id="savesync">Save</button>
         <button id="syncnow" class="ghost">Sync now</button>
         <button id="unpair" class="ghost">Disconnect</button>
@@ -221,6 +223,7 @@
   const $syncNow    = document.getElementById('syncnow');
   const $syncState  = document.getElementById('syncstate');
   const $syncDetail = document.getElementById('syncdetail');
+  const $confirmDelete = document.getElementById('confirmdelete');
 
   const STATE_LABEL = {
     not_configured: ['not set up', ''],
@@ -229,6 +232,7 @@
     syncing:        ['syncing…', 'on'],
     problems:       ['problems', 'bad'],
     error:          ['error', 'bad'],
+    needs_confirmation: ['stopped', 'bad'],
   };
 
   async function refreshSync() {
@@ -244,6 +248,9 @@
 
     const status = await invoke('sync_status').catch(() => null);
     if (status) {
+      // Only offered when the engine actually refused a pass, so the button
+      // cannot be pressed speculatively.
+      $confirmDelete.hidden = status.state !== 'needs_confirmation';
       const [label, cls] = STATE_LABEL[status.state] ?? ['—', ''];
       $syncState.textContent = label;
       $syncState.className = `pill ${cls}`;
@@ -289,6 +296,22 @@
       $syncDetail.className = 'status bad';
     } finally {
       $saveSync.disabled = false;
+      await refreshSync();
+    }
+  });
+
+  $confirmDelete.addEventListener('click', async () => {
+    $confirmDelete.disabled = true;
+    try {
+      await invoke('confirm_bulk_delete');
+      $syncDetail.textContent = 'Confirmed — the next pass will apply the deletions.';
+      $syncDetail.className = 'status';
+      await invoke('sync_now');
+    } catch (e) {
+      $syncDetail.textContent = String(e);
+      $syncDetail.className = 'status bad';
+    } finally {
+      $confirmDelete.disabled = false;
       await refreshSync();
     }
   });

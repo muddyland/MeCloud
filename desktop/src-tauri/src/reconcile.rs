@@ -164,6 +164,69 @@ pub fn plan(local: &Tree, remote: &Tree, baseline: &Baselines, stamp: &str) -> V
     actions
 }
 
+/// Why a plan was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Refusal {
+    pub deletions: usize,
+    pub tracked: usize,
+    pub message: String,
+}
+
+/// Never delete this many files without being told to, whatever the plan says.
+///
+/// Below this a mass deletion is plausibly deliberate — clearing out a folder.
+/// Above it, and above a share of everything tracked, it is far more likely
+/// that one side failed to report its contents, and a sync client that acts on
+/// that destroys the user's data on the strength of a bad answer.
+const ALWAYS_ALLOWED_DELETIONS: usize = 20;
+const SUSPICIOUS_SHARE: f64 = 0.35;
+
+/// Refuse a plan that would delete an implausible share of what is tracked.
+///
+/// This is the backstop, not the fix, and it exists because every cause of a
+/// mass deletion looks identical from here: an empty listing that should have
+/// been an error, a sync folder pointed somewhere new while the baseline still
+/// describes the old one, a drive that failed to mount. Each of those is worth
+/// fixing on its own, and none of them should ever be able to empty an account
+/// again if the next one is missed.
+///
+/// Deliberately not applied to uploads and downloads: moving data around is
+/// recoverable, removing it is not.
+pub fn refuse_mass_deletion(actions: &[Action], tracked: usize) -> Option<Refusal> {
+    let deletions = actions
+        .iter()
+        .filter(|a| matches!(a, Action::DeleteLocal(_) | Action::DeleteRemote(_)))
+        .count();
+
+    if deletions <= ALWAYS_ALLOWED_DELETIONS {
+        return None;
+    }
+    if tracked == 0 || (deletions as f64) < (tracked as f64) * SUSPICIOUS_SHARE {
+        return None;
+    }
+
+    let (local, remote): (Vec<_>, Vec<_>) = actions
+        .iter()
+        .filter(|a| matches!(a, Action::DeleteLocal(_) | Action::DeleteRemote(_)))
+        .partition(|a| matches!(a, Action::DeleteLocal(_)));
+
+    let where_ = match (local.len(), remote.len()) {
+        (l, 0) => format!("{l} files on this computer"),
+        (0, r) => format!("{r} files on the server"),
+        (l, r) => format!("{l} files here and {r} on the server"),
+    };
+    Some(Refusal {
+        deletions,
+        tracked,
+        message: format!(
+            "Sync stopped: this pass would delete {where_} — {deletions} of the {tracked} \
+             files being tracked. That usually means one side failed to report what it has, \
+             not that the files were really deleted. Nothing has been changed. Check both \
+             sides, then confirm in Preferences if it is correct."
+        ),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,5 +425,61 @@ mod tests {
     #[test]
     fn a_file_with_no_extension_still_gets_a_sensible_name() {
         assert_eq!(conflict_name("README", "S"), "README (conflicted copy S)");
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    fn deletes(n: usize) -> Vec<Action> {
+        (0..n).map(|i| Action::DeleteRemote(format!("f{i}"))).collect()
+    }
+
+    #[test]
+    fn a_handful_of_deletions_is_ordinary_and_allowed() {
+        // Clearing out a few files is a thing people do.
+        assert!(refuse_mass_deletion(&deletes(5), 500).is_none());
+        assert!(refuse_mass_deletion(&deletes(ALWAYS_ALLOWED_DELETIONS), 30).is_none());
+    }
+
+    #[test]
+    fn deleting_everything_is_refused() {
+        // The case that emptied an account: one side reported nothing.
+        let refusal = refuse_mass_deletion(&deletes(500), 500).expect("should refuse");
+        assert_eq!(refusal.deletions, 500);
+        assert!(refusal.message.contains("500 files on the server"));
+        assert!(refusal.message.contains("Nothing has been changed"));
+    }
+
+    #[test]
+    fn a_large_but_small_share_is_allowed() {
+        // 30 of 500 is a real clear-out, not a listing failure.
+        assert!(refuse_mass_deletion(&deletes(30), 500).is_none());
+    }
+
+    #[test]
+    fn the_message_says_which_side_would_lose_files() {
+        let local: Vec<Action> = (0..50).map(|i| Action::DeleteLocal(format!("f{i}"))).collect();
+        assert!(refuse_mass_deletion(&local, 50).unwrap().message.contains("on this computer"));
+
+        let mut both = local.clone();
+        both.extend(deletes(50));
+        assert!(refuse_mass_deletion(&both, 100).unwrap().message.contains("and 50 on the server"));
+    }
+
+    #[test]
+    fn uploads_and_downloads_are_never_refused() {
+        // Moving data is recoverable; removing it is not.
+        let moves: Vec<Action> = (0..1000).map(|i| Action::Upload(format!("f{i}"))).collect();
+        assert!(refuse_mass_deletion(&moves, 1000).is_none());
+    }
+
+    #[test]
+    fn a_first_sync_with_nothing_tracked_is_not_refused() {
+        // No baseline means no deletions can be planned anyway, but the guard
+        // must not divide by zero or block the very first pass.
+        assert!(refuse_mass_deletion(&deletes(0), 0).is_none());
+        assert!(refuse_mass_deletion(&[], 0).is_none());
     }
 }

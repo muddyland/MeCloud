@@ -218,7 +218,21 @@ fn set_sync(
         if config::load_token().is_none() {
             return Err("Connect this computer to your account first.".into());
         }
-        config.sync_folder = Some(path.display().to_string());
+        // Pointing at a different folder invalidates the baseline entirely:
+        // it describes files that were in the *old* folder. Kept, it says
+        // every one of them existed here and is now gone, and the next pass
+        // deletes them from the server. This is how an account gets emptied by
+        // changing a setting.
+        let chosen = path.display().to_string();
+        if config.sync_folder.as_deref() != Some(chosen.as_str()) {
+            if let Some(db) = config::sync_db_path() {
+                let _ = std::fs::remove_file(&db);
+                // SQLite's WAL companions describe the file just removed.
+                let _ = std::fs::remove_file(db.with_extension("db-wal"));
+                let _ = std::fs::remove_file(db.with_extension("db-shm"));
+            }
+        }
+        config.sync_folder = Some(chosen);
     }
     config.sync_enabled = enabled;
 
@@ -287,6 +301,20 @@ async fn install_update(state: tauri::State<'_, AppState>) -> Result<String, Str
         .await
         .map_err(|e| e.to_string())??;
     Ok(version)
+}
+
+/// Let one refused pass through.
+///
+/// One pass, not a setting: the guard exists because a mass deletion is nearly
+/// always a symptom, and a permanent exemption would mean it never fires again
+/// for the one time it is right.
+#[tauri::command]
+fn confirm_bulk_delete(state: tauri::State<'_, AppState>) -> Result<(), String> {
+    let mut config = state.config.lock().unwrap().clone();
+    config.allow_bulk_delete_once = true;
+    config::save(&config)?;
+    *state.config.lock().unwrap() = config;
+    Ok(())
 }
 
 #[tauri::command]
@@ -370,8 +398,23 @@ pub fn run_pass(config: &Config, status: &SharedStatus) {
         Err(e) => return publish_error(status, State::Error, &e),
     };
 
-    let engine = sync::Engine { folder, api, account_id, db };
-    engine.run_once(status);
+    let engine = sync::Engine {
+        folder,
+        api,
+        account_id,
+        db,
+        allow_bulk_delete: config.allow_bulk_delete_once,
+    };
+    let outcome = engine.run_once(status);
+
+    // Consumed, whatever happened: an exemption that survived its pass would
+    // quietly disarm the guard for every pass after it.
+    if config.allow_bulk_delete_once {
+        let mut cleared = config.clone();
+        cleared.allow_bulk_delete_once = false;
+        let _ = config::save(&cleared);
+    }
+    let _ = outcome;
 }
 
 fn publish_error(status: &SharedStatus, state: State, detail: &str) {
@@ -733,6 +776,9 @@ fn update_tray_label(app: &AppHandle) {
         State::Idle => format!("Sync: {}", status.detail),
         State::Problems => format!("Sync: {} problem(s)", status.problems.len()),
         State::Error => format!("Sync: {}", status.detail),
+        // The one state the user has to act on, so it says so in as few words
+        // as a tooltip allows.
+        State::NeedsConfirmation => "Sync: stopped — needs your confirmation".to_string(),
     };
     // An available update belongs in the tooltip: it is the one thing the user
     // has to act on, and the tray is where they will see it.
@@ -826,6 +872,7 @@ pub fn run() {
             check_for_update,
             install_update,
             set_auto_update,
+            confirm_bulk_delete,
             unpair_device,
             set_sync,
             sync_now,

@@ -30,6 +30,9 @@ pub enum State {
     Error,
     /// The user turned it off.
     Paused,
+    /// A pass would have deleted an implausible number of files and was
+    /// stopped before touching anything. Needs the user to look and confirm.
+    NeedsConfirmation,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -70,6 +73,9 @@ pub struct Engine {
     pub api: Api,
     pub account_id: String,
     pub db: SyncDb,
+    /// Set once by the user to let a refused pass through, and cleared as soon
+    /// as it is used — a standing exemption would defeat the guard.
+    pub allow_bulk_delete: bool,
 }
 
 impl Engine {
@@ -107,7 +113,39 @@ impl Engine {
         };
 
         let stamp = timestamp();
-        for action in reconcile::plan(&local, &remote, &baselines, &stamp) {
+        let actions = reconcile::plan(&local, &remote, &baselines, &stamp);
+
+        // Before doing anything at all. A pass that would remove most of what
+        // is tracked is far more likely to be one side failing to report its
+        // contents than a real deletion, and acting on it is unrecoverable.
+        if !self.allow_bulk_delete {
+            if let Some(refusal) = reconcile::refuse_mass_deletion(&actions, baselines.len()) {
+                let stopped = Status {
+                    state: State::NeedsConfirmation,
+                    detail: refusal.message,
+                    problems,
+                    tracked: self.db.count().unwrap_or(0),
+                    ..Default::default()
+                };
+                publish(status, &stopped);
+                return stopped;
+            }
+        }
+
+        // A local scan that could not read parts of the folder cannot be used
+        // to conclude that anything was deleted: the files may simply not have
+        // been visible. Uploads and downloads still proceed.
+        let trust_local = problems.is_empty();
+
+        for action in actions {
+            if !trust_local && matches!(action, Action::DeleteRemote(_)) {
+                problems.push(format!(
+                    "{}: not removed from the server, because this computer could not read \
+                     the whole sync folder",
+                    action.path()
+                ));
+                continue;
+            }
             if let Err(e) = self.apply(&action, &local, &remote, &remote_ids, &folders, &mut result) {
                 problems.push(format!("{}: {e}", action.path()));
                 // An upstream that has stopped accepting us will fail for every

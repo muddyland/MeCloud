@@ -29,6 +29,9 @@ pub struct Config {
     /// someone's machine is something they should opt into.
     #[serde(default)]
     pub auto_update: bool,
+    /// One-shot permission to run a pass the mass-deletion guard refused.
+    #[serde(default)]
+    pub allow_bulk_delete_once: bool,
 }
 
 impl Config {
