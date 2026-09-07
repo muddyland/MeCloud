@@ -12,7 +12,6 @@
   import AppPasswordsModal from '$lib/components/AppPasswordsModal.svelte';
   import MailboxPicker from '$lib/components/MailboxPicker.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
-  import ShortcutsHelp from '$lib/components/ShortcutsHelp.svelte';
   import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
   import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
   import { listPaneClass, detailPaneClass } from '$lib/layout.js';
@@ -451,5 +450,4 @@
 <NewFolderModal />
 <SieveEditor />
 <AppPasswordsModal />
-<ShortcutsHelp />
 <Toasts />

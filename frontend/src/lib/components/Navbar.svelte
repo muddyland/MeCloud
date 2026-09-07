@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import {
     appName, currentUser, darkMode, sieveOpen, appPasswordsOpen, shortcutsOpen,
-    commandPaletteOpen
+    commandPaletteOpen, helpOpen
   } from '$lib/stores/mail.js';
   import { logout } from '$lib/api.js';
   import Avatar from './Avatar.svelte';
@@ -132,6 +132,22 @@
     </button>
   {/if}
 
+  <!-- Documentation -->
+  <button
+    on:click={() => helpOpen.set(true)}
+    title="Help and documentation"
+    aria-label="Help and documentation"
+    class="w-8 h-8 flex items-center justify-center rounded-lg text-gray-500 dark:text-gray-400
+           hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
+  >
+    <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+         stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9" />
+      <path d="M9.6 9.2a2.5 2.5 0 1 1 3.2 3.1c-.5.2-.8.7-.8 1.2v.4" />
+      <path d="M12 17h.01" />
+    </svg>
+  </button>
+
   <!-- Keyboard shortcuts -->
   <button
     on:click={() => shortcutsOpen.set(true)}
@@ -193,6 +209,20 @@
         </div>
 
         <div class="py-1">
+          <button
+            on:click={() => { helpOpen.set(true); close(); }}
+            class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300
+                   hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors duration-100"
+          >
+            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
+                 stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9" />
+              <path d="M9.6 9.2a2.5 2.5 0 1 1 3.2 3.1c-.5.2-.8.7-.8 1.2v.4" />
+              <path d="M12 17h.01" />
+            </svg>
+            Help
+          </button>
+
           <button
             on:click={() => { shortcutsOpen.set(true); close(); }}
             class="md:hidden flex items-center gap-3 w-full px-4 py-2.5 text-sm text-gray-700 dark:text-gray-300

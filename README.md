@@ -27,6 +27,10 @@ attached by blob reference, so nothing is downloaded or re-uploaded:*
 
 ![Compose with attachments](docs/screenshot-compose.png)
 
+*The **?** in the top bar opens the documentation, searchable across every app:*
+
+![Help](docs/screenshot-help.png)
+
 ![Calendar](docs/screenshot-calendar.png)
 
 ![Contacts](docs/screenshot-contacts.png)
@@ -68,6 +72,9 @@ attached by blob reference, so nothing is downloaded or re-uploaded:*
   clients, with the secret shown exactly once
 - **vCard import** — drop a `.vcf` file onto Contacts to bulk-import an address
   book
+- **In-app documentation** — the **?** in the top bar opens a searchable help
+  modal covering all six apps plus privacy and security, available from every
+  page and from the command palette
 - **Command palette** (`Ctrl`/`Cmd` + `K`) — fuzzy jump to any app, mailbox, contact, calendar or file, plus commands like compose and toggle theme
 - **Keyboard shortcuts** — `j`/`k` to move, `r`/`a`/`f` to reply, `c` to compose, `?` for the full list
 - Correct reply threading (`In-Reply-To` / `References`), Cc and Bcc
@@ -249,6 +256,7 @@ mecloud/
 │       │   ├── jmapErrors.js       # RFC 8620 error mapping (pure, unit-tested)
 │       │   ├── layout.js           # Pane sizing (pure, unit-tested)
 │       │   ├── fuzzy.js            # Palette ranking (pure, unit-tested)
+│       │   ├── help.js             # In-app documentation + search (pure, unit-tested)
 │       │   ├── vcardParser.js      # vCard import parsing
 │       │   ├── mailboxRefresh.js   # Shared mailbox counter refresh
 │       │   ├── trustedSenders.js   # "Always show images from…" list
@@ -277,6 +285,8 @@ mecloud/
 │       │       ├── SieveEditor.svelte       # Mail filter rule builder → Sieve
 │       │       ├── AppPasswordsModal.svelte # App-specific passwords
 │       │       ├── ContactImportModal.svelte# vCard import
+│       │       ├── HelpModal.svelte         # Searchable in-app documentation
+│       │       ├── ShortcutsHelp.svelte     # Keyboard shortcut reference
 │       │       ├── CommandPalette.svelte    # Ctrl/Cmd+K launcher
 │       │       ├── AppTabs.svelte           # Top-bar app switcher
 │       │       ├── AppMenu.svelte           # Mobile app sheet
@@ -378,14 +388,14 @@ allow-list and would otherwise keep blocking the frame regardless of the CSP.
 cd backend && pip install -r requirements-dev.txt && pytest
 
 # Frontend
-cd frontend && npm install && npm test        # 287 unit tests
+cd frontend && npm install && npm test        # 299 unit tests
 cd frontend && npm run check                  # svelte-check
 ```
 
 The frontend tests deliberately cover the *pure* modules — file classification,
 Markdown rendering and editing, URL classification, JMAP error mapping, palette
-ranking, layout maths, upload retry/backoff, attachment selection, the dashboard
-summary — rather than
+ranking, layout maths, upload retry/backoff, attachment selection, help search,
+the dashboard summary — rather than
 rendering components. Anything with a decision worth getting wrong is factored
 out of the `.svelte` file so it can be tested directly.
 

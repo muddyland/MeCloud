@@ -3,7 +3,7 @@
   import { fly, fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
   import {
-    commandPaletteOpen, mailboxes, selectedMailbox, composeOpen, composeContext,
+    commandPaletteOpen, mailboxes, selectedMailbox, composeOpen, composeContext, helpOpen,
     sieveOpen, appPasswordsOpen, shortcutsOpen, newFolderOpen, darkMode, searchQuery,
   } from '$lib/stores/mail.js';
   import { contacts, selectedContact } from '$lib/stores/contacts.js';
@@ -61,7 +61,10 @@
       run: () => appPasswordsOpen.set(true) },
     { id: 'a:theme', label: $darkMode ? 'Switch to light mode' : 'Switch to dark mode',
       keywords: ['theme', 'dark', 'light', 'appearance'], run: () => darkMode.toggle() },
-    { id: 'a:shortcuts', label: 'Keyboard shortcuts', keywords: ['help', 'keys'],
+    { id: 'a:help', label: 'Help and documentation',
+      keywords: ['help', 'docs', 'guide', 'manual', 'how to', 'support'],
+      run: () => helpOpen.set(true) },
+    { id: 'a:shortcuts', label: 'Keyboard shortcuts', keywords: ['keys', 'kbd'],
       run: () => shortcutsOpen.set(true) },
     { id: 'a:signout', label: 'Sign out', keywords: ['log out', 'logout', 'exit'],
       run: () => logout() },
