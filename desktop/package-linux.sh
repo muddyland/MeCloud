@@ -115,9 +115,17 @@ done
 # Both locations, because the directory moved in Plasma 5.85 and installing to
 # the one your Plasma does not read is a silent no-op.
 if command -v dolphin >/dev/null 2>&1 || [ -d "$DATA_DIR/kio" ] || [ -d "$DATA_DIR/kservices5" ]; then
+    # The Exec lines are rewritten to the absolute path of the binary we just
+    # installed. A bare "mecloud-desktop" is only resolvable if ~/.local/bin is
+    # on the *graphical session's* PATH, which on KDE it usually is not -- the
+    # session inherits PATH from the login manager, not from a login shell. The
+    # symptom is Dolphin's "Could not find the program 'mecloud-desktop'", which
+    # is not a missing install but an unresolvable name.
     for menu_dir in "$DATA_DIR/kio/servicemenus" "$DATA_DIR/kservices5/ServiceMenus"; do
         mkdir -p "$menu_dir"
-        install -m 0755 "$HERE/mecloud-dolphin.desktop" "$menu_dir/mecloud-dolphin.desktop"
+        sed "s|^Exec=mecloud-desktop|Exec=$BIN_DIR/mecloud-desktop|" \
+            "$HERE/mecloud-dolphin.desktop" > "$menu_dir/mecloud-dolphin.desktop"
+        chmod 0755 "$menu_dir/mecloud-dolphin.desktop"
     done
     installed_for="$installed_for dolphin"
     kde_installed=1

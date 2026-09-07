@@ -359,7 +359,14 @@ It does **not** get sync badges. Overlay icons in Dolphin require a
 `KVersionControlPlugin`, which is C++ compiled against the running Plasma —
 a separate component with its own build, not something this file can provide.
 
-Two caveats specific to KDE. The service menu directory moved in Plasma 5.85,
+The installer rewrites the `Exec` lines to the absolute path of the binary it
+just installed. A bare `mecloud-desktop` only resolves if `~/.local/bin` is on
+the *graphical session's* PATH, which on KDE it usually is not — the session
+inherits PATH from the login manager, not from a login shell. The symptom is
+Dolphin reporting *"Could not find the program 'mecloud-desktop'"*, which looks
+like a missing install and is really an unresolvable name.
+
+Two more caveats specific to KDE. The service menu directory moved in Plasma 5.85,
 so the installer writes to both `kio/servicemenus` and `kservices5/ServiceMenus`
 — putting it only in the one your Plasma does not read is a silent no-op. And
 Dolphin matches service menus on MIME type with no way to scope one to a
