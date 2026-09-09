@@ -274,7 +274,10 @@
             <input id="syncon" type="checkbox" />
             <div>
               <label for="syncon">Keep this folder in sync</label>
-              <small>Runs in the background, every 30 seconds.</small>
+              <small>Runs in the background, every
+                <input id="interval" type="number" min="5" max="3600" value="30" />
+                seconds. Shorter picks changes up sooner; each pass reads the
+                folder and asks the server for its file list.</small>
             </div>
           </div>
           <p id="syncdetail" class="status"></p>
@@ -553,6 +556,7 @@
   const $needsPair = $('needspair'), $syncBody = $('syncbody');
   const $folder = $('folder'), $syncOn = $('syncon'), $saveSync = $('savesync');
   const $syncNow = $('syncnow'), $syncDetail = $('syncdetail'), $counters = $('counters');
+  const $interval = $('interval');
   const $confirmDelete = $('confirmdelete');
 
   const STATE_LABEL = {
@@ -572,6 +576,11 @@
     $syncBody.hidden = !paired;
     if (config.sync_folder) $folder.value = config.sync_folder;
     $syncOn.checked = !!config.sync_enabled;
+    // Not while it is being typed into — overwriting a half-typed number on
+    // every poll is how a settings field becomes unusable.
+    if (document.activeElement !== $interval) {
+      $interval.value = config.sync_interval_secs ?? 30;
+    }
 
     const status = await call('sync_status').catch(() => null);
     if (!status) return;
@@ -629,7 +638,12 @@
     $saveSync.disabled = true;
     try {
       await saveSync(false);
-      setStatus($syncDetail, $syncOn.checked ? 'Sync is on.' : 'Sync is off.', 'ok');
+      // The command clamps, and answers with what it stored, so an out-of-range
+      // number corrects itself in front of the user instead of being ignored.
+      const applied = await call('set_sync_interval', { seconds: Number($interval.value) || 30 });
+      $interval.value = applied;
+      setStatus($syncDetail, $syncOn.checked
+        ? `Sync is on, every ${applied} seconds.` : 'Sync is off.', 'ok');
     } catch (e) {
       setStatus($syncDetail, String(e), 'bad');
     } finally {
@@ -978,7 +992,16 @@
 
   $connect.addEventListener('click', connect);
   $server.addEventListener('keydown', (e) => { if (e.key === 'Enter') connect(); });
-  $cancel.addEventListener('click', () => call('plugin:window|hide'));
+  // Through the window API rather than a bare invoke of the plugin command:
+  // the wrapper supplies the window label, and a raw invoke that resolves to
+  // the wrong window (or none) fails silently and the button looks dead.
+  $cancel.addEventListener('click', async () => {
+    try {
+      await window.__TAURI__.window.getCurrentWindow().hide();
+    } catch {
+      await call('plugin:window|hide').catch(() => {});
+    }
+  });
 
   const { config } = await refreshAccount();
   await refreshChrome();

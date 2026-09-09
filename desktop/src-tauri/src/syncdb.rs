@@ -241,6 +241,35 @@ impl SyncDb {
     /// Deliberately does not disturb an existing row: re-noting it must not
     /// clear an approval the user has already given, or an approved upload
     /// that failed once would need approving again on every pass.
+    /// Whether anything tracked lives inside this folder.
+    ///
+    /// A folder has no baseline row of its own — the baseline is files — so
+    /// asking `is_tracked` about a directory always said no, and the file
+    /// manager drew "still syncing" on every folder forever.
+    ///
+    /// Expressed as a range rather than `LIKE 'prefix/%'` so it uses the
+    /// primary-key index: this is asked once per visible row, on the file
+    /// manager's own main thread. `/` is 0x2F, so `0` (0x30) is the first
+    /// string that sorts past every child of the folder.
+    pub fn has_tracked_under(&self, folder: &str) -> Result<bool, String> {
+        let folder = folder.trim_matches('/');
+        let found = if folder.is_empty() {
+            // The sync root itself: anything at all counts.
+            self.conn.query_row("SELECT 1 FROM baseline LIMIT 1", [], |_| Ok(()))
+        } else {
+            self.conn.query_row(
+                "SELECT 1 FROM baseline WHERE path >= ?1 AND path < ?2 LIMIT 1",
+                params![format!("{folder}/"), format!("{folder}0")],
+                |_| Ok(()),
+            )
+        };
+        match found {
+            Ok(()) => Ok(true),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(false),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
     /// Every tracked path with its size — what the selective-sync picker needs
     /// to say how much a folder is costing.
     pub fn sizes(&self) -> Result<Vec<(String, u64)>, String> {
@@ -567,5 +596,36 @@ mod tests {
         db.clear_upload("big.iso").unwrap();
         assert!(db.held_uploads().unwrap().is_empty());
         assert!(!db.upload_approved("big.iso"));
+    }
+
+    #[test]
+    fn a_folder_counts_as_tracked_when_anything_inside_it_is() {
+        let db = SyncDb::in_memory().unwrap();
+        db.record("Photos/2024/beach.jpg", "h", "b", 10, None).unwrap();
+
+        assert!(db.has_tracked_under("Photos").unwrap());
+        assert!(db.has_tracked_under("Photos/2024").unwrap());
+        assert!(db.has_tracked_under("Photos/").unwrap(), "a trailing slash is the same folder");
+        assert!(!db.has_tracked_under("Documents").unwrap());
+        // The file itself is not a folder containing anything.
+        assert!(!db.has_tracked_under("Photos/2024/beach.jpg").unwrap());
+    }
+
+    #[test]
+    fn a_folder_prefix_does_not_match_a_sibling_with_a_longer_name() {
+        // The range bound is what stops "Photo" claiming "Photos/x.jpg".
+        let db = SyncDb::in_memory().unwrap();
+        db.record("Photos/x.jpg", "h", "b", 10, None).unwrap();
+
+        assert!(!db.has_tracked_under("Photo").unwrap());
+        assert!(db.has_tracked_under("Photos").unwrap());
+    }
+
+    #[test]
+    fn the_sync_root_is_tracked_once_anything_is() {
+        let db = SyncDb::in_memory().unwrap();
+        assert!(!db.has_tracked_under("").unwrap());
+        db.record("a.txt", "h", "b", 1, None).unwrap();
+        assert!(db.has_tracked_under("").unwrap());
     }
 }

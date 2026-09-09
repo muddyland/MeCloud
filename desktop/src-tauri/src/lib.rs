@@ -42,6 +42,23 @@ pub struct AppState {
     pub config: Mutex<Config>,
     pub status: SharedStatus,
     pub update: Mutex<UpdateInfo>,
+    /// Whether a tray icon was actually created.
+    ///
+    /// Not a given: a session with no StatusNotifier host, a bare window
+    /// manager or a headless run all leave the client without one, and the
+    /// client survives that rather than refusing to start. It matters here
+    /// because "close to the tray" is only sensible when the tray exists.
+    tray: std::sync::atomic::AtomicBool,
+}
+
+impl AppState {
+    pub fn has_tray(&self) -> bool {
+        self.tray.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_tray(&self, present: bool) {
+        self.tray.store(present, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// How often a pass runs when nothing else prompts one.
@@ -50,7 +67,6 @@ pub struct AppState {
 /// changes only, so a remote change still needs a poll, and a scan of a few
 /// thousand files costs milliseconds. Watching is worth adding for
 /// responsiveness, not for correctness.
-const SYNC_INTERVAL: Duration = Duration::from_secs(30);
 
 /// How often to ask the server whether it ships a newer client. Rarely: an
 /// update is not urgent, and this runs on someone else's machine.
@@ -336,6 +352,20 @@ async fn apply_deletion(state: tauri::State<'_, AppState>, path: String) -> Resu
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// How often a background pass runs.
+#[tauri::command]
+fn set_sync_interval(state: tauri::State<'_, AppState>, seconds: u64) -> Result<u64, String> {
+    let mut config = state.config.lock().unwrap().clone();
+    config.sync_interval_secs =
+        seconds.clamp(config::MIN_SYNC_INTERVAL, config::MAX_SYNC_INTERVAL);
+    config::save(&config)?;
+    let applied = config.sync_interval_secs;
+    *state.config.lock().unwrap() = config;
+    // Returned rather than assumed, so the field can show what was actually
+    // stored when the value was out of range.
+    Ok(applied)
 }
 
 #[tauri::command]
@@ -698,12 +728,21 @@ pub fn open_main(app: &AppHandle, target: Option<Target>) {
 
     if let Ok(window) = built {
         // Closing the window leaves the client running in the tray, the way a
-        // desktop client is expected to behave. Quit is on the tray menu.
+        // desktop client is expected to behave — but only if there is a tray
+        // to leave it in. Without one, hiding the window strands the process
+        // with no way to reach it and no way to stop it, so there the X button
+        // means what it usually means.
         let handle = window.clone();
+        let has_tray = app.state::<AppState>().has_tray();
+        let quit = app.clone();
         window.on_window_event(move |event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                api.prevent_close();
-                let _ = handle.hide();
+                if has_tray {
+                    api.prevent_close();
+                    let _ = handle.hide();
+                } else {
+                    quit.exit(0);
+                }
             }
         });
     }
@@ -853,9 +892,13 @@ fn spawn_sync_loop(app: AppHandle) {
             let status = state.status.clone();
             drop(state);
 
+            // Re-read every pass rather than captured once, so changing the
+            // interval in Preferences takes effect at the next wait instead of
+            // at the next restart.
+            let wait = config.sync_interval();
             run_pass(&config, &status);
             update_tray_label(&app);
-            std::thread::sleep(SYNC_INTERVAL);
+            std::thread::sleep(wait);
         }
     });
 }
@@ -866,13 +909,24 @@ fn spawn_sync_loop(app: AppHandle) {
 /// the file manager asks about whatever the user happens to be looking at, and
 /// only the baseline knows about a file that was synced days ago.
 /// Look one path up in the baseline, opening the database at most once.
-fn status_db(handle: &std::sync::Mutex<Option<syncdb::SyncDb>>, relative: &str) -> bool {
+///
+/// A file asks about itself; a folder asks whether it holds anything tracked.
+/// Both are a single indexed lookup, because this runs once per visible row on
+/// the file manager's main thread.
+fn tracked_state(
+    handle: &std::sync::Mutex<Option<syncdb::SyncDb>>, relative: &str, is_dir: bool,
+) -> bool {
     let Ok(mut slot) = handle.lock() else { return false };
     if slot.is_none() {
         let Some(path) = config::sync_db_path() else { return false };
         *slot = syncdb::SyncDb::open(&path).ok();
     }
-    slot.as_ref().and_then(|db| db.is_tracked(relative).ok()).unwrap_or(false)
+    let Some(db) = slot.as_ref() else { return false };
+    if is_dir {
+        db.has_tracked_under(relative).unwrap_or(false)
+    } else {
+        db.is_tracked(relative).unwrap_or(false)
+    }
 }
 
 fn start_file_manager_socket(app: AppHandle) {
@@ -905,13 +959,18 @@ fn start_file_manager_socket(app: AppHandle) {
                 // reading the whole baseline to test one key cost 40 ms each:
                 // a folder of 200 files froze the file manager for eight
                 // seconds. It is now a single SELECT on a shared read handle.
+                // A folder is judged by what is inside it. It has no baseline
+                // row of its own, so asking the file question about it always
+                // answered "no" and every folder wore a "syncing" badge for
+                // ever, however long ago it had finished.
+                let is_dir = full.is_dir();
                 let tracked = relative
                     .as_ref()
-                    .map(|rel| status_db(&db_handle, rel))
+                    .map(|rel| tracked_state(&db_handle, rel, is_dir))
                     .unwrap_or(false);
                 let has_problem = relative
                     .as_ref()
-                    .map(|rel| status.problems.iter().any(|p| p.starts_with(rel.as_str())))
+                    .map(|rel| socket::problem_touches(&status.problems, rel, is_dir))
                     .unwrap_or(false);
                 let syncing = status.state == State::Syncing;
 
@@ -1134,6 +1193,8 @@ pub fn run() {
             config: Mutex::new(loaded.clone()),
             status: Arc::new(Mutex::new(Status::default())),
             update: Mutex::new(UpdateInfo { current: update::CURRENT.into(), ..Default::default() }),
+            // Set for real in the setup hook, once we know.
+            tray: std::sync::atomic::AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
@@ -1154,6 +1215,7 @@ pub fn run() {
             restore_deletion,
             apply_deletion,
             set_deletion_policy,
+            set_sync_interval,
             get_rules,
             set_rules,
             sync_folders,
@@ -1174,6 +1236,7 @@ pub fn run() {
             // writable XDG_RUNTIME_DIR — did not lose the tray icon, it lost
             // the whole client: Tauri turns a setup-hook error into a panic and
             // the process aborts before any window exists.
+            #[allow(clippy::let_and_return)]
             let has_tray = match build_tray(&handle) {
                 Ok(()) => true,
                 Err(e) => {
@@ -1181,6 +1244,8 @@ pub fn run() {
                     false
                 }
             };
+            handle.state::<AppState>().set_tray(has_tray);
+
             // `--settings` goes straight to Preferences. The tray menu is the
             // usual route, but a tray needs a system tray to exist, and a
             // headless check or a broken desktop has neither.
@@ -1208,8 +1273,18 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("failed to start MeCloud")
         .run(|_app, event| {
-            if let tauri::RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+            if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+                // `code` distinguishes the two things that raise this event,
+                // and they need opposite answers. `None` is "the last window
+                // closed" — the client lives in the tray, so that must not end
+                // the process. `Some(_)` is a deliberate `app.exit(n)`, which
+                // is only ever reached from Quit.
+                //
+                // Preventing both is why Quit did nothing: the menu item ran,
+                // asked to exit, and this handler cancelled it.
+                if code.is_none() {
+                    api.prevent_exit();
+                }
             }
         });
 }

@@ -63,6 +63,9 @@ pub struct Config {
     /// keeps files visible to the reconciler.
     #[serde(default = "default_true")]
     pub sync_hidden: bool,
+    /// Seconds between background passes.
+    #[serde(default = "default_sync_interval")]
+    pub sync_interval_secs: u64,
 }
 
 /// Written out by hand rather than derived.
@@ -88,6 +91,7 @@ impl Default for Config {
             excluded_folders: Vec::new(),
             confirm_over_mb: 0,
             sync_hidden: default_true(),
+            sync_interval_secs: default_sync_interval(),
         }
     }
 }
@@ -100,9 +104,30 @@ fn default_trash_days() -> i64 {
     30
 }
 
+fn default_sync_interval() -> u64 {
+    30
+}
+
+/// The floor and ceiling on how often a pass may run.
+///
+/// A pass walks the sync folder and asks the server for its whole file list.
+/// Below a few seconds those overlap and the client spends its life scanning;
+/// the floor is not a preference, it is what stops the setting being a way to
+/// melt someone's laptop and hammer their server. The ceiling is only there so
+/// a typo cannot silently turn sync off for a week.
+pub const MIN_SYNC_INTERVAL: u64 = 5;
+pub const MAX_SYNC_INTERVAL: u64 = 3600;
+
 impl Config {
     pub fn is_configured(&self) -> bool {
         self.server_url.as_deref().is_some_and(|u| !u.is_empty())
+    }
+
+    /// How long to wait between passes, within the supported range.
+    pub fn sync_interval(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(
+            self.sync_interval_secs.clamp(MIN_SYNC_INTERVAL, MAX_SYNC_INTERVAL),
+        )
     }
 
     /// The exclusion rules this configuration describes.
@@ -399,5 +424,28 @@ mod tests {
         let rules = config.rules();
         assert!(!rules.needs_confirmation(100 * 1024 * 1024));
         assert!(rules.needs_confirmation(100 * 1024 * 1024 + 1));
+    }
+
+    #[test]
+    fn the_sync_interval_defaults_to_thirty_seconds() {
+        assert_eq!(Config::default().sync_interval().as_secs(), 30);
+        let stored: Config = serde_json::from_str("{}").unwrap();
+        assert_eq!(stored.sync_interval().as_secs(), 30);
+    }
+
+    #[test]
+    fn an_out_of_range_interval_is_clamped_rather_than_obeyed() {
+        // Zero would be a spin loop against the user's own server.
+        let eager = Config { sync_interval_secs: 0, ..Default::default() };
+        assert_eq!(eager.sync_interval().as_secs(), MIN_SYNC_INTERVAL);
+
+        let forgetful = Config { sync_interval_secs: 999_999, ..Default::default() };
+        assert_eq!(forgetful.sync_interval().as_secs(), MAX_SYNC_INTERVAL);
+    }
+
+    #[test]
+    fn a_value_in_range_is_used_as_given() {
+        let config = Config { sync_interval_secs: 120, ..Default::default() };
+        assert_eq!(config.sync_interval().as_secs(), 120);
     }
 }

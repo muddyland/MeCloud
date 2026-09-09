@@ -375,7 +375,8 @@ involved.
 
 ### What it does not do yet
 
-- **No filesystem watcher.** A pass runs every 30 seconds. A watcher would make
+- **No filesystem watcher.** A pass runs every 30 seconds by default, and the
+  interval is a setting (5 seconds to an hour). A watcher would make
   local changes feel immediate, but it tells you nothing about remote ones, so
   the poll is needed either way — the watcher is for responsiveness, not
   correctness.
@@ -385,6 +386,18 @@ involved.
 - **No partial transfers.** A file is uploaded or downloaded whole. Interrupted
   downloads are written to a scratch name and renamed into place, so a half file
   is never mistaken for the real thing, but the next pass starts it again.
+
+### How often it runs
+
+Every 30 seconds by default, adjustable on the **Sync** screen between 5
+seconds and an hour. The floor is not a preference: a pass reads the sync
+folder and asks the server for its whole file list, so below a few seconds the
+passes overlap and the client spends its life scanning someone's disk and
+hammering their server. Values outside the range are clamped rather than
+refused, and the field shows what was actually stored.
+
+The setting is re-read at the end of every pass, so a change takes effect at the
+next wait rather than at the next restart.
 
 ### Cost of a pass
 
@@ -489,6 +502,21 @@ Dolphin matches service menus on MIME type with no way to scope one to a
 folder, so the MeCloud entries appear on every file; acting on one outside the
 sync folder reports that rather than doing something surprising.
 
+### What the badges mean
+
+| Badge | Meaning |
+|---|---|
+| green tick | recorded as in step with the server |
+| spinner | known about, but not in step yet — or a folder with nothing recorded in it |
+| warning | the last pass could not handle it |
+| *(none)* | outside the sync folder, or a name that is never synced |
+
+A folder is judged by what is inside it: it has a tick when something under it
+is recorded and nothing under it failed. Folders have no baseline row of their
+own — the baseline is files — so asking the file question about a folder always
+answered "no", and every folder wore a spinner for ever no matter how long ago
+it had finished.
+
 ### How it knows
 
 The extension cannot ask the sync engine anything by itself, so the client
@@ -519,6 +547,20 @@ unresponsive client degrades to no badge, results are cached briefly and the
 cache is bounded, and nothing is raised out of a callback. It is tested against
 a real `nautilus-python` for exactly that — it loads, it binds, and it does
 nothing harmful when the client is not running.
+
+## Closing, and quitting
+
+Closing the main window leaves the client running in the tray, which is what a
+sync client is for — the point is that it keeps working while you are not
+looking at it. **Quit MeCloud** on the tray menu is what actually ends it.
+
+The exception is a session with no tray. The client already survives failing to
+get one (a bare window manager, a session with no StatusNotifier host), and
+there, hiding the window on close would strand the process: no icon to click, no
+menu to quit from, nothing running that the user can see or stop. With no tray,
+closing the window exits.
+
+The settings window is an ordinary window and closing it closes it.
 
 ## Starting with the session
 

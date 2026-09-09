@@ -109,9 +109,31 @@ fn uid() -> u32 {
     unsafe { getuid() }
 }
 
+/// Whether any reported problem concerns this path, or anything inside it.
+///
+/// Problems are reported as `"<relative path>: <what went wrong>"`, so this is
+/// a prefix test — but a careless one claims the wrong rows. `Photo` must not
+/// match `Photos/x.jpg: ...`, and for a folder the separator is what makes the
+/// difference between "inside it" and "starts with the same letters".
+pub fn problem_touches(problems: &[String], relative: &str, is_dir: bool) -> bool {
+    let relative = relative.trim_matches('/');
+    problems.iter().any(|problem| {
+        if relative.is_empty() {
+            return is_dir;
+        }
+        let Some(rest) = problem.strip_prefix(relative) else { return false };
+        // Either this exact path, or something beneath it.
+        rest.starts_with(':') || (is_dir && rest.starts_with('/'))
+    })
+}
+
 /// Decide a path's status from what the engine knows.
 ///
 /// Pure, so the rules are testable without a socket, a database or a disk.
+///
+/// `is_tracked` means different things for the two kinds of subject, and the
+/// caller resolves that: for a file it is "there is a baseline row for it",
+/// for a folder it is "there is a baseline row for something inside it".
 pub fn status_for(
     path: &Path,
     sync_root: Option<&Path>,
@@ -324,5 +346,50 @@ mod tests {
         assert_eq!(FileStatus::Ignored.wire(), "IGNORED");
         assert_eq!(FileStatus::Error.wire(), "ERROR");
         assert_eq!(FileStatus::None.wire(), "NOP");
+    }
+
+    #[test]
+    fn a_problem_inside_a_folder_marks_the_folder() {
+        let problems = vec!["Photos/2024/beach.jpg: upload failed".to_string()];
+        assert!(problem_touches(&problems, "Photos", true));
+        assert!(problem_touches(&problems, "Photos/2024", true));
+        assert!(problem_touches(&problems, "Photos/2024/beach.jpg", false));
+    }
+
+    #[test]
+    fn a_problem_does_not_leak_onto_a_similarly_named_neighbour() {
+        let problems = vec!["Photos/beach.jpg: upload failed".to_string()];
+        // Plain `starts_with` would mark this folder, which does not contain it.
+        assert!(!problem_touches(&problems, "Photo", true));
+        // And a file whose name merely prefixes the failing one.
+        assert!(!problem_touches(&vec!["notes.txt.bak: nope".to_string()], "notes.txt", false));
+    }
+
+    #[test]
+    fn a_file_is_not_marked_by_a_problem_beneath_its_name() {
+        // Only a folder can contain something; a file with the same prefix
+        // is a different file.
+        let problems = vec!["archive/old.zip: failed".to_string()];
+        assert!(!problem_touches(&problems, "archive", false));
+        assert!(problem_touches(&problems, "archive", true));
+    }
+
+    #[test]
+    fn the_sync_root_collects_every_problem() {
+        let problems = vec!["anything/at/all.txt: failed".to_string()];
+        assert!(problem_touches(&problems, "", true));
+    }
+
+    #[test]
+    fn a_folder_holding_synced_files_reads_as_synced() {
+        // The bug this fixes: folders have no baseline row of their own, so
+        // they were permanently "syncing" and the file manager drew a spinner
+        // on a folder that was completely up to date.
+        let root = Path::new("/home/me/MeCloud");
+        let folder = Path::new("/home/me/MeCloud/Photos");
+        assert_eq!(
+            status_for(folder, Some(root), true, false, false),
+            FileStatus::Synced
+        );
     }
 }
