@@ -2,66 +2,88 @@
 # Builds a single multi-stage Docker image (Node build → Python deps → final Python),
 # runs unit tests, smoke-tests the built image, and promotes it to `latest` on main.
 
+# This file runs unchanged on both the internal GitLab and the public mirror.
+#
+# Nothing here names an internal host or service. Where packages come from is
+# decided by PIP_INDEX_URL and NPM_CONFIG_REGISTRY, which pip and npm read
+# themselves, so internally they resolve through the caching registry and on
+# the mirror from PyPI and npmjs, with no difference in this file.
+#
+# The one extra job internally is a dependency audit, pulled in only when
+# CI_TEMPLATES is set. On the mirror that variable does not exist, the
+# include is skipped, and the pipeline is exactly what you see below.
+include:
+  - project: $CI_TEMPLATES
+    ref: main
+    file: /audit.yml
+    rules:
+      - if: $CI_TEMPLATES
+
 stages:
   - build
   - test
   - release
 
 variables:
-  # One tag for both the docker client image and the dind service. Verified to
-  # exist on Docker Hub -- see the note under "Dependency Proxy" below.
-  DOCKER_TAG: "28.5.0"
+  # Plain images by default. The internal group overrides these to pull
+  # through its dependency proxy; a mirror needs no such thing, and a
+  # hard-coded proxy prefix expands to a broken image name wherever one is
+  # unavailable.
+  PYTHON_IMAGE: "python:3.13-slim"
+  # Matches the Dockerfile's build stage; @sveltejs/vite-plugin-svelte 7 and
+  # vitest 4 both require Node >= 20.19, and the image here should not drift
+  # from the one that produces the release artifact.
+  NODE_IMAGE: "node:24-alpine"
+  # One image for both the docker client and the dind service, so the two
+  # cannot drift apart. Whatever it is set to must be a tag that actually
+  # exists: a pipeline failed here on `docker:28.6.0-dind`, which was never
+  # published. Check a candidate before changing it:
+  #
+  #   TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/docker:pull" | jq -r .token)
+  #   curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
+  #     https://registry-1.docker.io/v2/library/docker/manifests/28.5.0-dind
+  DOCKER_IMAGE: "docker:28.5.0"
+  # Prefix for the Dockerfile's FROM lines. Empty means Docker Hub.
+  BASE_REGISTRY: ""
 
 # ---------------------------------------------------------------------------
-# Dependency Proxy
+# Container images
 #
-# Every public image is pulled through GitLab's Dependency Proxy rather than
-# straight from Docker Hub, so the pipeline stops burning anonymous pull quota.
+# Two mechanisms are involved wherever a caching proxy is in play, which is
+# easy to trip over:
 #
-# Two mechanisms are involved, which is easy to trip over:
+#   • Job `image:` and `services:` — the runner authenticates on its own, so
+#     pointing the *_IMAGE variables at the proxy is all that is required.
+#   • `FROM` lines inside the Dockerfile — those are pulled by the dind
+#     daemon, which has no such credentials. That needs an explicit
+#     `docker login` plus the prefix passed as the BASE_REGISTRY build arg.
 #
-#   • Job `image:` and `services:` — the runner authenticates to the proxy on
-#     its own, so prefixing the name is all that is required.
-#   • `FROM` lines inside the Dockerfile — those are pulled by the dind daemon,
-#     which has no such credentials. That needs an explicit `docker login`
-#     against $CI_DEPENDENCY_PROXY_SERVER plus the prefix passed as a build arg.
-#
-# The proxy only fronts Docker Hub. Anything from $CI_REGISTRY keeps using the
-# registry login, which is why build:image performs both.
-#
-# Docker is pinned to an exact patch version rather than a floating major tag,
-# mirroring the configuration proven against this GitLab instance in the sibling
-# `cove` project; a floating `docker:26` tag did not come up as a proxied
-# service here.
-#
-# DOCKER_TAG is defined once and used for both the client image and the dind
-# service so the two cannot drift apart. Whatever it is set to must be a tag
-# that actually exists: a pipeline failed here on `docker:28.6.0-dind`, which
-# was never published (28.5.0 is the newest 28.x patch on Docker Hub). Check a
-# candidate before changing it:
-#
-#   TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/docker:pull" | jq -r .token)
-#   curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
-#     https://registry-1.docker.io/v2/library/docker/manifests/28.5.0-dind
+# Both are driven by variables so this file is identical on an instance that
+# has a proxy and one that does not.
 # ---------------------------------------------------------------------------
 
 .docker_base:
   tags:
     - saas-linux-small-amd64
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:${DOCKER_TAG}
+  image: $DOCKER_IMAGE
   services:
     # Explicit alias: GitLab derives a service's hostname from its image name,
-    # so the dependency-proxy prefix would otherwise move it away from "docker"
-    # and every command would sit waiting on a host that never appears.
-    - name: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:${DOCKER_TAG}-dind
+    # so a registry prefix would otherwise move it away from "docker" and
+    # every command would sit waiting on a host that never appears.
+    - name: $DOCKER_IMAGE-dind
       alias: docker
   variables:
     # Scoped to the dind jobs rather than set globally — the plain python and
     # node jobs have no daemon and no business carrying TLS settings for one.
     DOCKER_TLS_CERTDIR: "/certs"
 
+# Only where a proxy exists. On a mirror there is nothing to log in to, and
+# an unconditional login fails the job before it starts.
 .proxy-login: &proxy-login
-  - docker login -u "$CI_DEPENDENCY_PROXY_USER" -p "$CI_DEPENDENCY_PROXY_PASSWORD" "$CI_DEPENDENCY_PROXY_SERVER"
+  - |
+    if [ -n "${CI_DEPENDENCY_PROXY_SERVER:-}" ]; then
+      docker login -u "$CI_DEPENDENCY_PROXY_USER" -p "$CI_DEPENDENCY_PROXY_PASSWORD" "$CI_DEPENDENCY_PROXY_SERVER"
+    fi
 
 # Bounded rather than `until docker info; do sleep 1; done`: an unbounded wait
 # turns a dead service into a job that hangs until the pipeline timeout with no
@@ -78,7 +100,7 @@ variables:
       echo "ERROR: the docker-in-docker service never became reachable."
       echo "  DOCKER_HOST=${DOCKER_HOST:-<unset>}"
       echo "  DOCKER_TLS_CERTDIR=${DOCKER_TLS_CERTDIR:-<unset>}"
-      echo "  this job requested: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/docker:${DOCKER_TAG}-dind"
+      echo "  this job requested: ${DOCKER_IMAGE}-dind"
       # Printed because a failure here once named an image no file in this repo
       # references, and unprefixed at that. If the 'services' section shows a
       # different image from the line above, the service is being injected from
@@ -106,11 +128,11 @@ build-image:
   script:
     - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" || true
     # BASE_REGISTRY defaults to empty in the Dockerfile so a plain
-    # `docker build .` still works off Docker Hub; CI supplies the proxy prefix.
-    # The trailing slash lives here, because the predefined variable has none.
+    # `docker build .` still works off Docker Hub. Where a proxy exists the
+    # group sets it, trailing slash included.
     - |
       docker build \
-        --build-arg BASE_REGISTRY="${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/" \
+        --build-arg BASE_REGISTRY="$BASE_REGISTRY" \
         --cache-from "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
@@ -132,7 +154,7 @@ backend-tests:
   stage: test
   tags:
     - saas-linux-small-amd64
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.13-slim
+  image: $PYTHON_IMAGE
   script:
     - cd backend
     - pip install --quiet -r requirements-dev.txt
@@ -145,10 +167,7 @@ frontend-tests:
   stage: test
   tags:
     - saas-linux-small-amd64
-  # Matches the Dockerfile's build stage; @sveltejs/vite-plugin-svelte 7 and
-  # vitest 4 both require Node >= 20.19, and the image here should not drift
-  # from the one that produces the release artifact.
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/node:24-alpine
+  image: $NODE_IMAGE
   script:
     - cd frontend
     # `npm ci`, not `npm install`: CI should fail on lockfile drift rather than
@@ -157,84 +176,6 @@ frontend-tests:
     - npm run check
     - npm test
   rules:
-    - if: '$CI_COMMIT_BRANCH'
-    - if: '$CI_COMMIT_TAG'
-
-# ---------------------------------------------------------------------------
-# Dependency audit — CVE scan of both manifests through the internal registry.
-#
-# The minireg CLI is a single stdlib-only Python script, and it parses
-# requirements.txt and package-lock.json itself, so one Python image audits both
-# projects with no Node and no npm install.
-#
-# Two environmental details, neither of them minireg's doing:
-#   • A CI container may not resolve the registry's DNS zone, so its host can be
-#     pinned into /etc/hosts when resolution fails.
-#   • python:*-slim ships no curl, so the CLI is fetched with stdlib urllib.
-#
-# The job runs only when MINIREG_ENABLED is exactly "true". Everything it needs
-# comes from CI/CD variables (Settings → CI/CD → Variables) and nothing is
-# declared in this file — deliberately, so a public mirror of this repository
-# discloses no internal hostnames or addresses, and so project settings cannot
-# be shadowed here:
-#
-#   MINIREG_ENABLED = true              the opt-in switch
-#   MINIREG_URL     = <registry base>   e.g. https://registry.example.internal
-#   MINIREG_TOKEN   = <read token>      masked; `read` scope is enough
-#   MINIREG_HOST_IP = <ip>              optional; only if DNS cannot resolve it
-#
-# An explicit flag rather than inferring from the token's presence: whether a
-# security gate is active should be a stated decision, not a side effect of
-# which secrets happen to exist.
-# ---------------------------------------------------------------------------
-dependency-audit:
-  stage: test
-  tags:
-    - saas-linux-small-amd64
-  image: ${CI_DEPENDENCY_PROXY_GROUP_IMAGE_PREFIX}/python:3.13-slim
-  # Reads no build artifact, so it can start immediately rather than waiting
-  # for the image build — security feedback arrives with the unit tests.
-  needs: []
-  before_script:
-    - |
-      missing=""
-      [ -n "${MINIREG_URL:-}" ]   || missing="$missing MINIREG_URL"
-      [ -n "${MINIREG_TOKEN:-}" ] || missing="$missing MINIREG_TOKEN"
-      if [ -n "$missing" ]; then
-        echo "ERROR: MINIREG_ENABLED is true but these are not set:$missing"
-        echo "Add them under Settings > CI/CD > Variables (mask MINIREG_TOKEN),"
-        echo "or set MINIREG_ENABLED to anything other than 'true' to skip this job."
-        exit 1
-      fi
-    - |
-      # Pin the registry host only if the runner cannot resolve it. The hostname
-      # is derived from MINIREG_URL so it never has to appear in this file.
-      registry_host=$(printf '%s' "$MINIREG_URL" | sed -E 's#^[a-zA-Z]+://##; s#[:/].*$##')
-      if ! getent hosts "$registry_host" >/dev/null 2>&1; then
-        if [ -n "${MINIREG_HOST_IP:-}" ]; then
-          echo "$MINIREG_HOST_IP $registry_host" >> /etc/hosts
-        else
-          echo "WARNING: cannot resolve the registry host and MINIREG_HOST_IP is unset."
-        fi
-      fi
-    - |
-      python3 - <<'PY'
-      import os, urllib.request
-      urllib.request.urlretrieve(
-          os.environ["MINIREG_URL"].rstrip("/") + "/api/cli/download",
-          "/usr/local/bin/minireg",
-      )
-      os.chmod("/usr/local/bin/minireg", 0o755)
-      PY
-  script:
-    # --fail-on high: exit 2 at high or critical. Lower-severity findings are
-    # printed and reviewed rather than blocking a release.
-    - minireg audit backend  --fail-on high
-    - minireg audit frontend --fail-on high
-  rules:
-    # The sole enable switch. Everything below matches the other jobs.
-    - if: '$MINIREG_ENABLED != "true"'
-      when: never
     - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
 
@@ -282,9 +223,10 @@ tag-latest:
     - smoke-test
     - backend-tests
     - frontend-tests
-    # Optional so tag-latest still runs before MINIREG_TOKEN is configured;
-    # once it is, a failing audit blocks promotion to :latest.
-    - job: dependency-audit
+    # Optional because the audit only exists on the instance that has the
+    # shared templates. Where it does run, a failing audit blocks promotion
+    # to :latest.
+    - job: audit:dependencies
       optional: true
   before_script:
     - *wait-for-docker
