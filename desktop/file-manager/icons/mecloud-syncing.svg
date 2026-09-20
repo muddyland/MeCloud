@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- On its way: known about, but not in step yet. Deliberately one bold arc
+     and one blunt arrowhead — the two-arrow sync glyph is prettier at 96px
+     and turns into a grey ring at the 16px a file manager actually draws. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <circle cx="8" cy="8" r="7.5" fill="#ffffff"/>
+  <circle cx="8" cy="8" r="6.4" fill="#3584e4"/>
+  <path d="M10.00 4.54A4.00 4.00 0 1 1 4.24 6.63" fill="none" stroke="#ffffff"
+        stroke-width="2.2" stroke-linecap="butt"/>
+  <path d="M6.07 7.30L5.16 4.09L2.41 5.96z" fill="#ffffff"/>
+</svg>

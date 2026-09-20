@@ -26,6 +26,8 @@ install -m 0644 desktop/src-tauri/icons/128x128.png "$APP/mecloud-desktop.png"
 install -m 0644 desktop/README.md "$APP/README.md"
 install -m 0644 desktop/file-manager/mecloud_extension.py "$APP/mecloud_extension.py"
 install -m 0644 desktop/file-manager/mecloud-dolphin.desktop "$APP/mecloud-dolphin.desktop"
+mkdir -p "$APP/emblems"
+install -m 0644 desktop/file-manager/icons/*.svg "$APP/emblems/"
 
 cat > "$APP/install.sh" <<'INNER'
 #!/bin/sh
@@ -102,8 +104,34 @@ for fm in nautilus nemo caja; do
         mkdir -p "$target"
         install -m 0644 "$HERE/mecloud_extension.py" "$target/mecloud_extension.py"
         installed_for="$installed_for $fm"
+        gtk_installed=1
     fi
 done
+
+# ── The badges themselves ───────────────────────────────────────────────────
+#
+# The client ships its own emblems because the theme can no longer be relied on
+# for them: Adwaita now carries five legacy emblems and `emblem-default`, the
+# green tick, is not one of them. Asking a file manager to draw an emblem the
+# theme does not have is not an error — nothing appears, which looked exactly
+# like a badge that had stopped working.
+#
+# hicolor rather than a theme of our own, so they are found whatever theme the
+# user runs; scalable/emblems is a directory hicolor's own index.theme lists,
+# so no index of ours is needed.
+if [ "${gtk_installed:-0}" = "1" ]; then
+    emblem_dir="$DATA_DIR/icons/hicolor/scalable/emblems"
+    mkdir -p "$emblem_dir"
+    for emblem in "$HERE"/emblems/*.svg; do
+        [ -f "$emblem" ] || continue
+        install -m 0644 "$emblem" "$emblem_dir/"
+    done
+    # Only matters where a cache file already exists: GTK reads it in
+    # preference to the directory, so a stale one hides every icon just added.
+    # Best-effort — plenty of systems have no cache and no tool to build one.
+    command -v gtk-update-icon-cache >/dev/null 2>&1 \
+        && gtk-update-icon-cache -q -t -f "$DATA_DIR/icons/hicolor" 2>/dev/null || true
+fi
 
 # ── KDE / Dolphin ───────────────────────────────────────────────────────────
 #

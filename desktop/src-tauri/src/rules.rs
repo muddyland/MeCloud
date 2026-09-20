@@ -266,6 +266,21 @@ impl Rules {
     }
 }
 
+/// Whether a path is inside a top-level folder switched off in selective sync
+/// — or is that folder itself.
+///
+/// Wider than `Rules::excludes` on purpose, and asked by a different caller
+/// for a different reason. The engine asks "is this part of the pass", and the
+/// folder's own node is not a file it would sync either way. The file manager
+/// asks "what should this wear", and the folder wearing the cloud badge is the
+/// whole point — a folder that is on the drive and deliberately not kept here.
+///
+/// `relative` is relative to the sync folder, with `/` separators.
+pub fn in_excluded_folder(relative: &str, excluded_folders: &[String]) -> bool {
+    let Some(top) = relative.split('/').find(|p| !p.is_empty()) else { return false };
+    excluded_folders.iter().any(|folder| folder == top)
+}
+
 /// A top-level folder offered in the selective-sync picker.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct FolderChoice {
@@ -449,6 +464,21 @@ mod tests {
         assert_eq!(choices.len(), 2, "root-level files are not folders");
         let photos = choices.iter().find(|c| c.name == "Photos").unwrap();
         assert_eq!((photos.files, photos.bytes, photos.included), (2, 300, true));
+    }
+
+    #[test]
+    fn the_switched_off_folder_and_everything_under_it_is_in_the_cloud() {
+        let off = vec!["Photos".to_string()];
+        assert!(in_excluded_folder("Photos", &off));
+        assert!(in_excluded_folder("Photos/2024/beach.jpg", &off));
+        // A folder that merely starts with the same letters is not it, and
+        // neither is a folder of the same name further down.
+        assert!(!in_excluded_folder("PhotosOld/x.jpg", &off));
+        assert!(!in_excluded_folder("Archive/Photos/x.jpg", &off));
+        // The sync folder itself is not inside anything.
+        assert!(!in_excluded_folder("", &off));
+        assert!(!in_excluded_folder("/", &off));
+        assert!(!in_excluded_folder("notes.txt", &off));
     }
 
     #[test]

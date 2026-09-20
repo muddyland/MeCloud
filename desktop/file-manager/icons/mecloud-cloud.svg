@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- On the drive, but not kept on this computer. Grey rather than blue: this
+     is not a state anything is working towards, it is where the user asked
+     this folder to stay. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <circle cx="8" cy="8" r="7.5" fill="#ffffff"/>
+  <circle cx="8" cy="8" r="6.4" fill="#5e5c64"/>
+  <path d="M5.5 11.2h5.2a2.1 2.1 0 0 0 .1-4.2 3 3 0 0 0-5.6-.6 2.4 2.4 0 0 0 .3 4.8z"
+        fill="#ffffff"/>
+</svg>

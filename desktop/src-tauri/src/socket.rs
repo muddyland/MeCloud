@@ -32,6 +32,10 @@ pub enum FileStatus {
     Syncing,
     /// In the folder but deliberately never synced (see `rules::is_ignored`).
     Ignored,
+    /// On the drive, but not kept on this computer: under a top-level folder
+    /// switched off in selective sync. The copy on disk, if there is one, is
+    /// whatever was there when the folder was switched off.
+    Cloud,
     /// The last pass could not handle it.
     Error,
     /// Outside the sync folder — draw nothing at all.
@@ -44,6 +48,7 @@ impl FileStatus {
             FileStatus::Synced => "SYNCED",
             FileStatus::Syncing => "SYNCING",
             FileStatus::Ignored => "IGNORED",
+            FileStatus::Cloud => "CLOUD",
             FileStatus::Error => "ERROR",
             FileStatus::None => "NOP",
         }
@@ -127,20 +132,29 @@ pub fn problem_touches(problems: &[String], relative: &str, is_dir: bool) -> boo
     })
 }
 
+/// What the engine knows about one path.
+///
+/// Named fields rather than a row of positional booleans: four of them in a
+/// call reads as `status_for(&path, root, true, false, false, true)`, which is
+/// unreviewable.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Known {
+    /// A baseline row for it. This means different things for the two kinds of
+    /// subject and the caller resolves that: for a file, a row for the file;
+    /// for a folder, a row for something inside it.
+    pub tracked: bool,
+    /// Under a top-level folder switched off in selective sync.
+    pub excluded: bool,
+    /// The last pass reported a problem touching it.
+    pub has_problem: bool,
+    /// A pass is running right now.
+    pub syncing: bool,
+}
+
 /// Decide a path's status from what the engine knows.
 ///
 /// Pure, so the rules are testable without a socket, a database or a disk.
-///
-/// `is_tracked` means different things for the two kinds of subject, and the
-/// caller resolves that: for a file it is "there is a baseline row for it",
-/// for a folder it is "there is a baseline row for something inside it".
-pub fn status_for(
-    path: &Path,
-    sync_root: Option<&Path>,
-    is_tracked: bool,
-    has_problem: bool,
-    syncing: bool,
-) -> FileStatus {
+pub fn status_for(path: &Path, sync_root: Option<&Path>, known: Known) -> FileStatus {
     let Some(root) = sync_root else { return FileStatus::None };
     // Outside the synced folder the file manager should draw nothing, rather
     // than a badge implying we have an opinion about someone else's files.
@@ -155,10 +169,17 @@ pub fn status_for(
     {
         return FileStatus::Ignored;
     }
-    if has_problem {
+    // Before the baseline is consulted, and before any problem: a switched-off
+    // folder keeps its rows and its last error, and both describe a time when
+    // the client was still looking after it. A tick there would say "in step
+    // with the server" about a copy nothing is checking.
+    if known.excluded {
+        return FileStatus::Cloud;
+    }
+    if known.has_problem {
         return FileStatus::Error;
     }
-    if is_tracked && !syncing {
+    if known.tracked && !known.syncing {
         return FileStatus::Synced;
     }
     // Known but mid-pass, or not recorded yet: either way it is on its way.
@@ -291,16 +312,27 @@ mod tests {
     #[test]
     fn a_path_outside_the_sync_folder_gets_no_badge() {
         assert_eq!(
-            status_for(&p("/home/ada/Documents/x.txt"), Some(&p("/home/ada/MeCloud")), true, false, false),
+            status_for(
+                &p("/home/ada/Documents/x.txt"),
+                Some(&p("/home/ada/MeCloud")),
+                Known { tracked: true, ..Default::default() }
+            ),
             FileStatus::None
         );
-        assert_eq!(status_for(&p("/anything"), None, true, false, false), FileStatus::None);
+        assert_eq!(
+            status_for(&p("/anything"), None, Known { tracked: true, ..Default::default() }),
+            FileStatus::None
+        );
     }
 
     #[test]
     fn a_tracked_file_at_rest_is_synced() {
         assert_eq!(
-            status_for(&p("/home/ada/MeCloud/a.txt"), Some(&p("/home/ada/MeCloud")), true, false, false),
+            status_for(
+                &p("/home/ada/MeCloud/a.txt"),
+                Some(&p("/home/ada/MeCloud")),
+                Known { tracked: true, ..Default::default() }
+            ),
             FileStatus::Synced
         );
     }
@@ -308,7 +340,7 @@ mod tests {
     #[test]
     fn an_untracked_file_is_on_its_way_rather_than_synced() {
         assert_eq!(
-            status_for(&p("/home/ada/MeCloud/new.txt"), Some(&p("/home/ada/MeCloud")), false, false, false),
+            status_for(&p("/home/ada/MeCloud/new.txt"), Some(&p("/home/ada/MeCloud")), Known::default()),
             FileStatus::Syncing
         );
     }
@@ -316,7 +348,11 @@ mod tests {
     #[test]
     fn a_tracked_file_during_a_pass_shows_as_syncing() {
         assert_eq!(
-            status_for(&p("/home/ada/MeCloud/a.txt"), Some(&p("/home/ada/MeCloud")), true, false, true),
+            status_for(
+                &p("/home/ada/MeCloud/a.txt"),
+                Some(&p("/home/ada/MeCloud")),
+                Known { tracked: true, syncing: true, ..Default::default() }
+            ),
             FileStatus::Syncing
         );
     }
@@ -324,7 +360,11 @@ mod tests {
     #[test]
     fn a_problem_outranks_being_tracked() {
         assert_eq!(
-            status_for(&p("/home/ada/MeCloud/a.txt"), Some(&p("/home/ada/MeCloud")), true, true, false),
+            status_for(
+                &p("/home/ada/MeCloud/a.txt"),
+                Some(&p("/home/ada/MeCloud")),
+                Known { tracked: true, has_problem: true, ..Default::default() }
+            ),
             FileStatus::Error
         );
     }
@@ -333,7 +373,7 @@ mod tests {
     fn files_we_never_sync_say_so_rather_than_looking_stuck() {
         // Otherwise every .DS_Store sits there with a spinner forever.
         assert_eq!(
-            status_for(&p("/home/ada/MeCloud/.DS_Store"), Some(&p("/home/ada/MeCloud")), false, false, false),
+            status_for(&p("/home/ada/MeCloud/.DS_Store"), Some(&p("/home/ada/MeCloud")), Known::default()),
             FileStatus::Ignored
         );
     }
@@ -344,8 +384,50 @@ mod tests {
         assert_eq!(FileStatus::Synced.wire(), "SYNCED");
         assert_eq!(FileStatus::Syncing.wire(), "SYNCING");
         assert_eq!(FileStatus::Ignored.wire(), "IGNORED");
+        assert_eq!(FileStatus::Cloud.wire(), "CLOUD");
         assert_eq!(FileStatus::Error.wire(), "ERROR");
         assert_eq!(FileStatus::None.wire(), "NOP");
+    }
+
+    #[test]
+    fn a_switched_off_folder_lives_in_the_cloud() {
+        let root = p("/home/ada/MeCloud");
+        // The folder itself, and everything under it.
+        assert_eq!(
+            status_for(&p("/home/ada/MeCloud/Photos"), Some(&root), Known { excluded: true, ..Default::default() }),
+            FileStatus::Cloud
+        );
+        assert_eq!(
+            status_for(
+                &p("/home/ada/MeCloud/Photos/beach.jpg"),
+                Some(&root),
+                Known { excluded: true, tracked: true, ..Default::default() }
+            ),
+            FileStatus::Cloud
+        );
+    }
+
+    #[test]
+    fn a_switched_off_folder_does_not_wear_a_tick_from_its_old_rows() {
+        // The baseline rows survive being switched off, deliberately, so that
+        // switching it back on is not a first-ever sync. Reading them as "in
+        // step with the server" would put a tick on a copy of a file that
+        // nothing has looked at since.
+        let root = p("/home/ada/MeCloud");
+        let stale = Known { tracked: true, excluded: true, has_problem: true, syncing: false };
+        assert_eq!(status_for(&p("/home/ada/MeCloud/Photos/a.jpg"), Some(&root), stale), FileStatus::Cloud);
+    }
+
+    #[test]
+    fn nothing_outside_the_folder_is_ever_claimed_by_the_cloud() {
+        assert_eq!(
+            status_for(
+                &p("/home/ada/Documents/x.txt"),
+                Some(&p("/home/ada/MeCloud")),
+                Known { excluded: true, ..Default::default() }
+            ),
+            FileStatus::None
+        );
     }
 
     #[test]
@@ -388,7 +470,7 @@ mod tests {
         let root = Path::new("/home/me/MeCloud");
         let folder = Path::new("/home/me/MeCloud/Photos");
         assert_eq!(
-            status_for(folder, Some(root), true, false, false),
+            status_for(folder, Some(root), Known { tracked: true, ..Default::default() }),
             FileStatus::Synced
         );
     }

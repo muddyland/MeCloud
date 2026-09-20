@@ -66,6 +66,15 @@ pub struct Config {
     /// Seconds between background passes.
     #[serde(default = "default_sync_interval")]
     pub sync_interval_secs: u64,
+    /// Whether the file manager sidebar entry has ever been placed.
+    ///
+    /// Recorded so it is placed once and not again. The entry is written when
+    /// the sync folder is chosen, which does nothing for an install that chose
+    /// its folder before this client could write one — so it is also placed at
+    /// startup, and this is what stops that from putting the bookmark back
+    /// every launch for someone who deleted it.
+    #[serde(default)]
+    pub sidebar_entry_placed: bool,
 }
 
 /// Written out by hand rather than derived.
@@ -92,6 +101,7 @@ impl Default for Config {
             confirm_over_mb: 0,
             sync_hidden: default_true(),
             sync_interval_secs: default_sync_interval(),
+            sidebar_entry_placed: false,
         }
     }
 }

@@ -234,6 +234,7 @@ fn set_sync(
     state: tauri::State<'_, AppState>, folder: String, enabled: bool, acknowledged: bool,
 ) -> Result<(), String> {
     let mut config = state.config.lock().unwrap().clone();
+    let previous = config.sync_folder.clone();
 
     if enabled {
         let trimmed = folder.trim();
@@ -287,7 +288,27 @@ fn set_sync(
     config.sync_enabled = enabled;
 
     config::save(&config)?;
+    let current = config.sync_folder.clone();
     *state.config.lock().unwrap() = config;
+
+    // The file manager sidebar follows the folder: in when sync is switched
+    // on, moved when the folder changes, out when it is switched off. All of
+    // it best-effort — a bookmark is not worth failing a settings change
+    // over, and a machine may have no GTK file manager at all.
+    if previous != current {
+        if let Some(old) = previous.as_deref() {
+            let _ = handlers::remove_from_sidebar(std::path::Path::new(old));
+        }
+    }
+    if let Some(folder) = current.as_deref() {
+        let path = std::path::Path::new(folder);
+        if enabled {
+            let _ = handlers::add_to_sidebar(path);
+            mark_sidebar_entry_placed(&state);
+        } else {
+            let _ = handlers::remove_from_sidebar(path);
+        }
+    }
 
     if let Ok(mut status) = state.status.lock() {
         if !enabled {
@@ -295,6 +316,35 @@ fn set_sync(
         }
     }
     Ok(())
+}
+
+/// Note that the sidebar entry has had its one chance, so startup leaves it
+/// alone from now on.
+fn mark_sidebar_entry_placed(state: &AppState) {
+    let mut config = state.config.lock().unwrap().clone();
+    if config.sidebar_entry_placed {
+        return;
+    }
+    config.sidebar_entry_placed = true;
+    if config::save(&config).is_ok() {
+        *state.config.lock().unwrap() = config;
+    }
+}
+
+/// Put an install that was already syncing into the file manager sidebar.
+///
+/// The entry is normally written when the sync folder is chosen, which does
+/// nothing for someone who chose theirs before this client could write one. So
+/// it is placed at startup too — but only ever once. A client that puts the
+/// bookmark back at every launch is one the user cannot get rid of.
+fn place_sidebar_entry_once(state: &AppState) {
+    let config = state.config.lock().unwrap().clone();
+    if config.sidebar_entry_placed || !config.sync_enabled {
+        return;
+    }
+    let Some(folder) = config.sync_path() else { return };
+    let _ = handlers::add_to_sidebar(&folder);
+    mark_sidebar_entry_placed(state);
 }
 
 /// Run one pass now, if everything needed is in place.
@@ -972,14 +1022,23 @@ fn start_file_manager_socket(app: AppHandle) {
                     .as_ref()
                     .map(|rel| socket::problem_touches(&status.problems, rel, is_dir))
                     .unwrap_or(false);
-                let syncing = status.state == State::Syncing;
+                // Selective sync only: an ignore pattern means "never sync
+                // this", which is not the same claim as "this lives on the
+                // drive and not here".
+                let excluded = relative
+                    .as_ref()
+                    .map(|rel| rules::in_excluded_folder(rel, &config.excluded_folders))
+                    .unwrap_or(false);
 
                 let verdict = socket::status_for(
                     &full,
                     root.as_deref(),
-                    tracked,
-                    has_problem,
-                    syncing,
+                    socket::Known {
+                        tracked,
+                        excluded,
+                        has_problem,
+                        syncing: status.state == State::Syncing,
+                    },
                 );
                 Some(format!("STATUS:{}:{}", verdict.wire(), path))
             }
@@ -1263,6 +1322,7 @@ pub fn run() {
             } else {
                 handle_target(&handle, deeplink::first_target(std::env::args()));
             }
+            place_sidebar_entry_once(&handle.state::<AppState>());
             spawn_sync_loop(handle.clone());
             spawn_update_loop(handle.clone());
             start_file_manager_socket(handle);

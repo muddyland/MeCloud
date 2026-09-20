@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- In step with the server. A white ring so the badge reads against a dark
+     file icon, and a glyph rather than a bare tick mark so it survives being
+     composited into a 16px corner. -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+  <circle cx="8" cy="8" r="7.5" fill="#ffffff"/>
+  <circle cx="8" cy="8" r="6.4" fill="#2ec27e"/>
+  <path d="M4.7 8.3l2.2 2.2 4.5-4.8" fill="none" stroke="#ffffff" stroke-width="1.9"
+        stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

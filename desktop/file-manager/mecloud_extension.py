@@ -28,6 +28,10 @@ from urllib.parse import unquote, urlparse
 # The APIs are identical; only the namespace differs. Importing in this order
 # and stopping at the first success is what makes one file serve all three.
 _MANAGER = None
+# The toolkit that goes with it, so the emblem names can be checked against
+# the very icon theme this process will draw with. Nautilus 4.0 is a GTK4
+# process; everything else here is GTK3, and asking for the wrong one raises.
+_GTK = None
 for _name in ("Nautilus", "Nemo", "Caja"):
     try:
         import gi
@@ -35,6 +39,7 @@ for _name in ("Nautilus", "Nemo", "Caja"):
         gi.require_version(_name, "4.0" if _name == "Nautilus" else "3.0")
         _MANAGER = __import__("gi.repository", fromlist=[_name])
         _FM = getattr(_MANAGER, _name)
+        _GTK = "4.0" if _name == "Nautilus" else "3.0"
         break
     except (ImportError, ValueError):
         try:
@@ -43,6 +48,7 @@ for _name in ("Nautilus", "Nemo", "Caja"):
             gi.require_version(_name, "3.0")
             _MANAGER = __import__("gi.repository", fromlist=[_name])
             _FM = getattr(_MANAGER, _name)
+            _GTK = "3.0"
             break
         except (ImportError, ValueError):
             continue
@@ -52,14 +58,79 @@ from gi.repository import GObject  # noqa: E402
 SOCKET_TIMEOUT = 0.5           # never block the file manager for longer
 CACHE_SECONDS = 2.0            # the badge does not need to be to the second
 
-# Emblems from the icon theme, so they match whatever the user is running.
+# Emblems, in the order they are worth trying.
+#
+# The client's own first, because the theme can no longer be relied on for
+# these. Adwaita now ships five legacy emblems — synchronizing, shared,
+# readonly, symbolic-link, unreadable — and `emblem-default`, the green tick,
+# is not among them. `add_emblem` with a name the theme does not have is not an
+# error: nothing is drawn, which is exactly the bug this fixes. The same had
+# happened to `emblem-important`, so the error badge was invisible too.
+#
+# The theme names stay as fallbacks for an extension installed without the
+# icons, and for themes that do still carry them.
 EMBLEMS = {
-    "SYNCED": "emblem-default",
-    "SYNCING": "emblem-synchronizing",
-    "ERROR": "emblem-important",
+    "SYNCED": ("mecloud-synced", "emblem-default", "object-select-symbolic"),
+    "SYNCING": ("mecloud-syncing", "emblem-synchronizing", "content-loading-symbolic"),
+    "CLOUD": ("mecloud-cloud", "weather-overcast-symbolic", "network-server-symbolic"),
+    "ERROR": ("mecloud-error", "emblem-important", "dialog-warning-symbolic"),
     # IGNORED and NOP get nothing: a badge saying "we are not involved" is
     # noise on every file the user has.
 }
+
+_RESOLVED = {}
+
+
+def _icon_theme():
+    """The icon theme this file manager draws with, or None.
+
+    None is a perfectly good answer — a headless check, a display we cannot
+    reach — and the caller falls back to the client's own emblem, which is the
+    one the installer put there.
+    """
+    if _GTK is None:
+        return None
+    try:
+        gi.require_version("Gtk", _GTK)
+        from gi.repository import Gtk
+
+        if _GTK == "3.0":
+            return Gtk.IconTheme.get_default()
+
+        from gi.repository import Gdk
+
+        display = Gdk.Display.get_default()
+        return Gtk.IconTheme.get_for_display(display) if display else None
+    except Exception:
+        # Inside someone else's process: an icon theme is never worth raising
+        # over.
+        return None
+
+
+def _emblem_for(status):
+    """The first emblem for this status the icon theme can actually draw.
+
+    Cached: this is asked once per visible file, and the answer cannot change
+    without the theme changing.
+    """
+    if status not in EMBLEMS:
+        return None
+    if status in _RESOLVED:
+        return _RESOLVED[status]
+
+    candidates = EMBLEMS[status]
+    theme = _icon_theme()
+    chosen = candidates[0]
+    if theme is not None:
+        for name in candidates:
+            try:
+                if theme.has_icon(name):
+                    chosen = name
+                    break
+            except Exception:
+                break
+    _RESOLVED[status] = chosen
+    return chosen
 
 
 def _socket_path():
@@ -153,7 +224,7 @@ class MeCloudExtension(GObject.GObject, _FM.InfoProvider, _FM.MenuProvider):
         if not path:
             return
         status = _CLIENT.status(path)
-        emblem = EMBLEMS.get(status or "")
+        emblem = _emblem_for(status)
         if emblem:
             item.add_emblem(emblem)
 

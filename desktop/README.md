@@ -502,14 +502,104 @@ Dolphin matches service menus on MIME type with no way to scope one to a
 folder, so the MeCloud entries appear on every file; acting on one outside the
 sync folder reports that rather than doing something surprising.
 
+### In the sidebar
+
+The sync folder appears in the GNOME Files sidebar as **MeCloud**, the way
+Nextcloud's own client does it — and by the same mechanism, because there is no
+other per-application way into that sidebar. GTK file managers read their
+bookmarks from one plain-text file, `~/.config/gtk-3.0/bookmarks`, a URI and an
+optional label per line:
+
+```
+file:///home/ada/MeCloud MeCloud
+```
+
+Nautilus, Nemo and Caja all read that same file — GTK4 Nautilus included, which
+still reads the `gtk-3.0` path and not a `gtk-4.0` one — so the one write
+covers every file manager the Python extension already badges. They watch the
+file, so the entry appears without restarting anything. Dolphin keeps its
+places in `user-places.xbel` instead and does not get an entry.
+
+`handlers.rs` writes it when sync is switched on, moves it when the sync folder
+changes, and takes it out when sync is switched off. All of it best-effort: a
+bookmark is not worth failing a settings change over, and the machine may have
+no GTK file manager at all.
+
+It is also placed once at startup, for an install whose folder was chosen
+before the client could write an entry at all — but only ever once, recorded as
+`sidebar_entry_placed` in `config.json`. A client that puts the bookmark back
+at every launch is one the user cannot get rid of.
+
+Three things it is careful about, because this file belongs to the user and not
+to us:
+
+- **The URI is percent-encoded.** The label is whatever follows the first
+  space, so a folder called `My Files` written literally reads back as a
+  bookmark to `file:///home/ada/My` labelled `Files`.
+- **An entry that is already there is left exactly as it is** — label and
+  position included. A bookmark the user has renamed or dragged up the sidebar
+  is theirs now, and switching sync off removes only an entry still labelled
+  the way we wrote it.
+- **The file is replaced by rename, not truncated and rewritten.** The file
+  managers hold a watch on it, and a half-written file is a sidebar that has
+  lost the user's other bookmarks for as long as the write takes.
+
 ### What the badges mean
 
 | Badge | Meaning |
 |---|---|
 | green tick | recorded as in step with the server |
-| spinner | known about, but not in step yet — or a folder with nothing recorded in it |
-| warning | the last pass could not handle it |
+| blue arrow | known about, but not in step yet — or a folder with nothing recorded in it |
+| red warning | the last pass could not handle it |
+| grey cloud | on the drive, but not kept on this computer — a folder switched off in selective sync |
 | *(none)* | outside the sync folder, or a name that is never synced |
+
+The cloud is the one that is not about progress. A folder switched off in the
+selective-sync picker keeps its baseline rows on purpose, so that switching it
+back on is not read as a first-ever sync of everything in it — but those rows
+describe a time when the client was still looking after it. Read as "in step
+with the server" they would put a tick on a copy that nothing has checked
+since. So selective sync is answered before the baseline is consulted, and it
+wins over a stale error from the same period.
+
+Ignore patterns are deliberately *not* this: `*.log` means "never sync this",
+which is a different claim from "this lives on the drive and not here". Those
+files stay unbadged.
+
+### The badges are the client's own
+
+They are installed by `install.sh` into
+`~/.local/share/icons/hicolor/scalable/emblems/`, from
+`file-manager/icons/`.
+
+This used to lean on the icon theme, and that is why the tick went missing.
+Current Adwaita ships five legacy emblems — `synchronizing`, `shared`,
+`readonly`, `symbolic-link`, `unreadable` — and `emblem-default`, the green
+tick, is not among them. `emblem-important`, the error badge, had gone the same
+way. Asking a file manager to draw an emblem the theme does not have is not an
+error: nothing appears. The result was a client that could show a file starting
+to sync and never show it finishing.
+
+The theme names are kept as fallbacks, for an extension installed without the
+icons and for themes that do still carry them, and every chain ends in a name
+GNOME really has:
+
+| Status | Tried, in order |
+|---|---|
+| synced | `mecloud-synced`, `emblem-default`, `object-select-symbolic` |
+| syncing | `mecloud-syncing`, `emblem-synchronizing`, `content-loading-symbolic` |
+| cloud | `mecloud-cloud`, `weather-overcast-symbolic`, `network-server-symbolic` |
+| error | `mecloud-error`, `emblem-important`, `dialog-warning-symbolic` |
+
+The extension resolves this against the icon theme its own process is drawing
+with, once, and caches the answer. Where there is no theme to ask — no display,
+a headless check — it takes the client's own name, which is the one the
+installer put there.
+
+The icons are 16px-first. A file manager composites an emblem into the corner
+of a file icon, so the two-arrow sync glyph that looks best at 96px is a grey
+ring at the size that actually gets drawn; the shipped one is a single bold arc
+with one blunt arrowhead for that reason.
 
 A folder is judged by what is inside it: it has a tick when something under it
 is recorded and nothing under it failed. Folders have no baseline row of their
@@ -529,8 +619,8 @@ speak from Python with no library:
 <- STATUS:SYNCED:/home/ada/MeCloud/notes.txt
 ```
 
-`SYNCED`, `SYNCING`, `IGNORED`, `ERROR`, and `NOP` for anything outside the sync
-folder. `IGNORED` exists so the files we never sync say so rather than sitting
+`SYNCED`, `SYNCING`, `CLOUD`, `IGNORED`, `ERROR`, and `NOP` for anything outside
+the sync folder. `IGNORED` exists so the files we never sync say so rather than sitting
 under a spinner forever; `NOP` draws nothing at all, because a badge meaning "we
 have no opinion about this file" is noise on every other file the user owns.
 
@@ -544,9 +634,18 @@ This code runs **inside the file manager's process**. An exception there is the
 user's file manager misbehaving, and a blocking call there is their file manager
 hanging. So: every socket operation has a half-second timeout, a missing or
 unresponsive client degrades to no badge, results are cached briefly and the
-cache is bounded, and nothing is raised out of a callback. It is tested against
-a real `nautilus-python` for exactly that — it loads, it binds, and it does
-nothing harmful when the client is not running.
+cache is bounded, and nothing is raised out of a callback.
+
+`file-manager/check.sh` tests exactly that, against a real `nautilus-python` in
+a container rather than a mock — a mock would paper over the things worth
+checking. It asserts that the module binds to the manager's API, that every
+emblem it asks for is one the icon theme can actually draw, and that a client
+which is not running costs the file manager nothing: no badge, no menu, no
+exception.
+
+```bash
+desktop/file-manager/check.sh
+```
 
 ## Closing, and quitting
 
@@ -633,7 +732,7 @@ desktop/
 │   │   ├── lib.rs         # windows, tray, commands, the background loop
 │   │   ├── config.rs      # server address, sync folder, device token (tested)
 │   │   ├── deeplink.rs    # mailto: → compose URL (tested)
-│   │   ├── handlers.rs    # .desktop entry and xdg-mime (tested)
+│   │   ├── handlers.rs    # .desktop entry, xdg-mime, sidebar entry (tested)
 │   │   ├── pairing.rs     # loopback listener for the device token (tested)
 │   │   ├── reconcile.rs   # what to do, given what changed where (pure, tested)
 │   │   ├── scan.rs        # hashing the local folder, path safety (tested)
@@ -646,7 +745,9 @@ desktop/
 │   ├── icons/
 │   └── tauri.conf.json
 ├── file-manager/
-│   └── mecloud_extension.py   # badges and menu for Nautilus / Nemo / Caja
+│   ├── mecloud_extension.py   # badges and menu for Nautilus / Nemo / Caja
+│   ├── check.sh               # loads it in a real nautilus-python (tested)
+│   └── icons/                 # the emblems themselves, ours not the theme's
 ├── ui/index.html          # the local setup page
 ├── Dockerfile.build       # Rust + WebKitGTK toolchain
 ├── Dockerfile.run         # runtime + Xvfb, for headless verification
