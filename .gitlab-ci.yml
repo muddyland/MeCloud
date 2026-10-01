@@ -41,8 +41,8 @@ variables:
   #
   #   TOKEN=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:library/docker:pull" | jq -r .token)
   #   curl -so /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $TOKEN" \
-  #     https://registry-1.docker.io/v2/library/docker/manifests/28.5.0-dind
-  DOCKER_IMAGE: "docker:28.5.0"
+  #     https://registry-1.docker.io/v2/library/docker/manifests/29.8.2-dind
+  DOCKER_IMAGE: "docker:29.8.2"
   # Prefix for the Dockerfile's FROM lines. Empty means Docker Hub.
   BASE_REGISTRY: ""
 
@@ -130,8 +130,13 @@ build-image:
     # BASE_REGISTRY defaults to empty in the Dockerfile so a plain
     # `docker build .` still works off Docker Hub. Where a proxy exists the
     # group sets it, trailing slash included.
+    # Push a single image manifest. Docker 29 builds into the containerd image
+    # store and attaches a provenance attestation by default, which turns the
+    # push into an OCI index; the GitLab registry rejects that with "blob
+    # unknown to registry". Without attestations the push is one manifest.
     - |
       docker build \
+        --provenance=false --sbom=false \
         --build-arg BASE_REGISTRY="$BASE_REGISTRY" \
         --cache-from "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" \
