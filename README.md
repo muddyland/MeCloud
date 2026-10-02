@@ -219,9 +219,9 @@ The included `.gitlab-ci.yml` pipeline:
 | `test` | `smoke-test` | Starts the container and asserts `/health` returns `{"status":"ok"}` |
 | `release` | `tag-latest` | Promotes `:sha` to `:latest` — only on `main` |
 
-Uses GitLab's built-in container registry (`$CI_REGISTRY_IMAGE`), and pulls all
-public base images through the group Dependency Proxy. No additional variables
-are needed beyond the defaults GitLab injects, with one optional exception.
+Uses GitLab's built-in container registry (`$CI_REGISTRY_IMAGE`), and pulls
+public base images from Docker Hub. No additional variables are needed beyond
+the defaults GitLab injects, with one optional exception.
 
 ### Enabling the dependency audit
 
