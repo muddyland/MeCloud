@@ -11,7 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "dompurify": "^3.4.13",
+    "dompurify": "^3.4.16",
     "marked": "^18.0.10"
   },
   "devDependencies": {
