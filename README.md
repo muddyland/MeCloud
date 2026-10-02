@@ -108,7 +108,7 @@ are built from the source archive, because each uses its own system webview:*
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.13, FastAPI, Starlette, httpx |
+| Backend | Python 3.14, FastAPI, Starlette, httpx |
 | Frontend | SvelteKit 2, Svelte 5, Vite 8, Tailwind CSS |
 | Sanitisation | DOMPurify, plus a script-less sandboxed iframe |
 | Auth | OAuth2 authorization code flow with PKCE (S256) |
@@ -184,9 +184,28 @@ The image uses a true multi-stage build:
 1. **`frontend-builder`** (Node 24) — runs `npm run build`, producing a static SvelteKit output
 2. **`desktop-builder`** (Rust 1, trixie) — builds the Linux desktop client and
    packages it, plus a source archive for Windows and macOS, into `/out`
-3. **`python-deps`** (Python 3.13-slim) — installs Python packages into a prefix directory
-4. **Final stage** (Python 3.13-slim) — copies packages, built frontend and desktop
-   artefacts, runs as a non-root user
+3. **`python-deps`** (Python 3.14-slim) — installs Python packages into `/opt/pydeps`
+4. **Final stage** (Python 3.14-slim) — copies packages, built frontend and desktop
+   artefacts, runs as non-root uid 65532 with read-only application files
+
+### Hardened base image
+
+The two Python stages can instead be built on a
+[Docker Hardened Image](https://docs.docker.com/dhi/), whose runtime has no shell
+or package manager. Pass a matching pair: the `-dev` variant installs the
+packages and the plain variant ships them.
+
+```bash
+docker build \
+  --build-arg PYTHON_BUILDER_IMAGE=dhi.io/python:3.14-alpine-dev \
+  --build-arg PYTHON_RUNTIME_IMAGE=dhi.io/python:3.14-alpine \
+  -t mecloud .
+```
+
+In CI, set `USE_DHI=true`. Set `DHI_PYTHON_IMAGE` too if the images come from a
+mirror rather than `dhi.io/python`, which needs a Docker login. The final stage
+runs no commands, so it builds the same way on either base. With no shell in the
+image, debug it with `docker debug` or a sidecar rather than `docker exec sh`.
 
 The Rust stage is by far the slowest, and only depends on `desktop/`, so it
 caches independently of the web app. Skip it while iterating:

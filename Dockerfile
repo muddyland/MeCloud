@@ -7,6 +7,21 @@
 # Declared before the first FROM so every stage below can interpolate it.
 ARG BASE_REGISTRY=
 
+# The Python images for the dependency stage and the final stage. Both default
+# to python:3.14-slim. To build on a hardened, shell-less runtime instead, point
+# them at a matching pair: a "-dev" image with a shell and pip to install into,
+# and its runtime sibling to ship. CI does this when USE_DHI=true (Docker
+# Hardened Images; see .gitlab-ci.yml).
+#
+#   docker build \
+#     --build-arg PYTHON_BUILDER_IMAGE=dhi.io/python:3.14-alpine-dev \
+#     --build-arg PYTHON_RUNTIME_IMAGE=dhi.io/python:3.14-alpine .
+#
+# The two must come from the same family: packages built against glibc in a
+# slim builder will not load on a musl (Alpine) runtime, and vice versa.
+ARG PYTHON_BUILDER_IMAGE=${BASE_REGISTRY}python:3.14-slim
+ARG PYTHON_RUNTIME_IMAGE=${BASE_REGISTRY}python:3.14-slim
+
 # ── Stage 1: Build SvelteKit frontend ────────────────────────────────────────
 FROM ${BASE_REGISTRY}node:24-alpine AS frontend-builder
 
@@ -59,23 +74,29 @@ RUN mkdir -p /out && \
 
 
 # ── Stage 3: Install Python dependencies ─────────────────────────────────────
-FROM ${BASE_REGISTRY}python:3.13-slim AS python-deps
+FROM ${PYTHON_BUILDER_IMAGE} AS python-deps
 
 WORKDIR /deps
 
 COPY backend/requirements.txt ./
-RUN pip install --no-cache-dir --prefix=/deps/install -r requirements.txt
+# --target rather than --prefix or a venv: a plain directory on PYTHONPATH
+# does not depend on where the interpreter lives, which differs between the
+# slim image (/usr/local) and the hardened one (/usr).
+RUN pip install --no-cache-dir --target=/opt/pydeps -r requirements.txt
 
 
 # ── Stage 4: Final image ──────────────────────────────────────────────────────
-FROM ${BASE_REGISTRY}python:3.13-slim
-
-RUN useradd -m -u 1000 appuser
+#
+# No RUN steps in this stage. The hardened runtime has no shell, so anything
+# here must be a COPY or metadata. The app is stateless and writes nothing to
+# disk, so the files stay root-owned and read-only to the process. It runs as
+# 65532, the hardened image's own non-root user. Slim has no passwd entry for
+# that uid, which is fine because nothing looks the user up.
+FROM ${PYTHON_RUNTIME_IMAGE}
 
 WORKDIR /app
 
-# Copy Python packages from deps stage
-COPY --from=python-deps /deps/install /usr/local
+COPY --from=python-deps /opt/pydeps /opt/pydeps
 
 # Copy backend application code
 COPY backend/ ./
@@ -87,23 +108,25 @@ COPY --from=frontend-builder /app/build ./static
 # An empty directory is a valid outcome — see WITH_DESKTOP above.
 COPY --from=desktop-builder /out/ ./downloads/
 
-RUN chown -R appuser:appuser /app
-
-USER appuser
+USER 65532:65532
 
 ENV ENVIRONMENT=production \
     FRONTEND_STATIC_DIR=/app/static \
     DESKTOP_DOWNLOAD_DIR=/app/downloads \
+    PYTHONPATH=/opt/pydeps \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8000
 
+# Exec form: there is no shell to run a shell-form command on the hardened
+# image. urlopen raises on a refused connection or a non-2xx, which exits 1.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')" || exit 1
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
 
 # --proxy-headers so the app sees the real client IP behind a reverse proxy
 # (per-IP rate limiting depends on it); --no-server-header so we don't advertise
 # the exact server stack to scanners.
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
+# `python -m`: the uvicorn launcher script is in /opt/pydeps/bin, not on PATH.
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
      "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header"]
