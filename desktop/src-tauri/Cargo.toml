@@ -3,7 +3,9 @@ name        = "mecloud-desktop"
 version     = "0.6.1"
 description = "MeCloud desktop client"
 edition     = "2021"
-rust-version = "1.77"
+# 1.89 for std::fs::File::try_lock, which keeps two sync passes from running at
+# once even across processes (the tray client and a `--sync-once` cron job).
+rust-version = "1.89"
 
 [lib]
 name       = "mecloud_desktop_lib"
@@ -23,10 +25,16 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
+percent-encoding = "2"
+# The pairing nonce. Already in the tree through rustls/tauri.
+getrandom = "0.3"
 dirs = "5"
 
 # Sync engine.
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "multipart"] }
+# Native roots, not the bundled webpki set: the setup probe, the webview and the
+# sync engine must all trust the same certificates, or a server behind a private
+# CA passes setup and then fails every sync.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls-native-roots"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 hex = "0.4"

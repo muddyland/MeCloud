@@ -182,10 +182,7 @@ pub fn load_token() -> Option<String> {
 pub fn save_token(token: &str) -> Result<(), String> {
     let dir = config_dir().ok_or("No config directory on this system")?;
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join("device.token");
-    fs::write(&path, token).map_err(|e| format!("Could not write {}: {e}", path.display()))?;
-    restrict(&path);
-    Ok(())
+    write_atomically(&dir.join("device.token"), token.as_bytes(), true)
 }
 
 pub fn clear_token() -> Result<(), String> {
@@ -196,44 +193,115 @@ pub fn clear_token() -> Result<(), String> {
     Ok(())
 }
 
-/// Owner-only permissions on the token file. A no-op off Unix.
-fn restrict(path: &Path) {
+/// Replace a file so that a crash leaves either the old contents or the new,
+/// never a truncated mix: write a sibling, flush it to disk, rename it over.
+///
+/// `private` creates the file 0600 from the start. Writing first and
+/// tightening afterwards left the device token readable by other accounts for
+/// the moment in between.
+fn write_atomically(path: &Path, bytes: &[u8], private: bool) -> Result<(), String> {
+    use std::io::Write;
+    // Unique per write, so two writers (the app and a `--sync-once`, or two
+    // threads) never share a scratch file.
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let temp = path.with_extension(format!("tmp-{}-{seq}", std::process::id()));
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(if private { 0o600 } else { 0o644 });
     }
     #[cfg(not(unix))]
-    let _ = path;
+    let _ = private;
+    let write = |file: &mut fs::File| file.write_all(bytes).and_then(|_| file.sync_all());
+    let mut file = options.open(&temp).map_err(|e| format!("Could not write {}: {e}", temp.display()))?;
+    if let Err(e) = write(&mut file) {
+        let _ = fs::remove_file(&temp);
+        return Err(format!("Could not write {}: {e}", temp.display()));
+    }
+    drop(file);
+    fs::rename(&temp, path).map_err(|e| format!("Could not replace {}: {e}", path.display()))
 }
 
+/// Where everything this client keeps lives. `MECLOUD_CONFIG_DIR` overrides
+/// it, for tests and for running a second, separate client.
 fn config_dir() -> Option<PathBuf> {
+    if let Some(dir) = std::env::var_os("MECLOUD_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Some(PathBuf::from(dir));
+    }
     dirs::config_dir().map(|d| d.join("mecloud"))
+}
+
+/// The file whose lock says a sync pass is running.
+pub fn pass_lock_path() -> Option<PathBuf> {
+    config_dir().map(|d| d.join("sync.lock"))
 }
 
 pub fn config_path() -> Option<PathBuf> {
     config_dir().map(|d| d.join("config.json"))
 }
 
-/// Read the stored config. A missing or unreadable file is not an error — it
-/// means "not set up yet", which is a state the app has to handle on first run
-/// regardless, so there is no second failure mode worth inventing here.
+/// Read the stored config.
+///
+/// A missing file means "not set up yet". A file that is there but unreadable
+/// is different, and used to be treated the same: an interrupted write left an
+/// empty config, which loaded as defaults and silently dropped the server, the
+/// rules and the deletion window. Now the previous good copy (`.bak`, kept by
+/// `save`) is used instead, and the damaged file is set aside rather than
+/// overwritten, so nothing is lost without a trace.
 pub fn load() -> Config {
     let Some(path) = config_path() else {
         return Config::default();
     };
-    let Ok(text) = fs::read_to_string(path) else {
-        return Config::default();
-    };
-    serde_json::from_str(&text).unwrap_or_default()
+    load_from(&path)
+}
+
+fn load_from(path: &Path) -> Config {
+    let backup = path.with_extension("json.bak");
+    match fs::read_to_string(path) {
+        Ok(text) => match serde_json::from_str(&text) {
+            Ok(config) => config,
+            Err(e) => {
+                let aside = path.with_extension(format!("json.damaged-{}", unix_now()));
+                let _ = fs::rename(path, &aside);
+                eprintln!(
+                    "[mecloud] {} could not be read ({e}); kept it as {} and using the last good copy",
+                    path.display(),
+                    aside.display()
+                );
+                read_config(&backup).unwrap_or_default()
+            }
+        },
+        // Gone but with a backup beside it: something removed the file, which
+        // is not the same as a first run.
+        Err(_) => read_config(&backup).unwrap_or_default(),
+    }
+}
+
+fn read_config(path: &Path) -> Option<Config> {
+    serde_json::from_str(&fs::read_to_string(path).ok()?).ok()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 pub fn save(config: &Config) -> Result<(), String> {
     let dir = config_dir().ok_or("No config directory on this system")?;
     fs::create_dir_all(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
-    let path = dir.join("config.json");
+    save_to(&dir.join("config.json"), config)
+}
+
+fn save_to(path: &Path, config: &Config) -> Result<(), String> {
     let text = serde_json::to_string_pretty(config).map_err(|e| e.to_string())?;
-    fs::write(&path, text).map_err(|e| format!("Could not write {}: {e}", path.display()))
+    // The current file becomes the backup, but only if it is itself good: a
+    // backup of a damaged file is no backup.
+    if read_config(path).is_some() {
+        let _ = fs::copy(path, path.with_extension("json.bak"));
+    }
+    write_atomically(path, text.as_bytes(), false)
 }
 
 /// Trim a URL the user typed into something that can be joined with a path.
@@ -457,5 +525,55 @@ mod tests {
     fn a_value_in_range_is_used_as_given() {
         let config = Config { sync_interval_secs: 120, ..Default::default() };
         assert_eq!(config.sync_interval().as_secs(), 120);
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mecloud-config-{}-{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn saving_twice_keeps_the_previous_copy_as_a_backup() {
+        let path = scratch("backup").join("config.json");
+        let first = Config { server_url: Some("https://one.example".into()), ..Config::default() };
+        save_to(&path, &first).unwrap();
+        let second = Config { server_url: Some("https://two.example".into()), ..Config::default() };
+        save_to(&path, &second).unwrap();
+        assert_eq!(load_from(&path).server_url.as_deref(), Some("https://two.example"));
+        assert_eq!(read_config(&path.with_extension("json.bak")).unwrap().server_url.as_deref(), Some("https://one.example"));
+        let leftovers = fs::read_dir(path.parent().unwrap()).unwrap().filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp-")).count();
+        assert_eq!(leftovers, 0, "no scratch file left behind");
+    }
+
+    #[test]
+    fn a_damaged_config_falls_back_to_the_last_good_copy_and_is_kept() {
+        let dir = scratch("damaged");
+        let path = dir.join("config.json");
+        let good = Config { server_url: Some("https://good.example".into()), trash_days: 7, ..Config::default() };
+        save_to(&path, &good).unwrap();
+        save_to(&path, &good).unwrap();
+        // An interrupted write of the old, non-atomic kind.
+        fs::write(&path, b"").unwrap();
+
+        let loaded = load_from(&path);
+        assert_eq!(loaded.server_url.as_deref(), Some("https://good.example"));
+        assert_eq!(loaded.trash_days, 7);
+        let kept = fs::read_dir(&dir).unwrap().filter_map(Result::ok)
+            .any(|e| e.file_name().to_string_lossy().contains("damaged-"));
+        assert!(kept, "the damaged file should be set aside, not lost");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_private_file_is_never_world_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let path = scratch("private").join("device.token");
+        write_atomically(&path, b"secret", true).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret");
     }
 }

@@ -134,9 +134,16 @@ def _emblem_for(status):
 
 
 def _socket_path():
+    """Where the client listens. Must match `socket_path()` in socket.rs.
+
+    XDG_RUNTIME_DIR counts only if it is set *and* is a directory, the same
+    test the client applies; otherwise both fall back to a per-user directory
+    under TMPDIR (Rust's `temp_dir()`), then /tmp.
+    """
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    if not runtime:
-        runtime = "/tmp/mecloud-%d" % os.getuid()
+    if not runtime or not os.path.isdir(runtime):
+        tmp = os.environ.get("TMPDIR") or "/tmp"
+        runtime = os.path.join(tmp, "mecloud-%d" % os.getuid())
     return os.path.join(runtime, "mecloud", "socket")
 
 

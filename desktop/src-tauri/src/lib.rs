@@ -2,20 +2,26 @@
 //!
 //! The shell around the web apps: a native window that hosts the MeCloud web
 //! UI, a tray icon that keeps it one click away, and the desktop integration a
-//! web page cannot do for itself — being the system's mail handler, and
-//! staying resident when its window is closed.
+//! web page cannot do for itself — being the system's mail handler, syncing a
+//! folder, and staying resident when its window is closed.
 //!
-//! Authentication deliberately lives in the webview. The server already runs an
+//! Authentication for the window lives in the webview. The server runs an
 //! OAuth2 authorization-code flow with PKCE and keeps the tokens in an
 //! encrypted, HttpOnly session cookie; loading the server in a webview uses
-//! exactly that flow, so the client never handles a credential and there is no
-//! second, weaker login path to attack. When the sync engine lands it will need
-//! its own token, obtained from the server rather than invented here.
+//! exactly that flow, so the window never handles a credential. The sync
+//! engine, which runs with no window open, has its own device token from
+//! `pairing`.
+//!
+//! Layout: `commands` (what the setup page may call), `windows`, `tray`,
+//! `background` (the sync and update loops), `fm_bridge` (the file-manager
+//! socket) and `cli` (headless flags). This file holds the shared state and
+//! the one entry to a sync pass.
 
+pub mod api;
 pub mod config;
 pub mod deeplink;
+pub mod encode;
 pub mod handlers;
-pub mod api;
 pub mod pairing;
 pub mod reconcile;
 pub mod rules;
@@ -25,15 +31,19 @@ pub mod sync;
 pub mod syncdb;
 pub mod update;
 
-use std::sync::{Arc, Mutex};
-use std::time::Duration;
+mod background;
+mod cli;
+mod commands;
+mod fm_bridge;
+mod tray;
+mod windows;
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+
+use tauri::Manager;
 
 use config::Config;
-use deeplink::Target;
 use sync::{SharedStatus, State, Status};
 use update::UpdateInfo;
 
@@ -42,668 +52,157 @@ pub struct AppState {
     pub config: Mutex<Config>,
     pub status: SharedStatus,
     pub update: Mutex<UpdateInfo>,
+    /// Set to cancel the pairing currently waiting, if any.
+    pub pairing: Mutex<Option<Arc<AtomicBool>>>,
     /// Whether a tray icon was actually created.
     ///
     /// Not a given: a session with no StatusNotifier host, a bare window
     /// manager or a headless run all leave the client without one, and the
-    /// client survives that rather than refusing to start. It matters here
-    /// because "close to the tray" is only sensible when the tray exists.
-    tray: std::sync::atomic::AtomicBool,
+    /// client survives that rather than refusing to start. It matters because
+    /// "close to the tray" is only sensible when the tray exists.
+    tray: AtomicBool,
 }
 
 impl AppState {
+    fn new(config: Config) -> Self {
+        Self {
+            config: Mutex::new(config),
+            status: Arc::new(Mutex::new(Status::default())),
+            update: Mutex::new(UpdateInfo { current: update::CURRENT.into(), ..Default::default() }),
+            pairing: Mutex::new(None),
+            tray: AtomicBool::new(false),
+        }
+    }
+
     pub fn has_tray(&self) -> bool {
-        self.tray.load(std::sync::atomic::Ordering::Relaxed)
+        self.tray.load(Ordering::Relaxed)
     }
 
     pub fn set_tray(&self, present: bool) {
-        self.tray.store(present, std::sync::atomic::Ordering::Relaxed);
+        self.tray.store(present, Ordering::Relaxed);
+    }
+
+    pub fn config_now(&self) -> Config {
+        self.config.lock().unwrap().clone()
     }
 }
 
-/// How often a pass runs when nothing else prompts one.
+/// Change the configuration, on disk and in memory, as one step.
 ///
-/// A poll rather than a filesystem watcher: a watcher tells you about local
-/// changes only, so a remote change still needs a poll, and a scan of a few
-/// thousand files costs milliseconds. Watching is worth adding for
-/// responsiveness, not for correctness.
-
-/// How often to ask the server whether it ships a newer client. Rarely: an
-/// update is not urgent, and this runs on someone else's machine.
-const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
-
-const MAIN: &str = "main";
-const SETUP: &str = "setup";
-
-// ── Commands, callable only from the local setup page ───────────────────────
-//
-// The main window points at the server, and remote origins are not granted IPC
-// (see capabilities/default.json), so nothing reachable from the network can
-// call these.
-
-#[tauri::command]
-fn get_config(state: tauri::State<'_, AppState>) -> Config {
-    state.config.lock().unwrap().clone()
-}
-
-#[tauri::command]
-fn is_mailto_registered() -> bool {
-    handlers::is_registered()
-}
-
-/// Validate a server address by asking it to describe itself.
-///
-/// `/api/config` is unauthenticated and returns the instance's name, so it
-/// answers both questions that matter at setup time — is this reachable, and
-/// is it actually MeCloud — without needing the user to be signed in yet.
-#[tauri::command]
-async fn probe_server(url: String) -> Result<String, String> {
-    let base = config::normalise_server_url(&url)?;
-    let endpoint = format!("{base}/api/config");
-
-    let response = tauri::async_runtime::spawn_blocking(move || {
-        // No async HTTP client in the dependency tree yet — one blocking GET at
-        // setup time does not justify pulling one in.
-        std::process::Command::new("curl")
-            .args(["-fsS", "--max-time", "10", &endpoint])
-            .output()
-    })
-    .await
-    .map_err(|e| e.to_string())?
-    .map_err(|_| "Could not run the network check on this system.".to_string())?;
-
-    if !response.status.success() {
-        return Err(format!("Could not reach {base}."));
-    }
-    let body = String::from_utf8_lossy(&response.stdout);
-    let parsed: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|_| format!("{base} answered, but not like a MeCloud server."))?;
-    parsed
-        .get("appName")
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-        .ok_or_else(|| format!("{base} answered, but not like a MeCloud server."))
-}
-
-#[tauri::command]
-fn save_server(
-    app: AppHandle,
-    state: tauri::State<'_, AppState>,
-    url: String,
-    handle_mailto: bool,
-) -> Result<(), String> {
-    let base = config::normalise_server_url(&url)?;
-
-    if handle_mailto {
-        handlers::register_mailto()?;
-    } else if handlers::is_registered() {
-        handlers::unregister_mailto()?;
-    }
-
-    // Preserve whatever sync settings are already there: this command is the
-    // server address, and re-running setup must not silently turn sync off.
-    let next = Config { server_url: Some(base.clone()), handle_mailto, ..config_now(&state) };
+/// Every setting goes through here. The old pattern — clone, edit, save,
+/// store — let two writers each start from the same snapshot, so the second
+/// silently undid the first; the sync loop did exactly that to any setting
+/// changed while a pass was running. Holding the lock across the save makes
+/// each change apply to the latest configuration.
+pub fn update_config<T>(state: &AppState, change: impl FnOnce(&mut Config) -> T) -> Result<T, String> {
+    let mut guard = state.config.lock().unwrap();
+    let mut next = guard.clone();
+    let out = change(&mut next);
     config::save(&next)?;
-    *state.config.lock().unwrap() = next;
-
-    open_main(&app, None);
-    if let Some(win) = app.get_webview_window(SETUP) {
-        let _ = win.hide();
-    }
-    Ok(())
+    *guard = next;
+    Ok(out)
 }
 
-#[tauri::command]
-fn sync_status(state: tauri::State<'_, AppState>) -> Status {
-    state.status.lock().map(|s| s.clone()).unwrap_or_default()
+/// How a request for a pass turned out.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Pass {
+    /// It ran. `used_exemption` says whether the one-shot bulk-delete
+    /// permission was in force, so the caller can spend it.
+    Ran { used_exemption: bool },
+    /// Sync is not set up or is switched off.
+    Skipped,
+    /// Another pass, in this process or another, is still running.
+    Busy,
 }
 
-#[tauri::command]
-fn is_paired() -> bool {
-    config::load_token().is_some()
+static PASS_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// Held for the length of a pass. Two passes at once both upload the same new
+/// file — leaving a duplicate on the server — and both download into the same
+/// scratch file, recording the interleaved result as the baseline.
+struct PassGuard {
+    _file: Option<std::fs::File>,
 }
 
-/// Pair this computer with the account, through the user's browser session.
-///
-/// Blocking on a background thread: it waits for a person to read a page and
-/// press a button, which is not something to hold the UI thread for.
-#[tauri::command]
-async fn pair_device(app: AppHandle, state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let server = state
-        .config
-        .lock()
-        .unwrap()
-        .server_url
-        .clone()
-        .ok_or("Connect to a server first.")?;
-
-    let device_name = hostname()
-        .map(|h| format!("MeCloud on {h}"))
-        .unwrap_or_else(|| "MeCloud Desktop".into());
-
-    let listener = pairing::Listener::bind()?;
-    let url = listener.pairing_url(&server, &device_name);
-
-    // The user's browser, not the app's webview: the approval has to happen in
-    // a session they can see and trust, and their browser is where they are
-    // already signed in.
-    if let Err(e) = tauri_plugin_opener::open_url(&url, None::<&str>) {
-        return Err(format!("Could not open your browser: {e}"));
-    }
-
-    let token = tauri::async_runtime::spawn_blocking(move || listener.wait_for_token())
-        .await
-        .map_err(|e| e.to_string())??;
-
-    config::save_token(&token)?;
-    let ui = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        let _ = ui.get_webview_window(SETUP).map(|w| w.set_focus());
-    });
-    Ok(device_name)
-}
-
-#[tauri::command]
-fn unpair_device(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    config::clear_token()?;
-    if let Ok(mut status) = state.status.lock() {
-        *status = Status {
-            state: State::NotConfigured,
-            detail: "This computer is no longer connected.".into(),
-            ..Default::default()
-        };
-    }
-    Ok(())
-}
-
-#[tauri::command]
-/// Count files under a path, stopping at `cap` — the question is "is there
-/// anything here", not "how much", and a huge tree should not delay an answer.
-fn count_files(root: &std::path::Path, cap: usize) -> usize {
-    walkdir::WalkDir::new(root)
-        .max_depth(6)
-        .into_iter()
-        .filter_map(Result::ok)
-        .filter(|e| e.file_type().is_file())
-        .take(cap)
-        .count()
-}
-
-#[tauri::command]
-fn set_sync(
-    state: tauri::State<'_, AppState>, folder: String, enabled: bool, acknowledged: bool,
-) -> Result<(), String> {
-    let mut config = state.config.lock().unwrap().clone();
-    let previous = config.sync_folder.clone();
-
-    if enabled {
-        let trimmed = folder.trim();
-        if trimmed.is_empty() {
-            return Err("Choose a folder to sync.".into());
+impl PassGuard {
+    fn acquire() -> Option<Self> {
+        if PASS_RUNNING.swap(true, Ordering::AcqRel) {
+            return None;
         }
-        let path = std::path::PathBuf::from(trimmed);
-        // Created rather than demanded: the natural thing to type is a folder
-        // that does not exist yet.
-        std::fs::create_dir_all(&path)
-            .map_err(|e| format!("Could not use {}: {e}", path.display()))?;
-
-        // An existing folder with things already in it is the dangerous case,
-        // and the one that cost a user their files: if it is an *incomplete*
-        // copy of the drive, everything missing from it looks deleted. Said
-        // plainly, once, before anything syncs.
-        let changing = config.sync_folder.as_deref() != Some(trimmed);
-        if changing && !acknowledged {
-            let existing = count_files(&path, 200);
-            if existing > 0 {
-                return Err(format!(
-                    "NEEDS_ACKNOWLEDGEMENT:{path_display} already contains {existing}{more} \
-                     file(s).\n\nIf this is an incomplete copy of your drive, the files it is \
-                     missing will look deleted. Deletions go to the trash rather than straight \
-                     to the server, so nothing is lost immediately — but check the folder is \
-                     what you expect before continuing.",
-                    path_display = path.display(),
-                    more = if existing >= 200 { "+" } else { "" },
-                ));
+        // Across processes too: the tray client and a `--sync-once` from cron
+        // share a folder and a database.
+        let file = config::pass_lock_path().and_then(|path| {
+            if let Some(dir) = path.parent() {
+                let _ = std::fs::create_dir_all(dir);
             }
-        }
-        if config::load_token().is_none() {
-            return Err("Connect this computer to your account first.".into());
-        }
-        // Pointing at a different folder invalidates the baseline entirely:
-        // it describes files that were in the *old* folder. Kept, it says
-        // every one of them existed here and is now gone, and the next pass
-        // deletes them from the server. This is how an account gets emptied by
-        // changing a setting.
-        let chosen = path.display().to_string();
-        if config.sync_folder.as_deref() != Some(chosen.as_str()) {
-            if let Some(db) = config::sync_db_path() {
-                let _ = std::fs::remove_file(&db);
-                // SQLite's WAL companions describe the file just removed.
-                let _ = std::fs::remove_file(db.with_extension("db-wal"));
-                let _ = std::fs::remove_file(db.with_extension("db-shm"));
+            std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path).ok()
+        });
+        if let Some(f) = &file {
+            if let Err(std::fs::TryLockError::WouldBlock) = f.try_lock() {
+                PASS_RUNNING.store(false, Ordering::Release);
+                return None;
             }
+            // Any other error means the file system has no locks; the
+            // in-process guard still holds.
         }
-        config.sync_folder = Some(chosen);
-    }
-    config.sync_enabled = enabled;
-
-    config::save(&config)?;
-    let current = config.sync_folder.clone();
-    *state.config.lock().unwrap() = config;
-
-    // The file manager sidebar follows the folder: in when sync is switched
-    // on, moved when the folder changes, out when it is switched off. All of
-    // it best-effort — a bookmark is not worth failing a settings change
-    // over, and a machine may have no GTK file manager at all.
-    if previous != current {
-        if let Some(old) = previous.as_deref() {
-            let _ = handlers::remove_from_sidebar(std::path::Path::new(old));
-        }
-    }
-    if let Some(folder) = current.as_deref() {
-        let path = std::path::Path::new(folder);
-        if enabled {
-            let _ = handlers::add_to_sidebar(path);
-            mark_sidebar_entry_placed(&state);
-        } else {
-            let _ = handlers::remove_from_sidebar(path);
-        }
-    }
-
-    if let Ok(mut status) = state.status.lock() {
-        if !enabled {
-            *status = Status { state: State::Paused, detail: "Sync is off".into(), ..Default::default() };
-        }
-    }
-    Ok(())
-}
-
-/// Note that the sidebar entry has had its one chance, so startup leaves it
-/// alone from now on.
-fn mark_sidebar_entry_placed(state: &AppState) {
-    let mut config = state.config.lock().unwrap().clone();
-    if config.sidebar_entry_placed {
-        return;
-    }
-    config.sidebar_entry_placed = true;
-    if config::save(&config).is_ok() {
-        *state.config.lock().unwrap() = config;
+        Some(Self { _file: file })
     }
 }
 
-/// Put an install that was already syncing into the file manager sidebar.
-///
-/// The entry is normally written when the sync folder is chosen, which does
-/// nothing for someone who chose theirs before this client could write one. So
-/// it is placed at startup too — but only ever once. A client that puts the
-/// bookmark back at every launch is one the user cannot get rid of.
-fn place_sidebar_entry_once(state: &AppState) {
-    let config = state.config.lock().unwrap().clone();
-    if config.sidebar_entry_placed || !config.sync_enabled {
-        return;
-    }
-    let Some(folder) = config.sync_path() else { return };
-    let _ = handlers::add_to_sidebar(&folder);
-    mark_sidebar_entry_placed(state);
-}
-
-/// Run one pass now, if everything needed is in place.
-#[tauri::command]
-async fn sync_now(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let config = state.config.lock().unwrap().clone();
-    let status = state.status.clone();
-    tauri::async_runtime::spawn_blocking(move || run_pass(&config, &status))
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-fn pending_deletions() -> Vec<syncdb::PendingDeletion> {
-    config::sync_db_path()
-        .and_then(|p| syncdb::SyncDb::open(&p).ok())
-        .and_then(|db| db.pending().ok())
-        .unwrap_or_default()
-}
-
-/// Put a file back: the deletion is cancelled and the next pass fetches it.
-///
-/// The baseline is dropped rather than kept, so the planner sees "on the
-/// server, absent here, no history" and downloads it — keeping the baseline
-/// would instead read as a fresh local deletion and trash it again.
-#[tauri::command]
-fn restore_deletion(path: String) -> Result<(), String> {
-    let db_path = config::sync_db_path().ok_or("No database")?;
-    let db = syncdb::SyncDb::open(&db_path)?;
-    db.clear_pending(&path)?;
-    db.forget(&path)
-}
-
-/// Apply one waiting deletion to the server now, without waiting out the window.
-#[tauri::command]
-async fn apply_deletion(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
-    let config = state.config.lock().unwrap().clone();
-    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
-        let db_path = config::sync_db_path().ok_or("No database")?;
-        let db = syncdb::SyncDb::open(&db_path)?;
-        let Some(due) = db.pending()?.into_iter().find(|p| p.path == path) else {
-            return Err("That file is no longer waiting to be deleted.".into());
-        };
-        let (Some(server), Some(token)) = (config.server_url.clone(), config::load_token()) else {
-            return Err("Not connected.".into());
-        };
-        let api = api::Api::new(&server, &token)?;
-        let account_id = api.account_id()?;
-        if let Some(id) = &due.node_id {
-            api.destroy(&account_id, id)?;
-        }
-        db.clear_pending(&due.path)?;
-        db.forget(&due.path)
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// How often a background pass runs.
-#[tauri::command]
-fn set_sync_interval(state: tauri::State<'_, AppState>, seconds: u64) -> Result<u64, String> {
-    let mut config = state.config.lock().unwrap().clone();
-    config.sync_interval_secs =
-        seconds.clamp(config::MIN_SYNC_INTERVAL, config::MAX_SYNC_INTERVAL);
-    config::save(&config)?;
-    let applied = config.sync_interval_secs;
-    *state.config.lock().unwrap() = config;
-    // Returned rather than assumed, so the field can show what was actually
-    // stored when the value was out of range.
-    Ok(applied)
-}
-
-#[tauri::command]
-fn set_deletion_policy(
-    state: tauri::State<'_, AppState>, enabled: bool, days: i64,
-) -> Result<(), String> {
-    let mut config = state.config.lock().unwrap().clone();
-    config.delete_on_server = enabled;
-    // Zero would mean "delete on the next pass", which is the behaviour the
-    // trash exists to prevent; a floor of one day keeps a way back.
-    config.trash_days = days.clamp(1, 365);
-    config::save(&config)?;
-    *state.config.lock().unwrap() = config;
-    Ok(())
-}
-
-/// The exclusion rules, as the settings screen wants them: patterns as one
-/// block of text, because that is how people edit a list of lines.
-#[tauri::command]
-fn get_rules(state: tauri::State<'_, AppState>) -> serde_json::Value {
-    let config = state.config.lock().unwrap().clone();
-    serde_json::json!({
-        "patterns": config.ignore_patterns.join("\n"),
-        "excluded_folders": config.excluded_folders,
-        "confirm_over_mb": config.confirm_over_mb,
-        "sync_hidden": config.sync_hidden,
-    })
-}
-
-#[tauri::command]
-fn set_rules(
-    state: tauri::State<'_, AppState>,
-    patterns: String,
-    confirm_over_mb: u64,
-    sync_hidden: bool,
-) -> Result<Vec<String>, String> {
-    let lines: Vec<String> = patterns.lines().map(|l| l.trim().to_string()).collect();
-    // Report the unusable lines rather than refusing the save: a typo in line
-    // nine should not throw away the eight good rules above it, and a rule
-    // that silently does nothing is worse than one the screen complains about.
-    let rejected = rules::Rules::unparsed(&lines);
-
-    let mut config = state.config.lock().unwrap().clone();
-    config.ignore_patterns = lines.into_iter().filter(|l| !l.is_empty()).collect();
-    config.confirm_over_mb = confirm_over_mb;
-    config.sync_hidden = sync_hidden;
-    config::save(&config)?;
-    *state.config.lock().unwrap() = config;
-    Ok(rejected)
-}
-
-/// The top-level folders on the drive, and whether each one is being synced.
-///
-/// Read from the baseline rather than the server when possible: the picker
-/// should open instantly and work offline, and the baseline already knows the
-/// shape of the drive. Falling back to the server covers the case that
-/// matters most — choosing what to sync *before* the first pass downloads it.
-#[tauri::command]
-async fn sync_folders(state: tauri::State<'_, AppState>) -> Result<Vec<rules::FolderChoice>, String> {
-    let config = state.config.lock().unwrap().clone();
-    let excluded: std::collections::BTreeSet<String> =
-        config.excluded_folders.iter().cloned().collect();
-
-    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<rules::FolderChoice>, String> {
-        let known: Vec<(String, u64)> = config::sync_db_path()
-            .and_then(|p| syncdb::SyncDb::open(&p).ok())
-            .and_then(|db| db.sizes().ok())
-            .unwrap_or_default();
-
-        if !known.is_empty() {
-            let borrowed: Vec<(&String, u64)> = known.iter().map(|(p, s)| (p, *s)).collect();
-            return Ok(rules::folder_choices(borrowed, &excluded));
-        }
-
-        let (Some(server), Some(token)) = (config.server_url.clone(), config::load_token()) else {
-            return Ok(rules::folder_choices(Vec::new(), &excluded));
-        };
-        let api = api::Api::new(&server, &token)?;
-        let account_id = api.account_id()?;
-        let nodes = api.nodes(&account_id)?;
-        let (tree, _) = api::to_tree(&nodes);
-        let paths: Vec<(String, u64)> = tree.iter().map(|(p, e)| (p.clone(), e.size)).collect();
-        let borrowed: Vec<(&String, u64)> = paths.iter().map(|(p, s)| (p, *s)).collect();
-        Ok(rules::folder_choices(borrowed, &excluded))
-    })
-    .await
-    .map_err(|e| e.to_string())?
-}
-
-/// Switch a top-level folder on or off.
-///
-/// Switching one *off* leaves both copies exactly where they are — the local
-/// files stay on disk and the server's stay on the server. It only stops the
-/// client having an opinion about them. That is the whole reason exclusions
-/// are applied to every input rather than just the local scan.
-#[tauri::command]
-fn set_folder_included(
-    state: tauri::State<'_, AppState>, name: String, included: bool,
-) -> Result<(), String> {
-    let name = name.trim_matches('/').to_string();
-    if name.is_empty() {
-        return Err("No folder given.".into());
-    }
-    let mut config = state.config.lock().unwrap().clone();
-    config.excluded_folders.retain(|f| f != &name);
-    if !included {
-        config.excluded_folders.push(name);
-    }
-    config::save(&config)?;
-    *state.config.lock().unwrap() = config;
-    Ok(())
-}
-
-#[tauri::command]
-fn held_uploads() -> Vec<syncdb::PendingUpload> {
-    config::sync_db_path()
-        .and_then(|p| syncdb::SyncDb::open(&p).ok())
-        .and_then(|db| db.held_uploads().ok())
-        .unwrap_or_default()
-}
-
-/// Agree to one oversized upload. The next pass sends it.
-#[tauri::command]
-fn approve_upload(path: String) -> Result<(), String> {
-    let db_path = config::sync_db_path().ok_or("No database")?;
-    syncdb::SyncDb::open(&db_path)?.approve_upload(&path)
-}
-
-/// Decline one oversized upload, permanently.
-///
-/// Turned into an exclusion rule rather than a "declined" row, so that the
-/// answer is visible and editable on the rules screen instead of living in a
-/// database the user cannot see. The path is anchored so it means this file,
-/// not every file that happens to share its name.
-#[tauri::command]
-fn decline_upload(state: tauri::State<'_, AppState>, path: String) -> Result<(), String> {
-    let db_path = config::sync_db_path().ok_or("No database")?;
-    let db = syncdb::SyncDb::open(&db_path)?;
-    db.clear_upload(&path)?;
-
-    let rule = format!("/{}", path.trim_start_matches('/'));
-    let mut config = state.config.lock().unwrap().clone();
-    if !config.ignore_patterns.contains(&rule) {
-        config.ignore_patterns.push(rule);
-    }
-    config::save(&config)?;
-    *state.config.lock().unwrap() = config;
-    Ok(())
-}
-
-#[tauri::command]
-fn get_autostart() -> bool {
-    handlers::is_autostart_enabled()
-}
-
-#[tauri::command]
-fn set_autostart(enabled: bool) -> Result<(), String> {
-    handlers::set_autostart(enabled)
-}
-
-#[tauri::command]
-fn update_info(state: tauri::State<'_, AppState>) -> UpdateInfo {
-    state.update.lock().map(|u| u.clone()).unwrap_or_default()
-}
-
-#[tauri::command]
-async fn check_for_update(state: tauri::State<'_, AppState>) -> Result<UpdateInfo, String> {
-    let base = state.config.lock().unwrap().server_url.clone().ok_or("Connect to a server first.")?;
-    let token = config::load_token().ok_or("Connect this computer to your account first.")?;
-    let found = tauri::async_runtime::spawn_blocking(move || update::check(&base, &token))
-        .await
-        .map_err(|e| e.to_string())??;
-    if let Ok(mut slot) = state.update.lock() {
-        *slot = found.clone();
-    }
-    Ok(found)
-}
-
-/// Download, verify and install. The caller is told to restart; nothing is
-/// restarted underneath them mid-sync.
-#[tauri::command]
-async fn install_update(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let base = state.config.lock().unwrap().server_url.clone().ok_or("Connect to a server first.")?;
-    let token = config::load_token().ok_or("Connect this computer to your account first.")?;
-    let info = state.update.lock().map(|u| u.clone()).unwrap_or_default();
-    if !info.newer {
-        return Err("This is already the current version.".into());
-    }
-    let version = info.available.clone().unwrap_or_default();
-    tauri::async_runtime::spawn_blocking(move || update::install(&base, &token, &info))
-        .await
-        .map_err(|e| e.to_string())??;
-    Ok(version)
-}
-
-/// Let one refused pass through.
-///
-/// One pass, not a setting: the guard exists because a mass deletion is nearly
-/// always a symptom, and a permanent exemption would mean it never fires again
-/// for the one time it is right.
-#[tauri::command]
-fn confirm_bulk_delete(state: tauri::State<'_, AppState>) -> Result<(), String> {
-    let mut config = state.config.lock().unwrap().clone();
-    config.allow_bulk_delete_once = true;
-    config::save(&config)?;
-    *state.config.lock().unwrap() = config;
-    Ok(())
-}
-
-#[tauri::command]
-fn set_auto_update(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
-    let mut config = state.config.lock().unwrap().clone();
-    config.auto_update = enabled;
-    config::save(&config)?;
-    *state.config.lock().unwrap() = config;
-    Ok(())
-}
-
-/// Check, and install if the user asked for that.
-///
-/// Installing replaces the binary on disk; the running process is untouched
-/// and keeps going until it is next started. Restarting underneath someone
-/// mid-sync to save them one manual step is not a trade worth making.
-fn update_pass(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let (Some(base), auto) = ({
-        let config = state.config.lock().unwrap();
-        (config.server_url.clone(), config.auto_update)
-    }) else { return };
-    let Some(token) = config::load_token() else { return };
-
-    let Ok(found) = update::check(&base, &token) else { return };
-    if let Ok(mut slot) = state.update.lock() {
-        *slot = found.clone();
-    }
-    if found.newer && auto {
-        match update::install(&base, &token, &found) {
-            Ok(_) => log_update(&format!(
-                "Installed {} — it will be running after the next restart.",
-                found.available.unwrap_or_default()
-            )),
-            Err(e) => log_update(&format!("Update failed: {e}")),
-        }
+impl Drop for PassGuard {
+    fn drop(&mut self) {
+        // Closing the file releases the OS lock.
+        PASS_RUNNING.store(false, Ordering::Release);
     }
 }
 
-fn log_update(message: &str) {
-    eprintln!("[mecloud] {message}");
-}
-
-fn config_now(state: &tauri::State<'_, AppState>) -> Config {
-    state.config.lock().unwrap().clone()
-}
-
-fn hostname() -> Option<String> {
-    std::fs::read_to_string("/etc/hostname")
-        .ok()
-        .map(|h| h.trim().to_string())
-        .filter(|h| !h.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
+/// Run `work` while no pass can start, or refuse if one is running. For
+/// changes a pass must not see half-done: wiping the baseline, putting a file
+/// back from the trash.
+pub(crate) fn with_pass_lock<T>(work: impl FnOnce() -> T) -> Result<T, String> {
+    let _guard = PassGuard::acquire().ok_or("A sync is running; try again in a moment.")?;
+    Ok(work())
 }
 
 /// One reconciliation pass. Returns quietly when sync is not set up — that is
 /// a state, not a failure.
-pub fn run_pass(config: &Config, status: &SharedStatus) {
+pub fn run_pass(config: &Config, status: &SharedStatus) -> Pass {
     let (Some(server), Some(folder)) = (config.server_url.clone(), config.sync_path()) else {
-        return;
+        return Pass::Skipped;
     };
     if !config.sync_enabled {
-        return;
+        return Pass::Skipped;
     }
+    let Some(_guard) = PassGuard::acquire() else { return Pass::Busy };
+
+    // Failing before the engine runs leaves the exemption unspent.
+    let ran = Pass::Ran { used_exemption: false };
     let Some(token) = config::load_token() else {
         publish_error(status, State::NotConfigured, "This computer is not connected to your account.");
-        return;
+        return ran;
     };
-    let Some(db_path) = config::sync_db_path() else { return };
+    let Some(db_path) = config::sync_db_path() else { return ran };
 
     let api = match api::Api::new(&server, &token) {
         Ok(a) => a,
-        Err(e) => return publish_error(status, State::Error, &e),
+        Err(e) => {
+            publish_error(status, State::Error, &e);
+            return ran;
+        }
     };
     let account_id = match api.account_id() {
         Ok(id) => id,
-        Err(e) => return publish_error(status, State::Error, &e),
+        Err(e) => {
+            publish_error(status, State::Error, &e);
+            return ran;
+        }
     };
     let db = match syncdb::SyncDb::open(&db_path) {
         Ok(db) => db,
-        Err(e) => return publish_error(status, State::Error, &e),
+        Err(e) => {
+            publish_error(status, State::Error, &e);
+            return ran;
+        }
     };
 
     let engine = sync::Engine {
@@ -716,16 +215,23 @@ pub fn run_pass(config: &Config, status: &SharedStatus) {
         trash_days: config.trash_days,
         rules: config.rules(),
     };
-    let outcome = engine.run_once(status);
+    engine.run_once(status);
+    Pass::Ran { used_exemption: config.allow_bulk_delete_once }
+}
 
-    // Consumed, whatever happened: an exemption that survived its pass would
-    // quietly disarm the guard for every pass after it.
-    if config.allow_bulk_delete_once {
-        let mut cleared = config.clone();
-        cleared.allow_bulk_delete_once = false;
-        let _ = config::save(&cleared);
+/// A pass with the app's own state: the latest configuration in, and the
+/// bulk-delete exemption spent afterwards — in memory as well as on disk. It
+/// used to be cleared only on disk, from a stale copy, so the guard stayed off
+/// until restart and the next settings save wrote the exemption back.
+pub fn run_pass_now(state: &AppState) -> Result<(), String> {
+    let config = state.config_now();
+    match run_pass(&config, &state.status) {
+        Pass::Busy => Err("A sync is already running.".into()),
+        Pass::Ran { used_exemption: true } => {
+            update_config(state, |c| c.allow_bulk_delete_once = false).map(|_| ())
+        }
+        _ => Ok(()),
     }
-    let _ = outcome;
 }
 
 fn publish_error(status: &SharedStatus, state: State, detail: &str) {
@@ -734,511 +240,19 @@ fn publish_error(status: &SharedStatus, state: State, detail: &str) {
     }
 }
 
-// ── Windows ─────────────────────────────────────────────────────────────────
-
-/// Show the main window, pointed at the server (optionally at a deep link).
-pub fn open_main(app: &AppHandle, target: Option<Target>) {
-    let config = app.state::<AppState>().config.lock().unwrap().clone();
-    let Some(server) = config.server_url.clone() else {
-        open_setup(app);
-        return;
-    };
-
-    let url = match target {
-        Some(t) => t.to_url(&server),
-        None => server.clone(),
-    };
-    let parsed = match url.parse() {
-        Ok(u) => u,
-        Err(_) => {
-            open_setup(app);
-            return;
-        }
-    };
-
-    if let Some(window) = app.get_webview_window(MAIN) {
-        // Only navigate for an explicit target: doing it unconditionally would
-        // throw away whatever the user was in the middle of every time they
-        // clicked the tray.
-        if url != server {
-            let _ = window.navigate(parsed);
-        }
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        return;
-    }
-
-    let built = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::External(parsed))
-        .title("MeCloud")
-        .inner_size(1280.0, 860.0)
-        .min_inner_size(480.0, 480.0)
-        .resizable(true)
-        .build();
-
-    if let Ok(window) = built {
-        // Closing the window leaves the client running in the tray, the way a
-        // desktop client is expected to behave — but only if there is a tray
-        // to leave it in. Without one, hiding the window strands the process
-        // with no way to reach it and no way to stop it, so there the X button
-        // means what it usually means.
-        let handle = window.clone();
-        let has_tray = app.state::<AppState>().has_tray();
-        let quit = app.clone();
-        window.on_window_event(move |event| {
-            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                if has_tray {
-                    api.prevent_close();
-                    let _ = handle.hide();
-                } else {
-                    quit.exit(0);
-                }
-            }
-        });
-    }
-}
-
-pub fn open_setup(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window(SETUP) {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-        return;
-    }
-    let _ = WebviewWindowBuilder::new(app, SETUP, WebviewUrl::App("index.html".into()))
-        .title("MeCloud — Settings")
-        // Wide enough for the navigation rail beside a pane, short enough to
-        // fit a laptop screen. The panes scroll inside the frame, so height is
-        // no longer the thing that decides whether the buttons are reachable.
-        .inner_size(880.0, 660.0)
-        .min_inner_size(680.0, 480.0)
-        .resizable(true)
-        .build();
-}
-
-/// Route a deep link to the right window, setting up first if it has to.
-pub fn handle_target(app: &AppHandle, target: Option<Target>) {
-    let configured = app.state::<AppState>().config.lock().unwrap().is_configured();
-    if configured {
-        open_main(app, target);
-    } else {
-        open_setup(app);
-    }
-}
-
-// ── Tray ────────────────────────────────────────────────────────────────────
-
-fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open MeCloud", true, None::<&str>)?;
-    let compose = MenuItem::with_id(app, "compose", "New message", true, None::<&str>)?;
-
-    let mail = MenuItem::with_id(app, "app:/mail", "Mail", true, None::<&str>)?;
-    let files = MenuItem::with_id(app, "app:/files", "Files", true, None::<&str>)?;
-    let calendar = MenuItem::with_id(app, "app:/calendar", "Calendar", true, None::<&str>)?;
-    let contacts = MenuItem::with_id(app, "app:/contacts", "Contacts", true, None::<&str>)?;
-    let notes = MenuItem::with_id(app, "app:/notes", "Notes", true, None::<&str>)?;
-    let apps = Submenu::with_id_and_items(
-        app,
-        "apps",
-        "Go to",
-        true,
-        &[&mail, &files, &calendar, &contacts, &notes],
-    )?;
-
-    // The status line is not clickable; "Sync now" beneath it is.
-    let sync = MenuItem::with_id(app, "syncstatus", "Sync: starting…", false, None::<&str>)?;
-    let sync_now_item = MenuItem::with_id(app, "syncnow", "Sync now", true, None::<&str>)?;
-    let updates = MenuItem::with_id(app, "updates", "Check for updates…", true, None::<&str>)?;
-    let settings = MenuItem::with_id(app, "settings", "Preferences…", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit MeCloud", true, None::<&str>)?;
-
-    let menu = Menu::with_items(
-        app,
-        &[
-            &open,
-            &compose,
-            &PredefinedMenuItem::separator(app)?,
-            &apps,
-            &PredefinedMenuItem::separator(app)?,
-            &sync,
-            &sync_now_item,
-            &updates,
-            &settings,
-            &PredefinedMenuItem::separator(app)?,
-            &quit,
-        ],
-    )?;
-
-    TrayIconBuilder::with_id("tray")
-        .icon(app.default_window_icon().unwrap().clone())
-        .tooltip("MeCloud")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "open" => open_main(app, None),
-            "compose" => open_main(
-                app,
-                Some(Target::Compose {
-                    to: String::new(),
-                    cc: String::new(),
-                    subject: String::new(),
-                    body: String::new(),
-                }),
-            ),
-            "settings" => open_setup(app),
-            "updates" => {
-                // The check is network work and cannot run on the main thread;
-                // opening the window afterwards may only run there.
-                let handle = app.clone();
-                std::thread::spawn(move || {
-                    update_pass(&handle);
-                    let ui = handle.clone();
-                    let _ = handle.run_on_main_thread(move || open_setup(&ui));
-                });
-            }
-            "syncnow" => {
-                let config = app.state::<AppState>().config.lock().unwrap().clone();
-                let status = app.state::<AppState>().status.clone();
-                std::thread::spawn(move || run_pass(&config, &status));
-            }
-            "quit" => app.exit(0),
-            other => {
-                if let Some(path) = other.strip_prefix("app:") {
-                    // Only the fixed routes above can reach this, so the leak
-                    // of a 'static str is bounded by the size of the menu.
-                    let leaked: &'static str = Box::leak(path.to_string().into_boxed_str());
-                    open_main(app, Some(Target::App(leaked)));
-                }
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                open_main(tray.app_handle(), None);
-            }
-        })
-        .build(app)?;
-
-    Ok(())
-}
-
-// ── Entry point ─────────────────────────────────────────────────────────────
-
-/// The background pass, on its own thread.
-///
-/// A plain thread with a sleep rather than a scheduler: there is one job, it
-/// must not run twice at once, and a loop makes both obvious.
-fn spawn_sync_loop(app: AppHandle) {
-    std::thread::spawn(move || {
-        // Let the window and tray appear before the first scan competes for I/O.
-        std::thread::sleep(Duration::from_secs(3));
-        loop {
-            let state = app.state::<AppState>();
-            let config = state.config.lock().unwrap().clone();
-            let status = state.status.clone();
-            drop(state);
-
-            // Re-read every pass rather than captured once, so changing the
-            // interval in Preferences takes effect at the next wait instead of
-            // at the next restart.
-            let wait = config.sync_interval();
-            run_pass(&config, &status);
-            update_tray_label(&app);
-            std::thread::sleep(wait);
-        }
-    });
-}
-
-/// Answer the file manager's questions about paths.
-///
-/// The status comes from the sync database rather than the last run's summary:
-/// the file manager asks about whatever the user happens to be looking at, and
-/// only the baseline knows about a file that was synced days ago.
-/// Look one path up in the baseline, opening the database at most once.
-///
-/// A file asks about itself; a folder asks whether it holds anything tracked.
-/// Both are a single indexed lookup, because this runs once per visible row on
-/// the file manager's main thread.
-fn tracked_state(
-    handle: &std::sync::Mutex<Option<syncdb::SyncDb>>, relative: &str, is_dir: bool,
-) -> bool {
-    let Ok(mut slot) = handle.lock() else { return false };
-    if slot.is_none() {
-        let Some(path) = config::sync_db_path() else { return false };
-        *slot = syncdb::SyncDb::open(&path).ok();
-    }
-    let Some(db) = slot.as_ref() else { return false };
-    if is_dir {
-        db.has_tracked_under(relative).unwrap_or(false)
-    } else {
-        db.is_tracked(relative).unwrap_or(false)
-    }
-}
-
-fn start_file_manager_socket(app: AppHandle) {
-    let handle = app.clone();
-    // Opened lazily and reused. Reads only, and SQLite is in WAL mode, so it
-    // never blocks the sync thread's writes.
-    let db_handle: std::sync::Arc<std::sync::Mutex<Option<syncdb::SyncDb>>> =
-        std::sync::Arc::new(std::sync::Mutex::new(None));
-    let result = socket::serve(move |request| {
-        let state = handle.state::<AppState>();
-        let db_handle = db_handle.clone();
-        match request {
-            socket::Request::Version => Some(format!("VERSION:{}", update::CURRENT)),
-
-            socket::Request::Status(path) => {
-                let config = state.config.lock().ok()?.clone();
-                let status = state.status.lock().ok()?.clone();
-                let root = config.sync_path();
-
-                let full = std::path::PathBuf::from(&path);
-                let relative = root
-                    .as_ref()
-                    .and_then(|r| full.strip_prefix(r).ok())
-                    .map(|r| r.to_string_lossy().replace('\\', "/"));
-
-                // One indexed lookup on a connection opened once and kept.
-                //
-                // This is asked once per visible file, on the file manager's
-                // own main thread. Opening the database per question and
-                // reading the whole baseline to test one key cost 40 ms each:
-                // a folder of 200 files froze the file manager for eight
-                // seconds. It is now a single SELECT on a shared read handle.
-                // A folder is judged by what is inside it. It has no baseline
-                // row of its own, so asking the file question about it always
-                // answered "no" and every folder wore a "syncing" badge for
-                // ever, however long ago it had finished.
-                let is_dir = full.is_dir();
-                let tracked = relative
-                    .as_ref()
-                    .map(|rel| tracked_state(&db_handle, rel, is_dir))
-                    .unwrap_or(false);
-                let has_problem = relative
-                    .as_ref()
-                    .map(|rel| socket::problem_touches(&status.problems, rel, is_dir))
-                    .unwrap_or(false);
-                // Selective sync only: an ignore pattern means "never sync
-                // this", which is not the same claim as "this lives on the
-                // drive and not here".
-                let excluded = relative
-                    .as_ref()
-                    .map(|rel| rules::in_excluded_folder(rel, &config.excluded_folders))
-                    .unwrap_or(false);
-
-                let verdict = socket::status_for(
-                    &full,
-                    root.as_deref(),
-                    socket::Known {
-                        tracked,
-                        excluded,
-                        has_problem,
-                        syncing: status.state == State::Syncing,
-                    },
-                );
-                Some(format!("STATUS:{}:{}", verdict.wire(), path))
-            }
-
-            // The client knows how to do these; the extension only has to ask.
-            socket::Request::Share(path) => {
-                open_relative(&handle, &path, true);
-                Some(format!("OK:SHARE:{path}"))
-            }
-            socket::Request::Open(path) => {
-                open_relative(&handle, &path, false);
-                Some(format!("OK:OPEN:{path}"))
-            }
-
-            socket::Request::Unknown(command) => Some(format!("ERROR:UNKNOWN:{command}")),
-        }
-    });
-    if let Err(e) = result {
-        eprintln!("[mecloud] file manager integration unavailable: {e}");
-    }
-}
-
-/// Show a synced path in the web UI, optionally starting a share.
-///
-/// Window work, so it is marshalled to the main thread like everything else
-/// the background touches.
-fn open_relative(app: &AppHandle, path: &str, share: bool) {
-    let state = app.state::<AppState>();
-    let Ok(config) = state.config.lock() else { return };
-    let (Some(root), Some(server)) = (config.sync_path(), config.server_url.clone()) else { return };
-    drop(config);
-
-    let full = std::path::PathBuf::from(path);
-    let Ok(relative) = full.strip_prefix(&root) else { return };
-    let relative = relative.to_string_lossy().replace('\\', "/");
-
-    // The Files app already knows how to find a file by path and, from its own
-    // menu, how to share one — so this hands it the path rather than
-    // reimplementing either here.
-    let mut url = format!("{}/files?path={}", server.trim_end_matches('/'), urlencode(&relative));
-    if share {
-        url.push_str("&share=1");
-    }
-
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if let Ok(parsed) = url.parse() {
-            if let Some(window) = handle.get_webview_window(MAIN) {
-                let _ = window.navigate(parsed);
-                let _ = window.show();
-                let _ = window.set_focus();
-            } else {
-                open_main(&handle, None);
-            }
-        }
-    });
-}
-
-fn urlencode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
-                out.push(*byte as char)
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
-}
-
-/// The update check, on its own slow loop.
-fn spawn_update_loop(app: AppHandle) {
-    std::thread::spawn(move || {
-        // Not at the same moment as the first sync: two network jobs racing on
-        // a cold start makes the first sync look slower than it is.
-        std::thread::sleep(Duration::from_secs(20));
-        loop {
-            update_pass(&app);
-            update_tray_label(&app);
-            std::thread::sleep(UPDATE_INTERVAL);
-        }
-    });
-}
-
-/// Reflect the current status in the tray, the way a desktop client does.
-///
-/// **Must not touch the tray directly.** This is called from the sync and
-/// update loops, which are ordinary background threads, and on Linux the tray
-/// and every window are GTK objects that may only be used from the thread that
-/// initialised GTK. Calling into them from anywhere else does not fail loudly —
-/// it corrupts GTK's state, and the symptom is a window that stops responding
-/// and cannot even be closed. Everything below is computed here and applied
-/// there.
-fn update_tray_label(app: &AppHandle) {
-    let status = app.state::<AppState>().status.lock().map(|s| s.clone()).unwrap_or_default();
-    let label = match status.state {
-        State::NotConfigured => "Sync: not set up".to_string(),
-        State::Paused => "Sync: off".to_string(),
-        State::Syncing => "Sync: working…".to_string(),
-        State::Idle => format!("Sync: {}", status.detail),
-        State::Problems => format!("Sync: {} problem(s)", status.problems.len()),
-        State::Error => format!("Sync: {}", status.detail),
-        // The one state the user has to act on, so it says so in as few words
-        // as a tooltip allows.
-        State::NeedsConfirmation => "Sync: stopped — needs your confirmation".to_string(),
-    };
-    // An available update belongs in the tooltip: it is the one thing the user
-    // has to act on, and the tray is where they will see it.
-    let update = app.state::<AppState>().update.lock().map(|u| u.clone()).unwrap_or_default();
-    let suffix = match (&update.available, update.newer) {
-        (Some(v), true) => format!("\nUpdate available: {v}"),
-        _ => String::new(),
-    };
-    let tooltip = format!("MeCloud — {label}{suffix}");
-    let handle = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        if let Some(tray) = handle.tray_by_id("tray") {
-            let _ = tray.set_tooltip(Some(&tooltip));
-        }
-    });
+fn hostname() -> Option<String> {
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|h| h.trim().to_string())
+        .filter(|h| !h.is_empty())
+        .or_else(|| std::env::var("HOSTNAME").ok())
 }
 
 pub fn run() {
     let loaded = config::load();
 
-    // A headless single pass, for a cron job or for working out why a sync is
-    // not doing what was expected. Exits with the result rather than starting
-    // a window.
-    // Ask a running client to act on a path. This is how Dolphin reaches it:
-    // KDE service menus run a command rather than hosting a plugin, so there
-    // has to be a command to run.
-    {
-        let args: Vec<String> = std::env::args().collect();
-        if let Some(i) = args.iter().position(|a| a == "--share" || a == "--open") {
-            let command = if args[i] == "--share" { "SHARE" } else { "OPEN" };
-            let Some(path) = args.get(i + 1) else {
-                eprintln!("{} needs a file path", args[i]);
-                std::process::exit(2);
-            };
-            // Absolute, because the client resolves it against the sync folder
-            // and a file manager may launch us from anywhere.
-            let full = std::fs::canonicalize(path)
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| path.clone());
-            match socket::send(&format!("{command}:{full}")) {
-                Ok(reply) => {
-                    println!("{reply}");
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-    }
-
-    // Update handling without a window, for a scripted rollout or for finding
-    // out why a client is not taking one.
-    if std::env::args().any(|a| a == "--check-update" || a == "--update") {
-        let install = std::env::args().any(|a| a == "--update");
-        let (Some(base), Some(token)) = (loaded.server_url.clone(), config::load_token()) else {
-            eprintln!("Not connected to a server, or this computer is not paired.");
-            std::process::exit(1);
-        };
-        match update::check(&base, &token) {
-            Ok(info) => {
-                println!("{}", serde_json::to_string_pretty(&info).unwrap_or_default());
-                if install && info.newer {
-                    match update::install(&base, &token, &info) {
-                        Ok(path) => {
-                            println!("installed to {}", path.display());
-                            std::process::exit(0);
-                        }
-                        Err(e) => {
-                            eprintln!("{e}");
-                            std::process::exit(1);
-                        }
-                    }
-                }
-                std::process::exit(0);
-            }
-            Err(e) => {
-                eprintln!("{e}");
-                std::process::exit(1);
-            }
-        }
-    }
-
-    if std::env::args().any(|a| a == "--sync-once") {
-        let status: SharedStatus = Arc::new(Mutex::new(Status::default()));
-        run_pass(&loaded, &status);
-        let final_status = status.lock().map(|s| s.clone()).unwrap_or_default();
-        println!("{}", serde_json::to_string_pretty(&final_status).unwrap_or_default());
-        std::process::exit(match final_status.state {
-            State::Error => 1,
-            _ => 0,
-        });
-    }
+    // Headless flags exit before any window exists.
+    cli::handle(&loaded);
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -1246,57 +260,18 @@ pub fn run() {
         // binary afresh for every clicked link, and a second copy would fight
         // the first over the tray icon and the session.
         .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            handle_target(app, deeplink::first_target(argv));
+            windows::handle_target(app, deeplink::first_target(argv));
         }))
-        .manage(AppState {
-            config: Mutex::new(loaded.clone()),
-            status: Arc::new(Mutex::new(Status::default())),
-            update: Mutex::new(UpdateInfo { current: update::CURRENT.into(), ..Default::default() }),
-            // Set for real in the setup hook, once we know.
-            tray: std::sync::atomic::AtomicBool::new(false),
-        })
-        .invoke_handler(tauri::generate_handler![
-            get_config,
-            probe_server,
-            save_server,
-            is_mailto_registered,
-            sync_status,
-            is_paired,
-            pair_device,
-            get_autostart,
-            set_autostart,
-            update_info,
-            check_for_update,
-            install_update,
-            set_auto_update,
-            confirm_bulk_delete,
-            pending_deletions,
-            restore_deletion,
-            apply_deletion,
-            set_deletion_policy,
-            set_sync_interval,
-            get_rules,
-            set_rules,
-            sync_folders,
-            set_folder_included,
-            held_uploads,
-            approve_upload,
-            decline_upload,
-            unpair_device,
-            set_sync,
-            sync_now,
-        ])
+        .manage(AppState::new(loaded))
+        .invoke_handler(commands::handler())
         .setup(move |app| {
             let handle = app.handle().clone();
 
-            // A tray is a convenience, not a dependency. This used to be `?`,
-            // so a desktop that could not give us one — KDE with no
-            // StatusNotifier host yet, a bare window manager, a session with no
-            // writable XDG_RUNTIME_DIR — did not lose the tray icon, it lost
-            // the whole client: Tauri turns a setup-hook error into a panic and
-            // the process aborts before any window exists.
-            #[allow(clippy::let_and_return)]
-            let has_tray = match build_tray(&handle) {
+            // A tray is a convenience, not a dependency. A desktop that cannot
+            // give us one — KDE with no StatusNotifier host yet, a bare window
+            // manager, no writable XDG_RUNTIME_DIR — must not lose the whole
+            // client: Tauri turns a setup-hook error into an abort.
+            let has_tray = match tray::build(&handle) {
                 Ok(()) => true,
                 Err(e) => {
                     eprintln!("[mecloud] no tray icon available ({e}); continuing without one");
@@ -1305,43 +280,35 @@ pub fn run() {
             };
             handle.state::<AppState>().set_tray(has_tray);
 
-            // `--settings` goes straight to Preferences. The tray menu is the
-            // usual route, but a tray needs a system tray to exist, and a
-            // headless check or a broken desktop has neither.
-            if std::env::args().any(|a| a == "--background") && has_tray {
+            let background = std::env::args().any(|a| a == "--background");
+            if background && has_tray {
                 // Launched by the session at login: the tray and the sync loop
                 // are the point, and a window would land on top of whatever the
                 // user was doing while they were still logging in.
-            } else if std::env::args().any(|a| a == "--background") {
+            } else if background {
                 // No tray to minimise to. Starting invisibly here would leave
                 // the client running with no way at all to reach it.
                 eprintln!("[mecloud] starting with a window, since there is no tray to hide in");
-                handle_target(&handle, None);
+                windows::handle_target(&handle, None);
             } else if std::env::args().any(|a| a == "--settings") {
-                open_setup(&handle);
+                // Straight to Preferences, for a desktop with no tray.
+                windows::open_setup(&handle);
             } else {
-                handle_target(&handle, deeplink::first_target(std::env::args()));
+                windows::handle_target(&handle, deeplink::first_target(std::env::args()));
             }
-            place_sidebar_entry_once(&handle.state::<AppState>());
-            spawn_sync_loop(handle.clone());
-            spawn_update_loop(handle.clone());
-            start_file_manager_socket(handle);
+            background::place_sidebar_entry_once(&handle.state::<AppState>());
+            background::spawn_sync_loop(handle.clone());
+            background::spawn_update_loop(handle.clone());
+            fm_bridge::start(handle);
             Ok(())
         })
-        // Closing every window leaves the tray running rather than exiting.
-        .on_window_event(|_window, _event| {})
         .build(tauri::generate_context!())
         .expect("failed to start MeCloud")
         .run(|_app, event| {
             if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
-                // `code` distinguishes the two things that raise this event,
-                // and they need opposite answers. `None` is "the last window
-                // closed" — the client lives in the tray, so that must not end
-                // the process. `Some(_)` is a deliberate `app.exit(n)`, which
-                // is only ever reached from Quit.
-                //
-                // Preventing both is why Quit did nothing: the menu item ran,
-                // asked to exit, and this handler cancelled it.
+                // `None` is "the last window closed" — the client lives in the
+                // tray, so that must not end the process. `Some(_)` is a
+                // deliberate `app.exit(n)`, only ever reached from Quit.
                 if code.is_none() {
                     api.prevent_exit();
                 }
@@ -1349,49 +316,70 @@ pub fn run() {
         });
 }
 
-
 #[cfg(test)]
 mod tests {
-    use super::count_files;
+    use super::*;
 
-    fn tempdir(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("mecloud-count-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    /// Tests that touch the config directory share one, set once, and take
+    /// turns with it: they all read and write the same config.json.
+    fn isolated_config() -> std::sync::MutexGuard<'static, ()> {
+        static TURN: Mutex<()> = Mutex::new(());
+        let turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let dir = std::env::temp_dir().join(format!("mecloud-lib-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            // Set once, before any test reads it, under `Once`.
+            std::env::set_var("MECLOUD_CONFIG_DIR", &dir);
+        });
+        turn
     }
 
     #[test]
-    fn an_empty_folder_raises_no_warning() {
-        // Nothing there means nothing to lose; setup should not interrupt.
-        assert_eq!(count_files(&tempdir("empty"), 200), 0);
+    fn a_change_applies_to_the_latest_config_not_a_stale_copy() {
+        let _turn = isolated_config();
+        let state = AppState::new(Config::default());
+        let stale = state.config_now();
+        update_config(&state, |c| c.sync_interval_secs = 120).unwrap();
+        // A second writer starting from `stale` used to undo the first.
+        update_config(&state, |c| c.trash_days = 9).unwrap();
+        let now = state.config_now();
+        assert_eq!(now.sync_interval_secs, 120);
+        assert_eq!(now.trash_days, 9);
+        assert_ne!(stale.sync_interval_secs, 120);
+        assert_eq!(config::load().sync_interval_secs, 120, "and on disk");
     }
 
     #[test]
-    fn an_existing_folder_with_files_is_detected() {
-        // This is the case that cost a user their files: an incomplete copy of
-        // the drive makes everything missing from it look deleted.
-        let dir = tempdir("full");
-        std::fs::create_dir_all(dir.join("nested/deeper")).unwrap();
-        std::fs::write(dir.join("a.txt"), b"x").unwrap();
-        std::fs::write(dir.join("nested/b.txt"), b"x").unwrap();
-        std::fs::write(dir.join("nested/deeper/c.txt"), b"x").unwrap();
-        assert_eq!(count_files(&dir, 200), 3);
+    fn the_bulk_delete_exemption_is_spent_in_memory_and_on_disk() {
+        let _turn = isolated_config();
+        let state = AppState::new(Config::default());
+        update_config(&state, |c| c.allow_bulk_delete_once = true).unwrap();
+        // What `run_pass_now` does once a pass has run with it.
+        let spent = Pass::Ran { used_exemption: state.config_now().allow_bulk_delete_once };
+        assert_eq!(spent, Pass::Ran { used_exemption: true });
+        update_config(&state, |c| c.allow_bulk_delete_once = false).unwrap();
+        assert!(!state.config_now().allow_bulk_delete_once);
+        assert!(!config::load().allow_bulk_delete_once);
+        // And a later, unrelated save does not bring it back.
+        update_config(&state, |c| c.sync_hidden = false).unwrap();
+        assert!(!config::load().allow_bulk_delete_once);
     }
 
     #[test]
-    fn counting_stops_at_the_cap() {
-        // The question is "is anything here", not "how much" — a huge tree must
-        // not make the setup window sit there.
-        let dir = tempdir("many");
-        for i in 0..50 {
-            std::fs::write(dir.join(format!("f{i}.txt")), b"x").unwrap();
-        }
-        assert_eq!(count_files(&dir, 10), 10);
+    fn only_one_pass_runs_at_a_time() {
+        let _turn = isolated_config();
+        let first = PassGuard::acquire().expect("free at first");
+        assert!(PassGuard::acquire().is_none(), "a second pass must be refused");
+        drop(first);
+        assert!(PassGuard::acquire().is_some(), "and allowed once the first is done");
     }
 
     #[test]
-    fn a_folder_that_does_not_exist_counts_as_empty() {
-        assert_eq!(count_files(std::path::Path::new("/definitely/not/here"), 200), 0);
+    fn a_pass_with_sync_off_is_skipped_not_busy() {
+        let _turn = isolated_config();
+        let status: SharedStatus = Arc::new(Mutex::new(Status::default()));
+        assert_eq!(run_pass(&Config::default(), &status), Pass::Skipped);
     }
 }

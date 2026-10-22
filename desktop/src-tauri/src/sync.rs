@@ -13,9 +13,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
-use crate::api::{self, Api};
+use crate::api::{self, Api, Remote};
 use crate::reconcile::{self, Action, Tree};
-use crate::rules::Rules;
+use crate::rules::{Rules, TRASH_DIR};
 use crate::scan;
 use crate::syncdb::SyncDb;
 
@@ -79,10 +79,11 @@ impl Default for Status {
 
 pub type SharedStatus = Arc<Mutex<Status>>;
 
-/// Everything one pass needs.
-pub struct Engine {
+/// Everything one pass needs. Generic over the server so tests can drive it
+/// with a fake; in the app it is always `Api`.
+pub struct Engine<R: Remote = Api> {
     pub folder: PathBuf,
-    pub api: Api,
+    pub api: R,
     pub account_id: String,
     pub db: SyncDb,
     /// Set once by the user to let a refused pass through, and cleared as soon
@@ -90,13 +91,15 @@ pub struct Engine {
     pub allow_bulk_delete: bool,
     /// Whether a local deletion should ever reach the server.
     pub delete_on_server: bool,
-    /// How long it waits first.
+    /// How long a deletion waits, in either direction: before a local
+    /// deletion reaches the server, and before a server deletion is removed
+    /// from this computer's trash.
     pub trash_days: i64,
     /// What is in scope for this pass at all.
     pub rules: Rules,
 }
 
-impl Engine {
+impl<R: Remote> Engine<R> {
     /// Run a single reconciliation pass.
     pub fn run_once(&self, status: &SharedStatus) -> Status {
         let mut result = Status { state: State::Syncing, detail: "Syncing…".into(), ..Default::default() };
@@ -105,10 +108,22 @@ impl Engine {
         // Hand the scanner what was recorded last time so it can skip reading
         // files whose size and timestamp are unchanged.
         let stamps = self.db.stamps().unwrap_or_default();
-        let ((local, mut problems), mtimes) = scan::scan_with_stamps(&self.folder, &stamps, &self.rules);
+        let scanned = scan::scan(&self.folder, &stamps, &self.rules);
+        let local = scanned.tree;
+        let mtimes = scanned.mtimes;
+        let mut problems = scanned.problems;
+        // A local scan that could not read parts of the folder cannot be used
+        // to conclude that anything was deleted: the files may simply not have
+        // been visible. Decided before the deliberate skips are added, which
+        // are reported but do not make the walk untrustworthy.
+        let trust_local = problems.is_empty();
+        problems.extend(scanned.skipped);
 
-        let nodes = match self.api.nodes(&self.account_id) {
-            Ok(n) => n,
+        // An incomplete listing is an error for the whole pass. Nothing is
+        // planned from half an answer, because a missing file reads as a
+        // deleted one.
+        let listing = match self.api.nodes(&self.account_id).and_then(|nodes| api::to_tree(&nodes)) {
+            Ok(l) => l,
             Err(e) => {
                 let failed = Status {
                     state: State::Error,
@@ -121,8 +136,10 @@ impl Engine {
                 return failed;
             }
         };
-        let (mut remote, remote_ids) = api::to_tree(&nodes);
-        let mut folders = folder_ids(&nodes);
+        let api::Listing { files: mut remote, file_ids: remote_ids, folder_ids: mut folders, duplicates } = listing;
+        for path in duplicates {
+            problems.push(format!("{path}: more than one item on the server has this name; only one is synced"));
+        }
 
         // The local side was already filtered by the scanner. Filtering the
         // remote side and the baseline by the *same* rules is what makes an
@@ -178,11 +195,6 @@ impl Engine {
             }
         }
 
-        // A local scan that could not read parts of the folder cannot be used
-        // to conclude that anything was deleted: the files may simply not have
-        // been visible. Uploads and downloads still proceed.
-        let trust_local = problems.is_empty();
-
         for action in actions {
             if !trust_local && matches!(action, Action::DeleteRemote(_)) {
                 problems.push(format!(
@@ -205,6 +217,9 @@ impl Engine {
                 }
             }
         }
+
+        // Server deletions held here long enough are removed for good.
+        self.purge_local_trash(&mut problems);
 
         // Deletions whose window has closed are applied now.
         if self.delete_on_server {
@@ -298,21 +313,21 @@ impl Engine {
                 let (hash, size) = scan::hash_file(&full)?;
                 // The file was just written, so its mtime is now; recording it
                 // stops the next pass re-hashing what we already know.
-                let mtime = std::fs::metadata(&full)
-                    .ok()
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_secs() as i64)
-                    .unwrap_or(0);
+                let mtime = std::fs::metadata(&full).map(|m| scan::mtime_of(&m)).unwrap_or(0);
                 self.db.record_with_mtime(path, &hash, &node.version, size, Some(id), mtime)?;
                 result.downloaded += 1;
                 Ok(())
             }
 
+            // Moved aside, never removed. The server saying a file is gone
+            // is no more proof than this folder saying so, and the server's
+            // answer is the one this client cannot see behind — so the local
+            // copy waits in the trash for the same window as the other way.
             Action::DeleteLocal(path) => {
                 let full = scan::resolve(&self.folder, path).ok_or("unsafe path")?;
-                if full.exists() {
-                    std::fs::remove_file(&full).map_err(|e| e.to_string())?;
+                if let Ok(meta) = std::fs::symlink_metadata(&full) {
+                    let stored = self.move_to_trash(path, &full)?;
+                    self.db.add_local_trash(path, &stored, meta.len())?;
                     prune_empty_dirs(&self.folder, &full);
                 }
                 self.db.forget(path)?;
@@ -342,8 +357,10 @@ impl Engine {
             // overwritten; the user is left with both and can see which is which.
             Action::Conflict { path, keep_local_as } => {
                 let full = scan::resolve(&self.folder, path).ok_or("unsafe path")?;
-                let kept = scan::resolve(&self.folder, keep_local_as).ok_or("unsafe path")?;
                 if full.exists() {
+                    // Never over an earlier conflicted copy: two conflicts on
+                    // one file in the same minute share a name.
+                    let kept = unused_path(&self.folder, keep_local_as)?;
                     std::fs::rename(&full, &kept).map_err(|e| e.to_string())?;
                 }
                 self.db.forget(path)?;
@@ -363,7 +380,7 @@ impl Engine {
                 let full = scan::resolve(&self.folder, path).ok_or("unsafe path")?;
                 let node = remote.get(path).ok_or("no such file on the server")?;
                 let id = remote_ids.get(path).ok_or("no such file on the server")?;
-                let scratch = full.with_extension("mecloud-verify");
+                let scratch = api::scratch_path(&full, api::VERIFY_SUFFIX);
                 let (_, name) = split(path);
                 self.api.download_blob(&node.version, name, &scratch)?;
 
@@ -377,7 +394,7 @@ impl Engine {
                     }
                     (Ok(_), Some(_)) => {
                         let kept = reconcile::conflict_name(path, &timestamp());
-                        let kept_full = scan::resolve(&self.folder, &kept).ok_or("unsafe path")?;
+                        let kept_full = unused_path(&self.folder, &kept)?;
                         std::fs::rename(&full, &kept_full).map_err(|e| e.to_string())?;
                         result.conflicts += 1;
                         Ok(())
@@ -396,6 +413,41 @@ impl Engine {
         }
         self.db.clear_pending(&due.path)?;
         self.db.forget(&due.path)
+    }
+
+    /// Move a file into the trash folder, keeping its relative path. Returns
+    /// where it went, relative to the trash folder.
+    fn move_to_trash(&self, path: &str, full: &Path) -> Result<String, String> {
+        let trash = self.folder.join(TRASH_DIR);
+        let stored = unused_relative(&trash, path)?;
+        let dest = trash.join(&stored);
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        std::fs::rename(full, &dest).map_err(|e| format!("could not move it to the trash: {e}"))?;
+        Ok(stored)
+    }
+
+    /// Remove held server deletions whose window has passed.
+    fn purge_local_trash(&self, problems: &mut Vec<String>) {
+        let trash = self.folder.join(TRASH_DIR);
+        for due in self.db.expired_local_trash(self.trash_days).unwrap_or_default() {
+            // The stored name came from this client, but it is still checked:
+            // the database is a file anyone with the account can edit.
+            let Some(full) = scan::resolve(&trash, &due.stored) else {
+                let _ = self.db.clear_local_trash(&due.stored);
+                continue;
+            };
+            match std::fs::remove_file(&full) {
+                Ok(()) => prune_empty_dirs(&trash, &full),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    problems.push(format!("{}: could not empty from the trash: {e}", due.path));
+                    continue;
+                }
+            }
+            let _ = self.db.clear_local_trash(&due.stored);
+        }
     }
 
     /// The id of the remote folder for a path, creating any part that is
@@ -461,28 +513,34 @@ pub fn split(path: &str) -> (&str, &str) {
     }
 }
 
-/// Folder path → node id, for every folder on the server.
-pub fn folder_ids(nodes: &[api::Node]) -> BTreeMap<String, String> {
-    let by_id: BTreeMap<&str, &api::Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let mut out = BTreeMap::new();
+/// `path` with " (n)" before its extension, for n ≥ 2.
+fn numbered(path: &str, n: u32) -> String {
+    let (dir, file) = split(path);
+    let (stem, ext) = match file.rfind('.') {
+        Some(i) if i > 0 => (&file[..i], &file[i..]),
+        _ => (file, ""),
+    };
+    let named = format!("{stem} ({n}){ext}");
+    if dir.is_empty() { named } else { format!("{dir}/{named}") }
+}
 
-    'nodes: for node in nodes.iter().filter(|n| n.is_folder) {
-        let mut parts = vec![node.name.as_str()];
-        let mut cursor = node.parent_id.as_deref();
-        let mut guard = 0;
-        while let Some(id) = cursor {
-            guard += 1;
-            if guard > 64 {
-                continue 'nodes;
-            }
-            let Some(parent) = by_id.get(id) else { continue 'nodes };
-            parts.push(parent.name.as_str());
-            cursor = parent.parent_id.as_deref();
+/// A relative path under `root` that nothing occupies yet: `path` itself, or
+/// the first numbered variant that is free.
+fn unused_relative(root: &Path, path: &str) -> Result<String, String> {
+    for n in 1..1000 {
+        let candidate = if n == 1 { path.to_string() } else { numbered(path, n) };
+        let full = scan::resolve(root, &candidate).ok_or("unsafe path")?;
+        if std::fs::symlink_metadata(&full).is_err() {
+            return Ok(candidate);
         }
-        parts.reverse();
-        out.insert(parts.join("/"), node.id.clone());
     }
-    out
+    Err(format!("{path}: too many copies with this name already"))
+}
+
+/// As `unused_relative`, inside the sync folder, as an absolute path.
+pub(crate) fn unused_path(root: &Path, path: &str) -> Result<PathBuf, String> {
+    let free = unused_relative(root, path)?;
+    scan::resolve(root, &free).ok_or_else(|| "unsafe path".to_string())
 }
 
 /// Remove directories left empty by a deletion, up to but never including the
@@ -536,23 +594,10 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 mod tests {
     use super::*;
 
-    fn folder(id: &str, name: &str, parent: Option<&str>) -> api::Node {
-        api::Node { id: id.into(), name: name.into(), parent_id: parent.map(Into::into),
-                    blob_id: None, size: 0, is_folder: true }
-    }
-
     #[test]
     fn splitting_a_path_separates_folders_from_the_name() {
         assert_eq!(split("a/b/c.txt"), ("a/b", "c.txt"));
         assert_eq!(split("c.txt"), ("", "c.txt"));
-    }
-
-    #[test]
-    fn folder_ids_are_keyed_by_full_path() {
-        let nodes = vec![folder("f1", "Photos", None), folder("f2", "2026", Some("f1"))];
-        let ids = folder_ids(&nodes);
-        assert_eq!(ids["Photos"], "f1");
-        assert_eq!(ids["Photos/2026"], "f2");
     }
 
     #[test]
@@ -565,12 +610,6 @@ mod tests {
         // the first has created it; that is what `ensure_folder` now inserts.
         folders.insert("Photos/2026".to_string(), "f2".to_string());
         assert_eq!(folders.get("Photos/2026").map(String::as_str), Some("f2"));
-    }
-
-    #[test]
-    fn a_folder_whose_parent_is_missing_is_not_placed_at_the_root() {
-        let ids = folder_ids(&[folder("f9", "Orphan", Some("gone"))]);
-        assert!(ids.is_empty());
     }
 
     #[test]
@@ -722,5 +761,185 @@ mod tests {
             !resumed.iter().any(|a| moves_data(a)),
             "re-including must not re-transfer files that never changed: {resumed:?}"
         );
+    }
+
+    // ── The engine, end to end, against a fake server ──────────────────────
+
+    use std::cell::RefCell;
+
+    struct FakeRemote {
+        listing: RefCell<Result<Vec<api::Node>, String>>,
+        uploaded: RefCell<Vec<String>>,
+        destroyed: RefCell<Vec<String>>,
+    }
+
+    impl FakeRemote {
+        fn new(listing: Result<Vec<api::Node>, String>) -> Self {
+            Self { listing: RefCell::new(listing), uploaded: RefCell::default(), destroyed: RefCell::default() }
+        }
+    }
+
+    impl Remote for FakeRemote {
+        fn nodes(&self, _: &str) -> Result<Vec<api::Node>, String> {
+            self.listing.borrow().clone()
+        }
+        fn upload_blob(&self, path: &Path) -> Result<(String, u64), String> {
+            self.uploaded.borrow_mut().push(path.display().to_string());
+            Ok(("new-blob".into(), 1))
+        }
+        fn download_blob(&self, _: &str, _: &str, to: &Path) -> Result<(), String> {
+            std::fs::write(to, b"from server").map_err(|e| e.to_string())
+        }
+        fn create_folder(&self, _: &str, name: &str, _: Option<&str>) -> Result<String, String> {
+            Ok(format!("folder-{name}"))
+        }
+        fn create_file(&self, _: &str, name: &str, _: Option<&str>, _: &str, _: u64) -> Result<String, String> {
+            Ok(format!("node-{name}"))
+        }
+        fn update_file(&self, _: &str, _: &str, _: &str, _: u64) -> Result<(), String> {
+            Ok(())
+        }
+        fn node_blob(&self, _: &str, _: &str) -> Result<Option<String>, String> {
+            Ok(Some("new-blob".into()))
+        }
+        fn destroy(&self, _: &str, id: &str) -> Result<(), String> {
+            self.destroyed.borrow_mut().push(id.into());
+            Ok(())
+        }
+    }
+
+    fn file_node(id: &str, name: &str, parent: Option<&str>) -> api::Node {
+        api::Node { id: id.into(), name: name.into(), parent_id: parent.map(Into::into),
+                    blob_id: Some(format!("blob-{id}")), size: 3, is_folder: false }
+    }
+
+    fn sync_root(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("mecloud-engine-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A folder with `names` on disk, each recorded as synced with node
+    /// `id-<name>` and blob `blob-id-<name>`.
+    fn synced(name: &str, names: &[&str], remote: Result<Vec<api::Node>, String>) -> Engine<FakeRemote> {
+        let folder = sync_root(name);
+        let db = SyncDb::in_memory().unwrap();
+        for n in names {
+            let full = folder.join(n);
+            std::fs::write(&full, b"abc").unwrap();
+            let (hash, size) = scan::hash_file(&full).unwrap();
+            db.record(n, &hash, &format!("blob-id-{n}"), size, Some(&format!("id-{n}"))).unwrap();
+        }
+        Engine {
+            folder,
+            api: FakeRemote::new(remote),
+            account_id: "acct".into(),
+            db,
+            allow_bulk_delete: false,
+            delete_on_server: true,
+            trash_days: 30,
+            rules: Rules::permissive(),
+        }
+    }
+
+    fn status() -> SharedStatus {
+        Arc::new(Mutex::new(Status::default()))
+    }
+
+    #[test]
+    fn a_failed_listing_deletes_nothing() {
+        let engine = synced("failed", &["a.txt", "b.txt"], Err("The server listed 2 files but described only 1".into()));
+        let outcome = engine.run_once(&status());
+        assert_eq!(outcome.state, State::Error);
+        assert!(engine.folder.join("a.txt").exists() && engine.folder.join("b.txt").exists());
+        assert_eq!(engine.db.count().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_listing_with_an_orphan_deletes_nothing() {
+        // b.txt's folder was not in the listing. Before, it was silently
+        // dropped, which made it look deleted on the server.
+        let remote = Ok(vec![file_node("id-a.txt", "a.txt", None), file_node("id-b.txt", "b.txt", Some("missing"))]);
+        let engine = synced("orphan", &["a.txt", "b.txt"], remote);
+        let outcome = engine.run_once(&status());
+        assert_eq!(outcome.state, State::Error, "{outcome:?}");
+        assert!(engine.folder.join("b.txt").exists());
+    }
+
+    #[test]
+    fn a_server_deletion_moves_the_local_copy_to_the_trash() {
+        // a.txt is gone from the server; b.txt is still there.
+        let mut keep = file_node("id-b.txt", "b.txt", None);
+        keep.blob_id = Some("blob-id-b.txt".into());
+        let engine = synced("trash", &["a.txt", "b.txt"], Ok(vec![keep]));
+        let outcome = engine.run_once(&status());
+
+        assert_eq!(outcome.deleted, 1, "{outcome:?}");
+        assert!(!engine.folder.join("a.txt").exists());
+        let held = engine.folder.join(TRASH_DIR).join("a.txt");
+        assert!(held.exists(), "the file should be held, not removed");
+        let listed = engine.db.local_trash().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].path, "a.txt");
+        // Nothing was uploaded back, and the held copy is not seen as new.
+        assert!(engine.api.uploaded.borrow().is_empty());
+        let again = engine.run_once(&status());
+        assert_eq!(again.uploaded + again.deleted, 0, "{again:?}");
+    }
+
+    #[test]
+    fn held_server_deletions_are_purged_after_the_window() {
+        let mut keep = file_node("id-b.txt", "b.txt", None);
+        keep.blob_id = Some("blob-id-b.txt".into());
+        let mut engine = synced("purge", &["a.txt", "b.txt"], Ok(vec![keep]));
+        engine.run_once(&status());
+        assert!(engine.folder.join(TRASH_DIR).join("a.txt").exists());
+
+        engine.trash_days = 0;
+        engine.run_once(&status());
+        assert!(!engine.folder.join(TRASH_DIR).join("a.txt").exists());
+        assert!(engine.db.local_trash().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_mass_deletion_needs_confirmation_and_the_exemption_lets_it_through() {
+        let names: Vec<String> = (0..30).map(|i| format!("f{i}.txt")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut engine = synced("bulk", &refs, Ok(Vec::new()));
+
+        let refused = engine.run_once(&status());
+        assert_eq!(refused.state, State::NeedsConfirmation);
+        assert!(engine.folder.join("f0.txt").exists());
+
+        engine.allow_bulk_delete = true;
+        let allowed = engine.run_once(&status());
+        assert_eq!(allowed.deleted, 30, "{allowed:?}");
+        // Even then, nothing is destroyed: every file is in the trash.
+        assert!(engine.folder.join(TRASH_DIR).join("f0.txt").exists());
+    }
+
+    #[test]
+    fn a_conflicted_copy_never_overwrites_an_earlier_one() {
+        let root = sync_root("unique");
+        std::fs::write(root.join("a (conflicted copy x).txt"), b"first").unwrap();
+        assert_eq!(unused_relative(&root, "a (conflicted copy x).txt").unwrap(), "a (conflicted copy x) (2).txt");
+        assert_eq!(unused_relative(&root, "free.txt").unwrap(), "free.txt");
+        assert_eq!(numbered("dir/.bashrc", 3), "dir/.bashrc (3)");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_server_file_is_never_written_through_a_symlinked_folder() {
+        let elsewhere = sync_root("elsewhere");
+        let remote = Ok(vec![
+            api::Node { id: "d".into(), name: "Desktop".into(), parent_id: None, blob_id: None, size: 0, is_folder: true },
+            file_node("n", "planted.txt", Some("d")),
+        ]);
+        let engine = synced("symlink", &[], remote);
+        std::os::unix::fs::symlink(&elsewhere, engine.folder.join("Desktop")).unwrap();
+        let outcome = engine.run_once(&status());
+        assert!(!elsewhere.join("planted.txt").exists());
+        assert!(!outcome.problems.is_empty(), "{outcome:?}");
     }
 }

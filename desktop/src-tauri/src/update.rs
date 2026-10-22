@@ -17,7 +17,6 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 /// This build's version, from the crate metadata.
 pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
@@ -89,11 +88,7 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 
 /// Ask the server what it ships.
 pub fn check(base: &str, token: &str) -> Result<UpdateInfo, String> {
-    let http = reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(30))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let http = crate::api::http_client(std::time::Duration::from_secs(30))?;
 
     let response = http
         .get(format!("{}/api/desktop/releases", base.trim_end_matches('/')))
@@ -149,19 +144,44 @@ pub fn check(base: &str, token: &str) -> Result<UpdateInfo, String> {
 
 /// SHA-256 of a file, as lowercase hex.
 pub fn digest(path: &Path) -> Result<String, String> {
-    use std::io::Read;
-    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
-    let mut reader = std::io::BufReader::with_capacity(64 * 1024, file);
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let read = reader.read(&mut buf).map_err(|e| e.to_string())?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buf[..read]);
+    crate::scan::hash_file(path).map(|(hash, _)| hash)
+}
+
+/// A fresh, private directory to unpack an update in.
+///
+/// Under the user's cache directory with mode 0700, not a predictable name in
+/// the shared /tmp: there, another account could create the directory first
+/// and swap the archive or the binary between the checksum and the install.
+fn staging_dir() -> Result<PathBuf, String> {
+    let base = dirs::cache_dir().ok_or("No cache directory on this system")?.join("mecloud");
+    let dir = base.join(format!("update-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
     }
-    Ok(hex::encode(hasher.finalize()))
+    builder.create(&dir).map_err(|e| format!("Could not create {}: {e}", dir.display()))?;
+    #[cfg(unix)]
+    {
+        // `mode` only applies to directories this call created; make sure of
+        // the ones that matter even if they already existed.
+        use std::os::unix::fs::PermissionsExt;
+        for d in [&base, &dir] {
+            let _ = std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    Ok(dir)
+}
+
+/// The system tar, by absolute path rather than whatever PATH offers.
+fn tar_binary() -> Result<&'static str, String> {
+    ["/usr/bin/tar", "/bin/tar"]
+        .into_iter()
+        .find(|p| Path::new(p).is_file())
+        .ok_or_else(|| "tar is not installed, so the update cannot be unpacked.".to_string())
 }
 
 /// Download the new build, verify it, and put it in place.
@@ -175,38 +195,42 @@ pub fn install(base: &str, token: &str, info: &UpdateInfo) -> Result<PathBuf, St
         "The server did not publish a checksum for that download, so it will not be installed.",
     )?;
 
-    let http = reqwest::blocking::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(600))
-        .build()
-        .map_err(|e| e.to_string())?;
+    let http = crate::api::http_client(std::time::Duration::from_secs(600))?;
     let base = base.trim_end_matches('/');
 
     // Same two steps the web UI takes: trade the session — here, the device
     // token — for a short-lived signed link, then fetch it.
-    let minted: serde_json::Value = http
-        .post(format!("{base}/api/desktop/token?artifact={key}"))
+    let response = http
+        .post(format!("{base}/api/desktop/token?artifact={}", crate::encode::component(key)))
         .bearer_auth(token)
         .send()
-        .map_err(|e| format!("Could not start the download: {e}"))?
-        .json()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| format!("Could not start the download: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("The server would not issue a download link ({}).", response.status()));
+    }
+    let minted: serde_json::Value = response.json().map_err(|e| e.to_string())?;
     let link = minted.get("token").and_then(|v| v.as_str()).ok_or("The server would not issue a download link.")?;
 
-    let staging = std::env::temp_dir().join(format!("mecloud-update-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&staging);
-    std::fs::create_dir_all(&staging).map_err(|e| e.to_string())?;
+    let staging = staging_dir()?;
     let archive = staging.join("update.tar.gz");
 
     let mut response = http
-        .get(format!("{base}/api/desktop/download/{key}?token={link}"))
+        .get(format!(
+            "{base}/api/desktop/download/{}?token={}",
+            crate::encode::component(key),
+            crate::encode::component(link)
+        ))
         .send()
         .map_err(|e| format!("Download failed: {e}"))?;
     if !response.status().is_success() {
         return Err(format!("Download failed ({}).", response.status()));
     }
     {
-        let mut file = std::fs::File::create(&archive).map_err(|e| e.to_string())?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&archive)
+            .map_err(|e| e.to_string())?;
         response.copy_to(&mut file).map_err(|e| e.to_string())?;
     }
 
@@ -217,7 +241,7 @@ pub fn install(base: &str, token: &str, info: &UpdateInfo) -> Result<PathBuf, St
         return Err("The download did not match the checksum the server published, so it was discarded.".into());
     }
 
-    let status = std::process::Command::new("tar")
+    let status = std::process::Command::new(tar_binary()?)
         .arg("-xzf")
         .arg(&archive)
         .arg("-C")
@@ -225,6 +249,7 @@ pub fn install(base: &str, token: &str, info: &UpdateInfo) -> Result<PathBuf, St
         .status()
         .map_err(|e| format!("Could not unpack the update: {e}"))?;
     if !status.success() {
+        let _ = std::fs::remove_dir_all(&staging);
         return Err("Could not unpack the update.".into());
     }
 

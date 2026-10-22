@@ -367,8 +367,8 @@
     <!-- ── Deletions ────────────────────────────────────────────────── -->
     <section id="pane-deletions" hidden>
       <h2>Deletions</h2>
-      <p class="lede">A file you delete here waits before it is removed from the
-        server, so a mistake can be undone.</p>
+      <p class="lede">Deletions wait before they take effect, in both directions,
+        so a mistake can be undone.</p>
 
       <div class="panel">
         <div class="row">
@@ -389,6 +389,18 @@
         </div>
         <ul class="files" id="trashlist"></ul>
         <p id="trashdetail" class="status"></p>
+      </div>
+
+      <div class="panel">
+        <div class="between">
+          <h3 style="margin:0">Deleted on the server, kept here</h3>
+          <span class="pill" id="localpill"></span>
+        </div>
+        <p class="hint" style="margin:6px 0 0">Files removed from your drive elsewhere are moved
+          into a hidden <code>.mecloud-trash</code> folder in your sync folder rather than deleted,
+          and cleared out after the same number of days.</p>
+        <ul class="files" id="locallist"></ul>
+        <p id="localdetail" class="status"></p>
       </div>
     </section>
 
@@ -530,9 +542,16 @@
     return { config, paired };
   }
 
+  // While waiting, the same button cancels: closing the browser tab used to
+  // leave it stuck on "Waiting…" for good.
+  let pairing = false;
   $pair.addEventListener('click', async () => {
-    $pair.disabled = true;
-    $pair.textContent = 'Waiting for approval in your browser…';
+    if (pairing) {
+      await call('cancel_pairing').catch(() => {});
+      return;
+    }
+    pairing = true;
+    $pair.textContent = 'Waiting for approval in your browser… (click to cancel)';
     try {
       const name = await call('pair_device');
       setStatus($pairDetail, `Connected as ${name}.`, 'ok');
@@ -540,7 +559,7 @@
     } catch (e) {
       setStatus($pairDetail, String(e), 'bad');
     } finally {
-      $pair.disabled = false;
+      pairing = false;
       $pair.textContent = 'Connect this computer…';
     }
   });
@@ -654,8 +673,13 @@
 
   $syncNow.addEventListener('click', async () => {
     setStatus($syncDetail, 'Syncing…', 'busy');
-    await call('sync_now').catch(() => {});
-    await refreshSync();
+    try {
+      await call('sync_now');
+      await refreshSync();
+    } catch (e) {
+      // Most often "a sync is already running", which is worth saying.
+      setStatus($syncDetail, String(e), 'busy');
+    }
   });
 
   $confirmDelete.addEventListener('click', async () => {
@@ -842,6 +866,8 @@
     $trashDays.value = config.trash_days ?? 30;
     $trashDays.disabled = !$deleteOn.checked;
 
+    await refreshLocalTrash(Number($trashDays.value) || 30);
+
     const items = await call('pending_deletions').catch(() => []);
     $trashPill.textContent = String(items.length);
     badge('trashcount', items.length);
@@ -887,6 +913,50 @@
       });
 
       li.append(name, meta, restore, now);
+      return li;
+    }));
+  }
+
+  const $localList = $('locallist'), $localPill = $('localpill'), $localDetail = $('localdetail');
+
+  async function refreshLocalTrash(days) {
+    const held = await call('local_trash').catch(() => []);
+    $localPill.textContent = String(held.length);
+    if (!held.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty';
+      empty.textContent = 'Nothing is being kept.';
+      $localList.replaceChildren(empty);
+      return;
+    }
+    $localList.replaceChildren(...held.map((item) => {
+      const li = document.createElement('li');
+
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = item.path;
+      name.title = item.path;
+
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      const left = Math.max(0, days - item.days_waiting);
+      meta.textContent = left === 0 ? 'cleared next pass' : `${left}d left`;
+
+      const restore = document.createElement('button');
+      restore.className = 'ghost';
+      restore.textContent = 'Put back';
+      restore.title = 'Move it back into the sync folder; the next pass uploads it again.';
+      restore.addEventListener('click', async () => {
+        try {
+          await call('restore_local', { stored: item.stored });
+          setStatus($localDetail, `${item.path} is back, and will be uploaded on the next pass.`, 'ok');
+        } catch (e) {
+          setStatus($localDetail, String(e), 'bad');
+        }
+        await refreshDeletions();
+      });
+
+      li.append(name, meta, restore);
       return li;
     }));
   }

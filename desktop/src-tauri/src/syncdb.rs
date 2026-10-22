@@ -35,6 +35,17 @@ pub struct PendingDeletion {
     pub days_waiting: i64,
 }
 
+/// A file the server deleted, held in the trash folder on this computer.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LocalTrashed {
+    /// Where it lived in the sync folder.
+    pub path: String,
+    /// Where it is now, relative to the trash folder.
+    pub stored: String,
+    pub size: u64,
+    pub days_waiting: i64,
+}
+
 impl SyncDb {
     pub fn open(path: &Path) -> Result<Self, String> {
         if let Some(dir) = path.parent() {
@@ -81,6 +92,16 @@ impl SyncDb {
                  size      INTEGER NOT NULL DEFAULT 0,
                  approved  INTEGER NOT NULL DEFAULT 0,
                  marked_at INTEGER NOT NULL
+             );
+             -- Files the server deleted, moved aside on this computer rather
+             -- than removed. `stored` is the path inside the trash folder,
+             -- `path` where the file used to be. Purged after the same window
+             -- as server-side deletions.
+             CREATE TABLE IF NOT EXISTS local_trash (
+                 stored     TEXT PRIMARY KEY,
+                 path       TEXT NOT NULL,
+                 size       INTEGER NOT NULL DEFAULT 0,
+                 trashed_at INTEGER NOT NULL
              );",
         )
         .map_err(|e| e.to_string())?;
@@ -90,14 +111,23 @@ impl SyncDb {
         // database made by an earlier one. Every upgrade hit this: the client
         // ran, and every single write failed with "no column named mtime".
         //
-        // Adding it here, tolerating the error when it is already present, is
-        // the whole migration — the default makes existing rows behave as
-        // "timestamp unknown", which the scanner already treats as "must hash".
-        let already_there = matches!(
-            conn.execute("ALTER TABLE baseline ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0", []),
-            Err(rusqlite::Error::SqliteFailure(_, _)),
-        );
-        let _ = already_there;
+        // Looked up first rather than attempted and the error swallowed: the
+        // database is opened every few seconds while the settings screen is
+        // up, and an ALTER that fails each time is a write lock taken for
+        // nothing. The default makes existing rows "timestamp unknown", which
+        // the scanner already treats as "must hash".
+        let has_mtime: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('baseline') WHERE name = 'mtime'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .map_err(|e| e.to_string())?;
+        if !has_mtime {
+            conn.execute("ALTER TABLE baseline ADD COLUMN mtime INTEGER NOT NULL DEFAULT 0", [])
+                .map_err(|e| e.to_string())?;
+        }
 
         Ok(Self { conn })
     }
@@ -180,6 +210,7 @@ impl SyncDb {
     }
 
     /// The recorded size and mtime for a path, for deciding whether to re-hash.
+    #[cfg(test)]
     pub fn stamp(&self, path: &str) -> Option<(u64, i64, String)> {
         self.conn
             .query_row(
@@ -219,6 +250,7 @@ impl SyncDb {
         Ok(out)
     }
 
+    #[cfg(test)]
     pub fn node_id(&self, path: &str) -> Result<Option<String>, String> {
         self.conn
             .query_row("SELECT node_id FROM baseline WHERE path = ?1", params![path], |r| r.get(0))
@@ -231,16 +263,6 @@ impl SyncDb {
 
     // ── Deferred server-side deletions ──────────────────────────────────────
 
-    /// Mark a path as deleted locally and awaiting deletion on the server.
-    ///
-    /// The baseline row is deliberately kept. Dropping it would make the next
-    /// pass see "on the server, absent here, no history" and download the file
-    /// straight back, undoing the deletion the user actually made.
-    /// Note that a file is too large to upload without being asked about.
-    ///
-    /// Deliberately does not disturb an existing row: re-noting it must not
-    /// clear an approval the user has already given, or an approved upload
-    /// that failed once would need approving again on every pass.
     /// Whether anything tracked lives inside this folder.
     ///
     /// A folder has no baseline row of its own — the baseline is files — so
@@ -283,6 +305,11 @@ impl SyncDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
+    /// Note that a file is too large to upload without being asked about.
+    ///
+    /// Deliberately does not disturb an existing approval: re-noting it must
+    /// not clear one the user has already given, or an approved upload that
+    /// failed once would need approving again on every pass.
     pub fn hold_upload(&self, path: &str, size: u64) -> Result<(), String> {
         self.conn
             .execute(
@@ -343,6 +370,11 @@ impl SyncDb {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
     }
 
+    /// Mark a path as deleted locally and awaiting deletion on the server.
+    ///
+    /// The baseline row is deliberately kept. Dropping it would make the next
+    /// pass see "on the server, absent here, no history" and download the file
+    /// straight back, undoing the deletion the user actually made.
     pub fn mark_pending(&self, path: &str, node_id: Option<&str>, size: u64) -> Result<(), String> {
         self.conn
             .execute(
@@ -355,6 +387,7 @@ impl SyncDb {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn is_pending(&self, path: &str) -> Result<bool, String> {
         self.conn
             .query_row("SELECT 1 FROM pending_deletion WHERE path = ?1", params![path], |_| Ok(()))
@@ -410,6 +443,53 @@ impl SyncDb {
     pub fn clear_pending(&self, path: &str) -> Result<(), String> {
         self.conn
             .execute("DELETE FROM pending_deletion WHERE path = ?1", params![path])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ── Server deletions held on this computer ──────────────────────────────
+
+    pub fn add_local_trash(&self, path: &str, stored: &str, size: u64) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO local_trash (stored, path, size, trashed_at)
+                 VALUES (?1, ?2, ?3, strftime('%s','now'))",
+                params![stored, path, size as i64],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Everything held, newest first.
+    pub fn local_trash(&self) -> Result<Vec<LocalTrashed>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT path, stored, size,
+                        CAST((strftime('%s','now') - trashed_at) / 86400 AS INTEGER)
+                 FROM local_trash ORDER BY trashed_at DESC",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(LocalTrashed {
+                    path: row.get(0)?,
+                    stored: row.get(1)?,
+                    size: row.get::<_, i64>(2)? as u64,
+                    days_waiting: row.get::<_, i64>(3)?.max(0),
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
+    pub fn expired_local_trash(&self, days: i64) -> Result<Vec<LocalTrashed>, String> {
+        Ok(self.local_trash()?.into_iter().filter(|t| t.days_waiting >= days).collect())
+    }
+
+    pub fn clear_local_trash(&self, stored: &str) -> Result<(), String> {
+        self.conn
+            .execute("DELETE FROM local_trash WHERE stored = ?1", params![stored])
             .map_err(|e| e.to_string())?;
         Ok(())
     }
@@ -627,5 +707,19 @@ mod tests {
         assert!(!db.has_tracked_under("").unwrap());
         db.record("a.txt", "h", "b", 1, None).unwrap();
         assert!(db.has_tracked_under("").unwrap());
+    }
+
+    #[test]
+    fn server_deletions_held_locally_are_listed_and_cleared() {
+        let db = SyncDb::in_memory().unwrap();
+        db.add_local_trash("Docs/a.txt", "Docs/a.txt", 5).unwrap();
+        let held = db.local_trash().unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].path, "Docs/a.txt");
+        assert_eq!(held[0].days_waiting, 0);
+        assert!(db.expired_local_trash(1).unwrap().is_empty());
+        assert_eq!(db.expired_local_trash(0).unwrap().len(), 1);
+        db.clear_local_trash("Docs/a.txt").unwrap();
+        assert!(db.local_trash().unwrap().is_empty());
     }
 }

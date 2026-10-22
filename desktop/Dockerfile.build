@@ -3,7 +3,7 @@
 # Pinned to trixie to match the Debian the app is built for: Tauri links
 # against the system WebKitGTK, so a binary built on a newer glibc/webkit than
 # the target simply refuses to start.
-FROM rust:1-trixie
+FROM rust:1.99-trixie
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       libwebkit2gtk-4.1-dev \
@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libssl-dev \
       pkg-config \
       build-essential \
-      curl file ca-certificates \
+      curl file ca-certificates zip \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CARGO_HOME=/cargo

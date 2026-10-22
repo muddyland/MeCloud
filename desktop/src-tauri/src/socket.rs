@@ -474,4 +474,23 @@ mod tests {
             FileStatus::Synced
         );
     }
+
+    #[test]
+    fn a_connection_gets_one_reply_per_line_and_bad_lines_are_skipped() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let worker = std::thread::spawn(move || {
+            handle(server, &|request: Request| match request {
+                Request::Version => Some("VERSION:test".to_string()),
+                Request::Status(path) => Some(format!("STATUS:synced:{path}")),
+                _ => None,
+            })
+        });
+        let mut writer = client.try_clone().unwrap();
+        writer.write_all(b"VERSION\n\nRETRIEVE_FILE_STATUS:/sync/a.txt\n").unwrap();
+        writer.shutdown(std::net::Shutdown::Write).unwrap();
+
+        let replies: Vec<String> = BufReader::new(client).lines().map_while(Result::ok).collect();
+        worker.join().unwrap();
+        assert_eq!(replies, vec!["VERSION:test", "STATUS:synced:/sync/a.txt"]);
+    }
 }

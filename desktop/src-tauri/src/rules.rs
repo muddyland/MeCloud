@@ -34,10 +34,20 @@ use serde::{Deserialize, Serialize};
 /// folder, so it is not here; these are the things other software leaves
 /// behind that no one means to share. Conflict markers are deliberately absent
 /// — they are real files the user must see.
-const IGNORED_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini", ".Trash-1000"];
+///
+/// `.mecloud-trash` is the client's own holding area for files the server
+/// deleted; the scratch suffixes are its own half-finished downloads. A crash
+/// mid-download used to leave a `.mecloud-part` behind that the next pass
+/// uploaded as if it were a real file.
+const IGNORED_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini", ".Trash-1000", TRASH_DIR];
 
 const IGNORED_PREFIXES: &[&str] = &[".~lock.", "~$"];
-const IGNORED_SUFFIXES: &[&str] = &[".part", ".crdownload", ".swp", ".tmp"];
+const IGNORED_SUFFIXES: &[&str] =
+    &[".part", ".crdownload", ".swp", ".tmp", ".mecloud-part", ".mecloud-verify"];
+
+/// Where files deleted on the server wait, inside the sync folder, before they
+/// are removed from this computer for good.
+pub const TRASH_DIR: &str = ".mecloud-trash";
 
 /// Whether a single path component is one of the built-in exclusions.
 pub fn is_ignored(name: &str) -> bool {
@@ -58,7 +68,6 @@ pub fn is_ignored(name: &str) -> bool {
 /// One parsed exclusion pattern.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pattern {
-    raw: String,
     segments: Vec<String>,
     /// No slash in the pattern: match a name at any depth.
     by_name: bool,
@@ -87,15 +96,10 @@ impl Pattern {
 
         let segments: Vec<String> = core.split('/').map(str::to_string).collect();
         Some(Self {
-            raw: text.to_string(),
             by_name: !anchored && segments.len() == 1,
             segments,
             dir_only,
         })
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.raw
     }
 
     /// Whether this pattern excludes the given sync-folder-relative path.
@@ -259,10 +263,6 @@ impl Rules {
             })
             .cloned()
             .collect()
-    }
-
-    pub fn excluded_folders(&self) -> &BTreeSet<String> {
-        &self.excluded_folders
     }
 }
 

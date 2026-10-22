@@ -5,7 +5,7 @@ page cannot do for itself: a tray icon, staying resident when its window is
 closed, and being the system's handler for `mailto:` links.
 
 Built with [Tauri 2](https://tauri.app/) — the window is the operating system's
-own webview, so the binary is small (**4.6 MB** stripped, release) and the
+own webview, so the binary is small (**about 8 MB** stripped, release, sync engine included) and the
 embedded UI is the same one you get in a browser rather than a reimplementation
 of it.
 
@@ -56,8 +56,25 @@ which the sync engine will need. See *Sync*.
 The main window points at a remote origin. `src-tauri/capabilities/default.json`
 scopes every permission to the `setup` window and lists no remote URLs, so
 content served over the network has no IPC access — it is a web page, with a web
-page's reach. Only the local setup page can call into the client, and its
-commands are limited to reading and writing the server address.
+page's reach. Only the local setup page can call into the client. That page is
+served under a strict Content-Security-Policy (`tauri.conf.json`): its own
+script and styles, no remote content, no forms, no frames.
+
+### Where the main window may go
+
+The main window exists to show one server, and it has no address bar, so a link
+that navigated it elsewhere would leave someone browsing an arbitrary site in a
+window that looks like MeCloud. So:
+
+- the server's own origin is always allowed;
+- going to `/auth/...` on the server opens a ten-minute window in which other
+  origins are allowed too, because signing in goes to the identity provider and
+  back and that provider is not known in advance. Origins visited during that
+  window are remembered for the session, so a later silent re-login works;
+- any other web address — and every `target="_blank"` link, which is every link
+  in a mail — opens in your normal browser instead;
+- `about:`, `data:` and `blob:` stay in the page (mail bodies are `about:srcdoc`
+  frames, previews are blobs).
 
 ## Building
 
@@ -89,7 +106,7 @@ cross-compilation path from a Linux image. Both are built on the machine that
 will run them, from the source archive the web UI offers under *Get the desktop
 app*.
 
-**Windows** — install [Rust](https://rustup.rs/). WebView2 is already present on
+**Windows** — install [Rust](https://rustup.rs/) 1.89 or later (the sync lock uses `File::try_lock`). WebView2 is already present on
 Windows 11 and on any Windows 10 that has taken updates; if it is missing,
 Microsoft's *Evergreen Bootstrapper* installs it.
 
@@ -122,7 +139,14 @@ it on launch. For your own machine, an unsigned local build is fine.
 ### Packaging
 
 `package-linux.sh` takes the release binary and produces both artefacts the
-server offers:
+server offers. Run it from the **repository root** (the directory containing
+`desktop/`), after the release build, with the output directory as its
+argument: `desktop/package-linux.sh /tmp/out`. It needs `zip`, which the
+toolchain image installs.
+
+The version comes from `src-tauri/Cargo.toml` and nowhere else. `tauri.conf.json`
+deliberately has no `version`, so Tauri falls back to the crate's; the script
+refuses to package if one has crept back in with a different value.
 
 - `mecloud-desktop-linux-x86_64.tar.gz` — the binary, its icon, and an
   `install.sh` that installs per-user into `~/.local/bin` with no root. A
@@ -146,7 +170,7 @@ result. This is how the client is checked in CI and in a headless workspace.
 ## Runtime requirements (Linux)
 
 The client renders in the system's WebKitGTK rather than bundling a browser,
-which is what keeps it at 4.6 MB — but it means three libraries have to be
+which is what keeps it at about 8 MB — but it means three libraries have to be
 installed:
 
 | | |
@@ -339,7 +363,7 @@ normal way to reconnect a machine that already has the drive on it. The
 "never synced, same size" row above is what makes that case cheap; the warning
 is for when it is *not* that case.
 
-### Deleting is deferred
+### Deleting is deferred, in both directions
 
 ![Deletions](../docs/screenshot-desktop-deletions.png)
 
@@ -368,10 +392,48 @@ files on the list are held out of every plan, so the client does not spend 30
 days re-proposing the same deletion or re-downloading a file you meant to
 remove.
 
-Local deletions are still immediate and permanent — the waiting list is about
-what happens to the *server's* copy. A file deleted on the server by another
-machine is removed here on the next pass, and your desktop's own trash is not
-involved.
+The other direction is held too. A file deleted on the server — by another
+machine, or by a listing that was wrong — is not removed from this computer. It
+is moved into a hidden `.mecloud-trash` folder at the top of the sync folder,
+keeping its path, and listed under **Deleted on the server, kept here** with a
+**Put back** button. It is removed for good after the same number of days.
+Putting one back moves it into the sync folder again, and the next pass uploads
+it, since the server no longer has it. The trash folder is never synced.
+
+### What it refuses to trust
+
+Every way this client has lost files came from treating a partial answer as a
+complete one, so a pass now stops, changing nothing, when:
+
+- the server's listing is short — a page whose `FileNode/get` describes fewer
+  nodes than its query named, a `total` the pages do not add up to, a query
+  state that changes between pages, a repeated page, or more pages than the
+  client will read;
+- a file's parent folder is missing from the listing, folders loop, or a name
+  is not a single path component (there used to be a silent drop here, which
+  made the dropped files look deleted);
+- two passes would overlap. A pass holds a lock — in-process and on
+  `~/.config/mecloud/sync.lock` — so the timer, **Sync now**, the tray and a
+  `--sync-once` from cron cannot run at the same time. Overlapping passes used
+  to upload the same new file twice and interleave two downloads into one
+  scratch file.
+
+**Symbolic links** inside the sync folder are not followed and not synced, and
+the client will not write, rename or delete *through* one: a link such as
+`Desktop -> ~/Desktop` would otherwise put server files into the real Desktop.
+Each one is reported on the **Sync** screen. Move the real folder into the sync
+folder, or add an ignore rule to silence it. The sync folder itself may be a
+link.
+
+**Case-insensitive file systems** (exFAT, FAT, most macOS volumes) are not
+supported for the sync folder. Two server files whose names differ only in case
+— `Readme.md` and `README.md` — collapse into one file there, and the two sides
+then disagree on every pass.
+
+Scratch files are named by appending `.mecloud-part` or `.mecloud-verify` to the
+file name, are never synced, and are never written over a real file. Conflicted
+copies never overwrite an earlier conflicted copy: a second one in the same
+minute gets ` (2)`.
 
 ### What it does not do yet
 
@@ -383,9 +445,10 @@ involved.
 - **Selective sync is per top-level folder.** Anything finer is a pattern on
   the **Rules** screen, which is a different mental model — there is no folder
   tree with checkboxes all the way down.
-- **No partial transfers.** A file is uploaded or downloaded whole. Interrupted
-  downloads are written to a scratch name and renamed into place, so a half file
-  is never mistaken for the real thing, but the next pass starts it again.
+- **No partial transfers.** A file is uploaded or downloaded whole — streamed
+  from and to disk, never held in memory. Interrupted downloads are written to a
+  scratch name and renamed into place, so a half file is never mistaken for the
+  real thing, but the next pass starts it again.
 
 ### How often it runs
 
@@ -435,11 +498,20 @@ reporting them.
 The sync engine runs when no window is open, so it cannot borrow the webview's
 session cookie. It has its own **device token**, obtained by pairing:
 
-1. The client opens a loopback port and sends your browser to
-   `/auth/device` on the server.
+1. The client opens a loopback port, makes up a random **state** value, and
+   sends your browser to `/auth/device?redirect=…&name=…&state=…` on the server.
 2. That page requires your signed-in session — which is the point: it proves a
    person with an account is present, not merely a process on the machine.
-3. Approving redirects the token back to that loopback port.
+3. Approving shows a page whose form **POSTs** `token` and `state` to the
+   loopback port. The client accepts it only if the state matches, compared in
+   constant time.
+
+The state is what stops anything else that can reach the port while it is open
+— a web page in your browser probing localhost, say — from handing the client a
+token of its own. The POST keeps the token out of the URL, and so out of
+browser history and any history sync. The old redirect with `?token=` in it is
+refused. The wait ends after three minutes, or when you press the button again
+to cancel, and the port is released either way.
 
 Approving creates an **app password on the mail server for that device alone**,
 and the device token is a Fernet blob holding it, encrypted under its own HKDF
@@ -458,8 +530,16 @@ Revoking is now something the user can actually do. Each device shows up in the
 app's own **App Passwords** screen by name, and deleting it stops that device
 and nothing else. Rotating `SESSION_SECRET` still stops all of them.
 
-On disk the token is `~/.config/mecloud/device.token`, mode `0600`, separate
-from `config.json` so "forget this computer" is deleting one file.
+On disk the token is `~/.config/mecloud/device.token`, created `0600` (never
+written first and tightened after), separate from `config.json` so "forget this
+computer" is deleting one file. Both files are replaced atomically. If
+`config.json` is ever found damaged, the client sets it aside as
+`config.json.damaged-<time>` and starts from the last good copy,
+`config.json.bak`, rather than silently starting over with defaults.
+
+TLS uses the operating system's certificate store, for the setup check and for
+sync alike, so a server behind a private CA that the browser trusts works
+everywhere, not only in the window.
 
 Requests go to the server's own `/api/jmap` and `/api/files/blob` — the same
 endpoints the web UI uses. The client never holds a mail-server credential and
@@ -699,7 +779,9 @@ setup was fine when the server had simply never shipped a client at all.
 `mecloud-desktop --check-update` prints the same verdict as JSON.
 
 Installing downloads the tarball through the same signed short-lived link the
-web UI uses, checks the digest **before unpacking anything**, and replaces the
+web UI uses into a private (`0700`) directory under `~/.cache/mecloud`, not a
+guessable name in the shared `/tmp`. It checks the digest **before unpacking
+anything**, unpacks with the system `tar` by absolute path, and replaces the
 running binary with `rename()`, which is atomic — the installed path never holds
 a half-written file, and the running process keeps its own inode until it exits.
 
@@ -729,18 +811,26 @@ desktop/
 ├── src-tauri/
 │   ├── src/
 │   │   ├── main.rs        # entry point
-│   │   ├── lib.rs         # windows, tray, commands, the background loop
+│   │   ├── lib.rs         # shared state, settings updates, the pass lock (tested)
+│   │   ├── commands.rs    # what the settings page may call
+│   │   ├── windows.rs     # main + settings windows, navigation policy (tested)
+│   │   ├── tray.rs        # tray icon and menu
+│   │   ├── background.rs  # sync and update loops
+│   │   ├── fm_bridge.rs   # answers the file manager over the socket
+│   │   ├── cli.rs         # --sync-once, --update, --share, --open
+│   │   ├── encode.rs      # percent-encoding, once (tested)
+│   │   ├── rules.rs       # ignore patterns and selective sync (tested)
 │   │   ├── config.rs      # server address, sync folder, device token (tested)
 │   │   ├── deeplink.rs    # mailto: → compose URL (tested)
 │   │   ├── handlers.rs    # .desktop entry, xdg-mime, sidebar entry (tested)
-│   │   ├── pairing.rs     # loopback listener for the device token (tested)
+│   │   ├── pairing.rs     # loopback listener, state nonce, POST handoff (tested)
 │   │   ├── reconcile.rs   # what to do, given what changed where (pure, tested)
 │   │   ├── scan.rs        # hashing the local folder, path safety (tested)
 │   │   ├── socket.rs      # the file manager's status socket (tested)
 │   │   ├── syncdb.rs      # the baseline, in SQLite (tested)
 │   │   ├── update.rs      # version compare, digest, self-replace (tested)
 │   │   ├── api.rs         # JMAP + blobs via the server's proxy (tested)
-│   │   └── sync.rs        # the executor: does what reconcile decided (tested)
+│   │   └── sync.rs        # the executor, tested end to end against a fake server
 │   ├── capabilities/      # IPC scope — setup window only
 │   ├── icons/
 │   └── tauri.conf.json

@@ -38,31 +38,13 @@ impl Target {
                         url.push('&');
                         url.push_str(key);
                         url.push('=');
-                        url.push_str(&encode(value));
+                        url.push_str(&crate::encode::component(value));
                     }
                 }
                 url
             }
         }
     }
-}
-
-/// Percent-encode a query parameter value.
-///
-/// Hand-rolled rather than pulled in: the set of characters that must not
-/// survive into a query string is short and fixed, and everything outside
-/// unreserved gets encoded, so there is nothing to get subtly wrong.
-fn encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
 }
 
 /// Interpret one command-line argument. Returns None for anything that is not
@@ -110,22 +92,7 @@ fn join_addresses(existing: &str, extra: &str) -> String {
 /// Decode the percent-escapes in a mailto path. `Url` leaves the path encoded,
 /// and the address list is a path, not a query.
 fn percent_decode(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).ok();
-            if let Some(byte) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).replace(',', ", ")
+    crate::encode::decode(raw).replace(',', ", ")
 }
 
 /// Pick the first handled link out of a process's arguments.

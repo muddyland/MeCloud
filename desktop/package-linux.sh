@@ -8,7 +8,22 @@ set -eu
 
 OUT="${1:-/out}"
 BIN="desktop/src-tauri/target/release/mecloud-desktop"
+[ -d desktop/src-tauri ] || {
+  echo "run this from the repository root (the directory that contains desktop/)" >&2
+  exit 1
+}
 VERSION="$(sed -n 's/^version *= *"\(.*\)"/\1/p' desktop/src-tauri/Cargo.toml | head -1)"
+[ -n "$VERSION" ] || { echo "no version in desktop/src-tauri/Cargo.toml" >&2; exit 1; }
+
+# Cargo.toml is the single source of the version. tauri.conf.json must not
+# carry one of its own: Tauri falls back to the crate version when it is
+# absent, and two copies drift (the binary reports one, the manifest another).
+CONF_VERSION="$(sed -n 's/^ *"version" *: *"\(.*\)".*/\1/p' desktop/src-tauri/tauri.conf.json | head -1)"
+if [ -n "$CONF_VERSION" ] && [ "$CONF_VERSION" != "$VERSION" ]; then
+  echo "tauri.conf.json says version $CONF_VERSION but Cargo.toml says $VERSION." >&2
+  echo "Remove \"version\" from tauri.conf.json; Cargo.toml is the only source." >&2
+  exit 1
+fi
 
 [ -f "$BIN" ] || { echo "no binary at $BIN — build it first" >&2; exit 1; }
 mkdir -p "$OUT"
@@ -205,6 +220,8 @@ tar -cf - \
   --exclude='.cargo-cache' \
   --exclude='*.tar.gz' \
   --exclude='*.zip' \
+  --exclude='__pycache__' \
+  --exclude='*.pyc' \
   -C desktop . \
   | tar -xf - -C "$SRC/mecloud-desktop"
 

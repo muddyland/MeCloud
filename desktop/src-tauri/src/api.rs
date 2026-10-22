@@ -6,15 +6,48 @@
 //! needs to know where the mail server is, and inherits the proxy's limits and
 //! validation for free. The device token is the only secret it carries.
 
-use std::collections::BTreeMap;
-use std::io::Read;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::encode;
 use crate::reconcile::{Entry, Tree};
+
+/// What the sync engine needs from the server.
+///
+/// A trait so the engine can be driven by a fake in tests: everything that
+/// decides whether a file gets deleted runs through here, and that is exactly
+/// the code that must be exercised without a live server.
+pub trait Remote {
+    fn nodes(&self, account_id: &str) -> Result<Vec<Node>, String>;
+    fn upload_blob(&self, path: &Path) -> Result<(String, u64), String>;
+    fn download_blob(&self, blob_id: &str, name: &str, to: &Path) -> Result<(), String>;
+    fn create_folder(&self, account_id: &str, name: &str, parent: Option<&str>) -> Result<String, String>;
+    fn create_file(
+        &self, account_id: &str, name: &str, parent: Option<&str>, blob_id: &str, size: u64,
+    ) -> Result<String, String>;
+    fn update_file(&self, account_id: &str, node_id: &str, blob_id: &str, size: u64) -> Result<(), String>;
+    fn node_blob(&self, account_id: &str, node_id: &str) -> Result<Option<String>, String>;
+    fn destroy(&self, account_id: &str, node_id: &str) -> Result<(), String>;
+}
+
+/// One HTTP client configuration for every request the client makes.
+///
+/// The setup probe, the update check and the sync engine all go through this,
+/// so they agree on TLS roots and on the user agent.
+pub fn http_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        // The connect timeout is what catches an unreachable server quickly;
+        // the overall one is generous because a file can be large.
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(timeout)
+        .user_agent(concat!("MeCloud-Desktop/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())
+}
 
 pub struct Api {
     base: String,
@@ -39,20 +72,12 @@ struct BlobUpload {
     blob_id: String,
     #[serde(default)]
     size: Option<u64>,
-    #[serde(default, rename = "type")]
-    media_type: Option<String>,
 }
 
 impl Api {
     pub fn new(base: &str, token: &str) -> Result<Self, String> {
-        let http = reqwest::blocking::Client::builder()
-            // Generous: a sync can move large files over a slow link. The
-            // connect timeout is what catches an unreachable server quickly.
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(600))
-            .user_agent(concat!("MeCloud-Desktop/", env!("CARGO_PKG_VERSION")))
-            .build()
-            .map_err(|e| e.to_string())?;
+        // Generous: a sync can move large files over a slow link.
+        let http = http_client(Duration::from_secs(600))?;
         Ok(Self { base: base.trim_end_matches('/').to_string(), token: token.to_string(), http })
     }
 
@@ -69,6 +94,7 @@ impl Api {
                 .bearer_auth(&self.token)
                 .json(&body)
                 .send()
+                .map_err(|e| e.to_string())
         })?;
 
         let status = response.status();
@@ -92,113 +118,50 @@ impl Api {
             return Err(UNPAIRED.to_string());
         }
         let session: Value = response.json().map_err(|e| e.to_string())?;
-        session
-            .get("primaryAccounts")
-            .and_then(|a| a.get(FILENODE))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                session
-                    .get("accounts")
-                    .and_then(Value::as_object)
-                    .and_then(|a| a.keys().next().cloned())
-            })
-            .ok_or_else(|| "This account has no file storage.".to_string())
+        pick_account(&session)
     }
+}
 
+impl Remote for Api {
     /// Every node in the drive.
     ///
     /// Paged with query + a back-reference, the way the web client does it:
     /// `ids: null` is only "everything" while the account stays under the
     /// server's maxObjectsInGet, and past that some servers truncate silently
     /// rather than refusing — which would read here as "those files were
-    /// deleted".
-    pub fn nodes(&self, account_id: &str) -> Result<Vec<Node>, String> {
-        let mut out = Vec::new();
-        let mut position = 0i64;
-
-        for _ in 0..200 {
-            let data = self.jmap(
+    /// deleted". See `list_all` for what counts as a complete answer.
+    fn nodes(&self, account_id: &str) -> Result<Vec<Node>, String> {
+        list_all(|position| {
+            self.jmap(
                 &[CORE, FILENODE],
                 json!([
-                    ["FileNode/query", { "accountId": account_id, "position": position, "limit": 256 }, "q"],
+                    ["FileNode/query", {
+                        "accountId": account_id, "position": position, "limit": PAGE,
+                        "calculateTotal": true
+                    }, "q"],
                     ["FileNode/get", {
                         "accountId": account_id,
                         "#ids": { "resultOf": "q", "name": "FileNode/query", "path": "/ids" }
                     }, "g"]
                 ]),
-            )?;
-
-            let responses = data.get("methodResponses").and_then(Value::as_array).cloned().unwrap_or_default();
-
-            // A method-level error must never be read as "the drive is empty".
-            // JMAP reports a failed call by replacing the response name with
-            // "error" (RFC 8620 section 3.6.2), which has no `ids` — so the
-            // old code saw zero ids, stopped, and returned an empty listing.
-            // Every file in the baseline then looked deleted on the server, and
-            // the reconciler dutifully planned to delete every local copy.
-            if let Some(problem) = method_error(&responses) {
-                return Err(format!("The server could not list your files: {problem}"));
-            }
-
-            let ids = responses
-                .first()
-                .and_then(|r| r.get(1))
-                .and_then(|r| r.get("ids"))
-                .and_then(Value::as_array);
-            let Some(ids) = ids else {
-                // No error, but no `ids` either: the response is not one we
-                // understand, and guessing "empty" is the dangerous guess.
-                return Err("The server returned a file listing this client could not read.".into());
-            };
-            if ids.is_empty() {
-                break;
-            }
-            let ids_len = ids.len();
-
-            let list = responses
-                .get(1)
-                .and_then(|r| r.get(1))
-                .and_then(|r| r.get("list"))
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-
-            let before = out.len();
-            for item in list {
-                let Some(id) = item.get("id").and_then(Value::as_str) else { continue };
-                let blob_id = item.get("blobId").and_then(Value::as_str).map(str::to_string);
-                out.push(Node {
-                    id: id.to_string(),
-                    name: item.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
-                    parent_id: item.get("parentId").and_then(Value::as_str).map(str::to_string),
-                    is_folder: blob_id.is_none(),
-                    blob_id,
-                    size: item.get("size").and_then(Value::as_u64).unwrap_or(0),
-                });
-            }
-            // A server that ignores `position` would otherwise loop forever.
-            if out.len() == before {
-                break;
-            }
-            position += ids_len as i64;
-        }
-
-        Ok(out)
+            )
+        })
     }
 
-    pub fn upload_blob(&self, path: &Path) -> Result<(String, u64), String> {
-        let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut body = Vec::new();
-        file.read_to_end(&mut body).map_err(|e| format!("{}: {e}", path.display()))?;
-
+    /// Streamed from disk, never read into memory: the sync folder is where
+    /// the large files live. Re-opened for every attempt, because a retried
+    /// request needs the body from the start again.
+    fn upload_blob(&self, path: &Path) -> Result<(String, u64), String> {
         let response = with_retry(|| {
+            let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            let len = file.metadata().map(|m| m.len()).map_err(|e| format!("{}: {e}", path.display()))?;
             self.http
                 .post(self.url("/api/files/blob"))
                 .bearer_auth(&self.token)
                 .header("Content-Type", "application/octet-stream")
-                .body(body.clone())
+                .body(reqwest::blocking::Body::sized(file, len))
                 .send()
+                .map_err(|e| e.to_string())
         })?;
 
         let status = response.status();
@@ -209,19 +172,18 @@ impl Api {
             return Err(format!("Upload refused ({status})."));
         }
         let blob: BlobUpload = response.json().map_err(|e| e.to_string())?;
-        let size = blob.size.unwrap_or(0);
-        let _ = blob.media_type;
-        Ok((blob.blob_id, size))
+        Ok((blob.blob_id, blob.size.unwrap_or(0)))
     }
 
-    pub fn download_blob(&self, blob_id: &str, name: &str, to: &Path) -> Result<(), String> {
+    fn download_blob(&self, blob_id: &str, name: &str, to: &Path) -> Result<(), String> {
         let url = format!(
             "{}/api/files/blob/{}?name={}",
             self.base,
-            urlencode(blob_id),
-            urlencode(name)
+            encode::component(blob_id),
+            encode::component(name)
         );
-        let mut response = with_retry(|| self.http.get(&url).bearer_auth(&self.token).send())?;
+        let mut response =
+            with_retry(|| self.http.get(&url).bearer_auth(&self.token).send().map_err(|e| e.to_string()))?;
 
         if response.status() == reqwest::StatusCode::UNAUTHORIZED {
             return Err(UNPAIRED.to_string());
@@ -234,17 +196,27 @@ impl Api {
             std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
         }
         // Written beside the target and renamed into place, so an interrupted
-        // download never leaves a half file that the next scan would hash and
-        // treat as the real thing.
-        let temp = to.with_extension("mecloud-part");
+        // download never leaves a half file under the real name. The scratch
+        // name *appends* a suffix the scanner ignores: replacing the extension
+        // made "a.txt" and "a.pdf" share one scratch file.
+        let temp = scratch_path(to, PART_SUFFIX);
+        let _ = std::fs::remove_file(&temp);
         {
-            let mut file = std::fs::File::create(&temp).map_err(|e| e.to_string())?;
-            response.copy_to(&mut file).map_err(|e| e.to_string())?;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temp)
+                .map_err(|e| e.to_string())?;
+            if let Err(e) = response.copy_to(&mut file) {
+                drop(file);
+                let _ = std::fs::remove_file(&temp);
+                return Err(e.to_string());
+            }
         }
         std::fs::rename(&temp, to).map_err(|e| e.to_string())
     }
 
-    pub fn create_folder(&self, account_id: &str, name: &str, parent: Option<&str>) -> Result<String, String> {
+    fn create_folder(&self, account_id: &str, name: &str, parent: Option<&str>) -> Result<String, String> {
         let data = self.jmap(
             &[CORE, FILENODE],
             json!([["FileNode/set", {
@@ -255,7 +227,7 @@ impl Api {
         created_id(&data, "f").ok_or_else(|| format!("The server would not create the folder \"{name}\"."))
     }
 
-    pub fn create_file(
+    fn create_file(
         &self, account_id: &str, name: &str, parent: Option<&str>, blob_id: &str, size: u64,
     ) -> Result<String, String> {
         let data = self.jmap(
@@ -271,7 +243,7 @@ impl Api {
         created_id(&data, "n").ok_or_else(|| format!("The server would not save \"{name}\"."))
     }
 
-    pub fn update_file(&self, account_id: &str, node_id: &str, blob_id: &str, size: u64) -> Result<(), String> {
+    fn update_file(&self, account_id: &str, node_id: &str, blob_id: &str, size: u64) -> Result<(), String> {
         let data = self.jmap(
             &[CORE, FILENODE],
             json!([["FileNode/set", {
@@ -292,7 +264,7 @@ impl Api {
     /// the remote version marker has to be the value the *next* listing will
     /// produce. Recording the upload's id instead makes the following pass see
     /// a change that did not happen and download the file straight back.
-    pub fn node_blob(&self, account_id: &str, node_id: &str) -> Result<Option<String>, String> {
+    fn node_blob(&self, account_id: &str, node_id: &str) -> Result<Option<String>, String> {
         let data = self.jmap(
             &[CORE, FILENODE],
             json!([["FileNode/get", {
@@ -312,13 +284,28 @@ impl Api {
             .map(str::to_string))
     }
 
-    pub fn destroy(&self, account_id: &str, node_id: &str) -> Result<(), String> {
-        self.jmap(
+    fn destroy(&self, account_id: &str, node_id: &str) -> Result<(), String> {
+        let data = self.jmap(
             &[CORE, FILENODE],
             json!([["FileNode/set", {
                 "accountId": account_id, "destroy": [node_id], "onDestroyRemoveChildren": true
             }, "s"]]),
         )?;
+        // A refusal used to be read as success: the pending row was cleared,
+        // the file stayed on the server, and the next pass downloaded it back.
+        let responses = data.get("methodResponses").and_then(Value::as_array).cloned().unwrap_or_default();
+        if let Some(problem) = method_error(&responses) {
+            return Err(format!("The server would not delete that file: {problem}"));
+        }
+        let refused = responses
+            .first()
+            .and_then(|r| r.get(1))
+            .and_then(|r| r.get("notDestroyed"))
+            .and_then(Value::as_object)
+            .is_some_and(|o| o.contains_key(node_id));
+        if refused {
+            return Err("The server would not delete that file.".into());
+        }
         Ok(())
     }
 }
@@ -373,7 +360,7 @@ fn is_transient(status: reqwest::StatusCode) -> bool {
 /// Run a request, waiting out rate limits.
 fn with_retry<F>(mut send: F) -> Result<reqwest::blocking::Response, String>
 where
-    F: FnMut() -> Result<reqwest::blocking::Response, reqwest::Error>,
+    F: FnMut() -> Result<reqwest::blocking::Response, String>,
 {
     let mut last = String::new();
     for attempt in 0..MAX_ATTEMPTS {
@@ -392,7 +379,7 @@ where
                 std::thread::sleep(retry_delay(attempt, advised.as_deref()));
             }
             Err(e) => {
-                last = e.to_string();
+                last = e;
                 if attempt + 1 == MAX_ATTEMPTS {
                     return Err(format!("Could not reach the server: {last}"));
                 }
@@ -446,56 +433,263 @@ fn not_updated(data: &Value) -> bool {
         .is_some_and(|o| !o.is_empty())
 }
 
-fn urlencode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(*byte as char),
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
+/// The suffix a download is written under until it is complete.
+pub const PART_SUFFIX: &str = "mecloud-part";
+/// The suffix a "same file?" comparison downloads under.
+pub const VERIFY_SUFFIX: &str = "mecloud-verify";
+
+/// A sibling of `path` named `<file name>.<suffix>`.
+pub fn scratch_path(path: &Path, suffix: &str) -> std::path::PathBuf {
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    path.with_file_name(format!("{name}.{suffix}"))
 }
 
-/// Build path → entry and path → node id from a flat node list.
+/// Nodes per page.
+const PAGE: i64 = 256;
+
+/// Pages before giving up: about a million nodes. Reaching it is an error, not
+/// the end of the listing — the old cap of 200 pages returned the first 51,200
+/// files as if they were all of them, and everything after looked deleted.
+const MAX_PAGES: usize = 4096;
+
+/// The account to sync with.
+///
+/// The server's declared primary file-storage account if there is one. If not,
+/// the only account that has file storage. Anything else — no account, or
+/// several and no primary — is refused rather than guessed: syncing a folder
+/// into somebody's shared account is not a recoverable mistake.
+pub fn pick_account(session: &Value) -> Result<String, String> {
+    if let Some(id) = session
+        .get("primaryAccounts")
+        .and_then(|a| a.get(FILENODE))
+        .and_then(Value::as_str)
+    {
+        return Ok(id.to_string());
+    }
+    let with_files: Vec<&String> = session
+        .get("accounts")
+        .and_then(Value::as_object)
+        .map(|accounts| {
+            accounts
+                .iter()
+                .filter(|(_, a)| {
+                    a.get("accountCapabilities")
+                        .and_then(Value::as_object)
+                        .is_some_and(|c| c.contains_key(FILENODE))
+                })
+                .map(|(id, _)| id)
+                .collect()
+        })
+        .unwrap_or_default();
+    match with_files.as_slice() {
+        [only] => Ok((*only).clone()),
+        [] => Err("This account has no file storage.".into()),
+        _ => Err("The server offers several file storage accounts and does not say which is yours, \
+                  so nothing will be synced rather than guessing."
+            .into()),
+    }
+}
+
+/// What one page of a listing said.
+#[derive(Debug, Default)]
+struct Page {
+    ids: usize,
+    nodes: Vec<Node>,
+    not_found: usize,
+    query_state: Option<String>,
+    total: Option<u64>,
+}
+
+/// Read one query+get response, refusing anything short of a complete page.
+///
+/// Every refusal here is the difference between "the server failed to tell us"
+/// and "these files were deleted", and only the second may lead to a deletion.
+fn read_page(data: &Value) -> Result<Page, String> {
+    let responses = data.get("methodResponses").and_then(Value::as_array).cloned().unwrap_or_default();
+
+    // JMAP reports a failed call by replacing the response name with "error"
+    // (RFC 8620 section 3.6.2). An error has no `ids`, and reading that as an
+    // empty drive is the bug that once planned to delete every local copy.
+    if let Some(problem) = method_error(&responses) {
+        return Err(format!("The server could not list your files: {problem}"));
+    }
+    const UNREADABLE: &str = "The server returned a file listing this client could not read.";
+
+    let query = responses.first().and_then(|r| r.get(1)).ok_or(UNREADABLE)?;
+    let ids = query.get("ids").and_then(Value::as_array).ok_or(UNREADABLE)?;
+    let mut page = Page {
+        ids: ids.len(),
+        query_state: query.get("queryState").and_then(Value::as_str).map(str::to_string),
+        total: query.get("total").and_then(Value::as_u64),
+        ..Default::default()
+    };
+    if ids.is_empty() {
+        return Ok(page);
+    }
+
+    let get = responses.get(1).and_then(|r| r.get(1)).ok_or(UNREADABLE)?;
+    let list = get.get("list").and_then(Value::as_array).ok_or(UNREADABLE)?;
+    page.not_found = get.get("notFound").and_then(Value::as_array).map(Vec::len).unwrap_or(0);
+
+    for item in list {
+        let id = item.get("id").and_then(Value::as_str).ok_or(UNREADABLE)?;
+        let blob_id = item.get("blobId").and_then(Value::as_str).map(str::to_string);
+        page.nodes.push(Node {
+            id: id.to_string(),
+            name: item.get("name").and_then(Value::as_str).unwrap_or_default().to_string(),
+            parent_id: item.get("parentId").and_then(Value::as_str).map(str::to_string),
+            is_folder: blob_id.is_none(),
+            blob_id,
+            size: item.get("size").and_then(Value::as_u64).unwrap_or(0),
+        });
+    }
+
+    // `notFound` is a node deleted between the query and the get, which is a
+    // real deletion. Anything else missing is the server not telling us.
+    if page.nodes.len() + page.not_found < page.ids {
+        return Err(format!(
+            "The server listed {} files but described only {}; the listing is incomplete.",
+            page.ids,
+            page.nodes.len() + page.not_found
+        ));
+    }
+    Ok(page)
+}
+
+/// Page through a whole listing, or fail. Never returns a partial answer.
+///
+/// `fetch(position)` runs one query+get. Kept apart from the HTTP so the rules
+/// about what counts as complete can be tested on canned responses.
+pub(crate) fn list_all<F>(mut fetch: F) -> Result<Vec<Node>, String>
+where
+    F: FnMut(i64) -> Result<Value, String>,
+{
+    const CHANGED: &str = "Your drive changed while it was being listed; trying again next pass.";
+    let mut out: Vec<Node> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut position = 0i64;
+    let mut not_found = 0usize;
+    let mut first_state: Option<String> = None;
+    let mut total: Option<u64> = None;
+    let mut finished = false;
+
+    for _ in 0..MAX_PAGES {
+        let page = read_page(&fetch(position)?)?;
+
+        // Paging by position over a list that changes between pages skips or
+        // repeats entries, and a skipped file looks deleted. The query state
+        // is the server's own word on whether the list moved.
+        if let Some(state) = &page.query_state {
+            match &first_state {
+                None => first_state = Some(state.clone()),
+                Some(first) if first != state => return Err(CHANGED.into()),
+                _ => {}
+            }
+        }
+        if total.is_none() {
+            total = page.total;
+        }
+
+        if page.ids == 0 {
+            finished = true;
+            break;
+        }
+        for node in page.nodes {
+            // A server that ignores `position` hands back page one forever.
+            if !seen.insert(node.id.clone()) {
+                return Err("The server repeated part of the file listing; it cannot be trusted.".into());
+            }
+            out.push(node);
+        }
+        not_found += page.not_found;
+        position += page.ids as i64;
+
+        if total.is_some_and(|t| position as u64 >= t) {
+            finished = true;
+            break;
+        }
+    }
+
+    if !finished {
+        return Err("This drive has more files than the client can list in one pass.".into());
+    }
+    if let Some(expected) = total {
+        if (out.len() + not_found) as u64 != expected {
+            return Err(format!(
+                "The server said the drive holds {expected} items but listed {}; the listing is incomplete.",
+                out.len() + not_found
+            ));
+        }
+    }
+    Ok(out)
+}
+
+/// The server's tree, keyed by path.
+#[derive(Debug, Default)]
+pub struct Listing {
+    /// Files: path → version and size.
+    pub files: Tree,
+    /// Files: path → node id.
+    pub file_ids: BTreeMap<String, String>,
+    /// Folders: path → node id.
+    pub folder_ids: BTreeMap<String, String>,
+    /// Paths more than one node claims. The first by id is kept; the rest are
+    /// reported, never silently dropped.
+    pub duplicates: Vec<String>,
+}
+
+/// Build paths from a flat node list. The one parent walk in the crate.
 ///
 /// The server stores a tree by parent id; the reconciler compares paths. A
-/// node whose parent is missing is dropped rather than being attached to the
-/// root — inventing a location for it is how files end up in the wrong folder.
-pub fn to_tree(nodes: &[Node]) -> (Tree, BTreeMap<String, String>) {
+/// node whose parent is missing, a loop, or a name that is not a single path
+/// component makes the whole listing an error. Dropping such a node used to
+/// make it, and everything under it, look deleted on the server.
+pub fn to_tree(nodes: &[Node]) -> Result<Listing, String> {
     let by_id: BTreeMap<&str, &Node> = nodes.iter().map(|n| (n.id.as_str(), n)).collect();
-    let mut tree = Tree::new();
-    let mut ids = BTreeMap::new();
+    let mut sorted: Vec<&Node> = nodes.iter().collect();
+    sorted.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut listing = Listing::default();
 
-    'nodes: for node in nodes {
-        if node.is_folder {
-            continue;
-        }
-        let mut parts = vec![node.name.as_str()];
-        let mut cursor = node.parent_id.as_deref();
-        let mut guard = 0;
-        while let Some(id) = cursor {
-            guard += 1;
-            if guard > 64 {
-                continue 'nodes;      // defensive: a cycle would hang here
+    for node in sorted {
+        let mut parts = Vec::new();
+        let mut cursor = Some(node);
+        while let Some(current) = cursor {
+            if parts.len() > 256 {
+                return Err(format!("The server's folders loop back on themselves near \"{}\".", node.name));
             }
-            let Some(parent) = by_id.get(id) else { continue 'nodes };
-            parts.push(parent.name.as_str());
-            cursor = parent.parent_id.as_deref();
+            let name = current.name.as_str();
+            if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+                return Err(format!("The server has an item with an unusable name: \"{name}\"."));
+            }
+            parts.push(name);
+            cursor = match current.parent_id.as_deref() {
+                None => None,
+                Some(id) => Some(*by_id.get(id).ok_or_else(|| {
+                    format!(
+                        "\"{}\" is in a folder the server did not list; the listing is incomplete.",
+                        node.name
+                    )
+                })?),
+            };
         }
         parts.reverse();
         let path = parts.join("/");
-        if path.is_empty() {
+
+        if listing.files.contains_key(&path) || listing.folder_ids.contains_key(&path) {
+            listing.duplicates.push(path);
             continue;
         }
-        // The blob id is the remote version marker: JMAP exposes no content
-        // hash, and a node's blob id changes exactly when its contents do.
-        let version = node.blob_id.clone().unwrap_or_default();
-        tree.insert(path.clone(), Entry { version, size: node.size });
-        ids.insert(path, node.id.clone());
+        if node.is_folder {
+            listing.folder_ids.insert(path, node.id.clone());
+        } else {
+            // The blob id is the remote version marker: JMAP exposes no content
+            // hash, and a node's blob id changes exactly when its contents do.
+            let version = node.blob_id.clone().unwrap_or_default();
+            listing.files.insert(path.clone(), Entry { version, size: node.size });
+            listing.file_ids.insert(path, node.id.clone());
+        }
     }
-
-    (tree, ids)
+    Ok(listing)
 }
 
 #[cfg(test)]
@@ -519,37 +713,174 @@ mod tests {
             file("n1", "a.png", Some("f2"), 10),
             file("n2", "root.txt", None, 3),
         ];
-        let (tree, ids) = to_tree(&nodes);
-        assert!(tree.contains_key("Photos/2026/a.png"));
-        assert!(tree.contains_key("root.txt"));
-        assert_eq!(ids["Photos/2026/a.png"], "n1");
+        let listing = to_tree(&nodes).unwrap();
+        assert!(listing.files.contains_key("Photos/2026/a.png"));
+        assert!(listing.files.contains_key("root.txt"));
+        assert_eq!(listing.file_ids["Photos/2026/a.png"], "n1");
+        assert_eq!(listing.folder_ids["Photos"], "f1");
+        assert_eq!(listing.folder_ids["Photos/2026"], "f2");
     }
 
     #[test]
-    fn folders_are_not_entries_in_their_own_right() {
-        let (tree, _) = to_tree(&[folder("f1", "Photos", None)]);
-        assert!(tree.is_empty());
+    fn folders_are_not_file_entries() {
+        let listing = to_tree(&[folder("f1", "Photos", None)]).unwrap();
+        assert!(listing.files.is_empty());
+        assert_eq!(listing.folder_ids.len(), 1);
     }
 
     #[test]
-    fn a_node_with_a_missing_parent_is_dropped_not_rehomed() {
-        // Attaching it to the root would put the file somewhere the user never
-        // created, and the next sync would happily upload it there.
-        let (tree, _) = to_tree(&[file("n1", "orphan.txt", Some("gone"), 1)]);
-        assert!(tree.is_empty());
+    fn a_node_with_a_missing_parent_fails_the_listing() {
+        // Dropping it made the file, and everything else in that folder, look
+        // deleted on the server; re-homing it put it somewhere never created.
+        assert!(to_tree(&[file("n1", "orphan.txt", Some("gone"), 1)]).is_err());
+        assert!(to_tree(&[folder("f9", "Orphan", Some("gone"))]).is_err());
     }
 
     #[test]
-    fn a_parent_cycle_does_not_hang() {
+    fn a_parent_cycle_fails_rather_than_hangs() {
         let nodes = vec![
-            Node { id: "a".into(), name: "a".into(), parent_id: Some("b".into()),
-                   blob_id: None, size: 0, is_folder: true },
-            Node { id: "b".into(), name: "b".into(), parent_id: Some("a".into()),
-                   blob_id: None, size: 0, is_folder: true },
+            folder("a", "a", Some("b")),
+            folder("b", "b", Some("a")),
             file("n1", "x.txt", Some("a"), 1),
         ];
-        let (tree, _) = to_tree(&nodes);
-        assert!(tree.is_empty());
+        assert!(to_tree(&nodes).is_err());
+    }
+
+    #[test]
+    fn a_name_that_is_not_one_path_component_fails_the_listing() {
+        for bad in ["", ".", "..", "a/b", "a\\b"] {
+            assert!(to_tree(&[file("n1", bad, None, 1)]).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn two_nodes_claiming_one_path_are_reported() {
+        let listing = to_tree(&[file("n1", "a.txt", None, 1), file("n2", "a.txt", None, 2)]).unwrap();
+        assert_eq!(listing.file_ids["a.txt"], "n1");
+        assert_eq!(listing.duplicates, vec!["a.txt".to_string()]);
+    }
+
+    // ── list_all ────────────────────────────────────────────────────────
+
+    fn page(ids: &[&str], listed: &[&str], total: Option<u64>, state: &str) -> Value {
+        let list: Vec<Value> = listed
+            .iter()
+            .map(|id| json!({ "id": id, "name": format!("{id}.txt"), "blobId": format!("b{id}"), "size": 1 }))
+            .collect();
+        let mut query = json!({ "ids": ids, "queryState": state });
+        if let Some(t) = total {
+            query["total"] = json!(t);
+        }
+        json!({ "methodResponses": [
+            ["FileNode/query", query, "q"],
+            ["FileNode/get", { "list": list, "notFound": [] }, "g"]
+        ]})
+    }
+
+    #[test]
+    fn a_complete_paged_listing_is_returned_in_full() {
+        let pages = [page(&["a", "b"], &["a", "b"], Some(3), "s1"), page(&["c"], &["c"], Some(3), "s1")];
+        let mut calls = 0;
+        let nodes = list_all(|position| {
+            calls += 1;
+            Ok(pages[if position == 0 { 0 } else { 1 }].clone())
+        })
+        .unwrap();
+        assert_eq!(nodes.len(), 3);
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn a_short_page_is_an_error_not_a_smaller_drive() {
+        // The query named two ids; the get described one. Treating that as a
+        // one-file page is how a hiccup turned into local deletions.
+        let result = list_all(|_| Ok(page(&["a", "b"], &["a"], Some(2), "s1")));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_missing_list_is_an_error() {
+        let result = list_all(|_| {
+            Ok(json!({ "methodResponses": [
+                ["FileNode/query", { "ids": ["a"] }, "q"],
+                ["FileNode/get", {}, "g"]
+            ]}))
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_total_that_does_not_match_is_an_error() {
+        let result = list_all(|position| {
+            Ok(if position == 0 { page(&["a"], &["a"], Some(5), "s1") } else { page(&[], &[], Some(5), "s1") })
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_listing_that_changes_mid_way_is_an_error() {
+        let result = list_all(|position| {
+            Ok(if position == 0 { page(&["a"], &["a"], None, "s1") } else { page(&["b"], &["b"], None, "s2") })
+        });
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_server_that_ignores_position_is_caught() {
+        let result = list_all(|_| Ok(page(&["a"], &["a"], None, "s1")));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_node_reported_not_found_is_a_real_deletion() {
+        let mut data = page(&["a", "b"], &["a"], Some(2), "s1");
+        data["methodResponses"][1][1]["notFound"] = json!(["b"]);
+        let nodes = list_all(|_| Ok(data.clone())).unwrap();
+        assert_eq!(nodes.len(), 1);
+    }
+
+    #[test]
+    fn an_empty_drive_is_an_empty_listing() {
+        assert!(list_all(|_| Ok(page(&[], &[], Some(0), "s1"))).unwrap().is_empty());
+    }
+
+    // ── pick_account ────────────────────────────────────────────────────
+
+    #[test]
+    fn the_primary_file_account_wins() {
+        let session = json!({
+            "primaryAccounts": { FILENODE: "me" },
+            "accounts": { "me": {}, "shared": {} }
+        });
+        assert_eq!(pick_account(&session).unwrap(), "me");
+    }
+
+    #[test]
+    fn a_single_file_account_is_used_without_a_primary() {
+        let session = json!({ "accounts": {
+            "mail-only": { "accountCapabilities": { CORE: {} } },
+            "files": { "accountCapabilities": { FILENODE: {} } }
+        }});
+        assert_eq!(pick_account(&session).unwrap(), "files");
+    }
+
+    #[test]
+    fn several_file_accounts_and_no_primary_are_refused() {
+        // The old fallback took whichever key came first.
+        let session = json!({ "accounts": {
+            "a": { "accountCapabilities": { FILENODE: {} } },
+            "b": { "accountCapabilities": { FILENODE: {} } }
+        }});
+        assert!(pick_account(&session).is_err());
+        assert!(pick_account(&json!({ "accounts": {} })).is_err());
+    }
+
+    #[test]
+    fn scratch_names_append_rather_than_replace_the_extension() {
+        let a = scratch_path(Path::new("/s/report.txt"), PART_SUFFIX);
+        let b = scratch_path(Path::new("/s/report.pdf"), PART_SUFFIX);
+        assert_eq!(a, Path::new("/s/report.txt.mecloud-part"));
+        assert_ne!(a, b);
     }
 
     #[test]
@@ -608,11 +939,5 @@ mod tests {
             serde_json::json!(["error", {"type": "requestTooLarge"}, "g"]),
         ];
         assert_eq!(method_error(&responses).as_deref(), Some("requestTooLarge"));
-    }
-
-    #[test]
-    fn url_encoding_escapes_what_would_break_a_query() {
-        assert_eq!(urlencode("a b&c=d"), "a%20b%26c%3Dd");
-        assert_eq!(urlencode("plain-name_1.txt"), "plain-name_1.txt");
     }
 }
