@@ -6,7 +6,7 @@
     mailboxes, selectedMailbox, jmapAccountId, emails,
     composeContext, composeOpen, darkMode, messageActions
   } from '$lib/stores/mail.js';
-  import { getEmailBody, markEmailSeen, getThreadEmails } from '$lib/api.js';
+  import { getEmailBody, markEmailSeen } from '$lib/api.js';
   import { deleteMessages } from '$lib/mailActions.js';
   import { toast } from '$lib/stores/toast.js';
   import { sanitizeEmailHtml, escapeText, decodeEntities } from '$lib/sanitize.js';
@@ -28,11 +28,6 @@
   let blockedCount  = 0;
   let imagesAllowed = false;
   let senderTrusted = false;  // images load because of a standing per-sender choice
-
-  // The conversation this message belongs to, oldest first. Empty unless the
-  // thread has more than one message.
-  let thread    = [];
-  let threadSeq = 0;
 
   // Per-action busy flags so each control can show its own spinner rather than
   // freezing the whole pane.
@@ -116,22 +111,6 @@
     renderBody();
   }
 
-  async function loadThread(data, accountId) {
-    const seq = ++threadSeq;
-    thread = [];
-    if (!data?.threadId) return;
-    // The list already knows the thread size; skip the request for the common
-    // single-message case.
-    const listed = $emails.find((e) => e.id === data.id);
-    if (listed && (listed.threadSize ?? 1) <= 1) return;
-    try {
-      const all = await getThreadEmails(accountId, data.threadId);
-      if (seq === threadSeq && all.length > 1) thread = all;
-    } catch {
-      // The conversation strip is a convenience; the message itself is shown.
-    }
-  }
-
   // The mailbox this message actually lives in: the folder on screen when it
   // is in it, otherwise (opened from a conversation) the first one it is in.
   $: homeMailbox = email?.mailboxIds?.[$selectedMailbox?.id]
@@ -155,8 +134,6 @@
     blockedCount  = 0;
     imagesAllowed = false;
     senderTrusted = false;
-    thread        = [];
-    threadSeq    += 1;
 
     try {
       const accountId = Object.keys($jmapSession.accounts)[0];
@@ -200,7 +177,6 @@
       }
 
       email = data;
-      loadThread(data, accountId);
       // Auto-mark as read on open
       if (!data.keywords?.['$seen']) {
         email = { ...data, keywords: { ...(data.keywords ?? {}), '$seen': true } };
@@ -591,36 +567,6 @@
             </div>
           {/if}
         </div>
-
-        <!-- Conversation: every message in the thread, including your own
-             replies from Sent, so the context is one click away. -->
-        {#if thread.length > 1}
-          <details class="px-6 py-2 shrink-0 border-b border-gray-200 dark:border-gray-700 group/thread">
-            <summary class="text-xs text-gray-500 dark:text-gray-400 cursor-pointer select-none
-                            hover:text-gray-700 dark:hover:text-gray-200">
-              Conversation · {thread.length} messages
-            </summary>
-            <ul class="mt-2 space-y-0.5 max-h-48 overflow-y-auto">
-              {#each thread as t (t.id)}
-                <li>
-                  <button
-                    on:click={() => selectedEmailId.set(t.id)}
-                    disabled={t.id === email.id}
-                    class="w-full flex items-baseline gap-2 px-2 py-1 rounded-md text-left text-xs
-                           hover:bg-gray-100 dark:hover:bg-gray-800 disabled:cursor-default
-                           {t.id === email.id ? 'bg-blue-50 dark:bg-blue-900/30' : ''}"
-                  >
-                    <span class="font-medium text-gray-700 dark:text-gray-200 truncate max-w-40 shrink-0">
-                      {t.from?.[0]?.name || t.from?.[0]?.email || 'Unknown'}
-                    </span>
-                    <span class="truncate flex-1 text-gray-400 dark:text-gray-500">{t.preview ?? ''}</span>
-                    <span class="shrink-0 text-gray-400 dark:text-gray-500">{formatDate(t.receivedAt)}</span>
-                  </button>
-                </li>
-              {/each}
-            </ul>
-          </details>
-        {/if}
 
         {#if senderTrusted && imagesAllowed}
           <div class="px-6 py-1.5 shrink-0 text-[11px] text-gray-400 dark:text-gray-500

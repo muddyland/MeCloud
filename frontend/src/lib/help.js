@@ -100,6 +100,13 @@ export const HELP = [
         ],
       },
       {
+        title: 'Conversations',
+        body: [
+          'Replies to the same message stack into one card, showing the newest message, the people in it and how many messages it holds. Click the card, or the arrow beside it, to open the conversation: each message is listed beneath it, newest first, including your own replies from Sent Items. Copies in Deleted Items or Junk Mail stay out of it.',
+          'Selecting, dragging, moving or deleting the card acts on every message it holds in the folder you are looking at. To act on one message, open the conversation and use that message instead.',
+        ],
+      },
+      {
         title: 'Organising',
         body: [
           'Drag a message onto a folder to move it, or right-click for reply, forward, read/unread, move and delete. Select several with the checkboxes and the same menu acts on all of them.',

@@ -4,11 +4,14 @@
   import {
     emails, selectedEmailId, selectedMailbox, loading,
     draggedEmailId, contextMenu, composeOpen, jmapAccountId, searchQuery,
-    selectedEmailIds, movePickerOpen, mailboxes, visibleEmails, mailRefresher
+    selectedEmailIds, movePickerOpen, mailboxes, visibleEmails, mailRefresher, currentUser
   } from '$lib/stores/mail.js';
-  import { getEmails, searchEmails, bulkMarkSeen } from '$lib/api.js';
+  import { getEmails, searchEmails, bulkMarkSeen, getThreadEmails } from '$lib/api.js';
   import { deleteMessages } from '$lib/mailActions.js';
-  import { appendUnique } from '$lib/mailList.js';
+  import {
+    appendUnique, groupByThread, groupIds, conversationMessages,
+    navigationOrder, shownInConversation, cardSummary,
+  } from '$lib/mailList.js';
   import { toast } from '$lib/stores/toast.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
@@ -35,8 +38,79 @@
   $: displayedEmails = isSearching ? searchResults : $emails;
   $: selectionMode   = $selectedEmailIds.size > 0;
 
-  // Publish what's on screen so j/k navigation walks the same list the user sees.
-  $: visibleEmails.set(displayedEmails);
+  // ── Conversations ─────────────────────────────────────────────────────────
+  //
+  // One card per thread, showing its newest message. Expanding a card loads
+  // the whole thread — your replies from Sent included — and lists each
+  // message indented beneath it. Actions on the card act on every message the
+  // card holds in this list; actions on an indented message act on that one.
+
+  let expanded = new Set();          // group keys
+  let threads  = new Map();          // group key -> { size, list }
+  const inFlight = new Set();
+
+  $: groups = groupByThread(displayedEmails);
+
+  $: hiddenMailboxIds = new Set($mailboxes.filter((m) => m.role === 'trash' || m.role === 'junk').map((m) => m.id));
+  $: mailboxNames     = new Map($mailboxes.map((m) => [m.id, m.name]));
+  $: currentMailboxId = isSearching ? null : ($selectedMailbox?.id ?? null);
+  $: keep = (m) => shownInConversation(m, currentMailboxId, hiddenMailboxIds);
+
+  // Publish what's on screen so j/k navigation walks the same list the user
+  // sees: one stop per collapsed conversation, every message of an open one.
+  $: visibleEmails.set(navigationOrder(groups, expanded, threads, keep));
+
+  // An open conversation that gained or lost a message reloads its thread.
+  $: for (const g of groups) {
+    const cached = threads.get(g.key);
+    if (expanded.has(g.key) && cached && cached.size !== g.size) loadThread(g);
+  }
+
+  async function loadThread(group) {
+    if (!group.threadId || !$jmapAccountId || inFlight.has(group.key)) return;
+    inFlight.add(group.key);
+    const size = group.size;
+    try {
+      const list = await getThreadEmails($jmapAccountId, group.threadId);
+      threads = new Map(threads).set(group.key, { size, list });
+    } catch {
+      // The card still expands to the messages this list already holds.
+      threads = new Map(threads).set(group.key, { size, list: null });
+    } finally {
+      inFlight.delete(group.key);
+    }
+  }
+
+  function toggleExpand(group, e) {
+    e?.stopPropagation();
+    const next = new Set(expanded);
+    if (next.has(group.key)) {
+      next.delete(group.key);
+    } else {
+      next.add(group.key);
+      if (threads.get(group.key)?.size !== group.size) loadThread(group);
+    }
+    expanded = next;
+  }
+
+  function openGroup(group) {
+    selectedEmailId.set(group.latest.id);
+    if (cardSummary(group, keep, $currentUser).count > 1 && !expanded.has(group.key)) toggleExpand(group);
+  }
+
+  // The ids a drag or right-click carries: the whole selection when the row is
+  // part of it, otherwise just what the row stands for.
+  function idsFor(ids) {
+    return ids.every((id) => $selectedEmailIds.has(id)) && $selectedEmailIds.size > ids.length
+      ? [...$selectedEmailIds]
+      : ids;
+  }
+
+  function folderLabel(m) {
+    const ids = Object.keys(m?.mailboxIds ?? {});
+    if (!ids.length || (currentMailboxId && ids.includes(currentMailboxId))) return '';
+    return mailboxNames.get(ids.find((id) => !hiddenMailboxIds.has(id)) ?? ids[0]) ?? '';
+  }
 
   // One skeleton block covers both the first mailbox load and the first page of
   // a search; only the row count differs.
@@ -64,6 +138,8 @@
       prevMailboxId = id;
       hasMore       = true;
       loadingMore   = false;
+      expanded      = new Set();
+      threads       = new Map();
       selectedEmailIds.set(new Set());
       if ($searchQuery) searchQuery.set('');
     }
@@ -193,11 +269,13 @@
 
   // ── Selection ─────────────────────────────────────────────────────────────
 
-  function toggleSelect(id, e) {
+  // Select or deselect a whole conversation card at once.
+  function toggleSelect(ids, e) {
     e?.stopPropagation();
     selectedEmailIds.update(s => {
       const next = new Set(s);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      const all = ids.every((id) => next.has(id));
+      for (const id of ids) { if (all) next.delete(id); else next.add(id); }
       return next;
     });
   }
@@ -512,39 +590,42 @@
         {/if}
       </div>
     {:else}
-      {#each displayedEmails as email (email.id)}
-        {@const selected = $selectedEmailId === email.id}
-        {@const checked  = $selectedEmailIds.has(email.id)}
-        {@const unread   = isUnread(email)}
-        {@const s        = sender(email.from)}
+      {#each groups as group (group.key)}
+        {@const email      = group.latest}
+        {@const ids        = groupIds(group)}
+        {@const summary    = cardSummary(group, keep, $currentUser)}
+        {@const isThread   = summary.count > 1}
+        {@const isOpen     = isThread && expanded.has(group.key)}
+        {@const convo      = isOpen ? conversationMessages(group, threads.get(group.key)?.list).filter(keep) : []}
+        {@const holdsOpen  = ids.includes($selectedEmailId) || convo.some((m) => m.id === $selectedEmailId)}
+        {@const selected   = isOpen ? false : holdsOpen}
+        {@const checked    = ids.every((id) => $selectedEmailIds.has(id))}
+        {@const unread     = group.unread > 0}
+        {@const s          = sender(email.from)}
+        {@const who        = isThread ? summary.people.join(', ') : (s.name || s.email || 'Unknown')}
         <div
-          id="email-row-{email.id}"
+          id={isOpen ? undefined : `email-row-${email.id}`}
           draggable="true"
           on:dragstart={() => {
-            const ids = $selectedEmailIds.has(email.id) && $selectedEmailIds.size > 1
-              ? [...$selectedEmailIds]
-              : email.id;
-            draggedEmailId.set(ids);
+            const carried = idsFor(ids);
+            draggedEmailId.set(carried.length === 1 ? carried[0] : carried);
           }}
           on:dragend={() => draggedEmailId.set(null)}
           on:contextmenu={(e) => {
             e.preventDefault();
-            const ids = $selectedEmailIds.has(email.id) && $selectedEmailIds.size > 1
-              ? [...$selectedEmailIds]
-              : [email.id];
-            contextMenu.set({ x: e.clientX, y: e.clientY, emailId: email.id, ids });
+            contextMenu.set({ x: e.clientX, y: e.clientY, emailId: email.id, ids: idsFor(ids) });
           }}
-          class="flex items-center border-b border-gray-100 dark:border-gray-700/50
-                 transition-colors duration-150 group
+          class="flex items-center transition-colors duration-150 group
+                 {isOpen ? '' : 'border-b border-gray-100 dark:border-gray-700/50'}
                  {checked || selected
                    ? 'bg-blue-50 dark:bg-blue-900/30'
                    : 'hover:bg-gray-50 dark:hover:bg-gray-700/40'}
-                 {(Array.isArray($draggedEmailId) ? $draggedEmailId.includes(email.id) : $draggedEmailId === email.id) ? 'opacity-50' : ''}"
+                 {(Array.isArray($draggedEmailId) ? ids.some((id) => $draggedEmailId.includes(id)) : ids.includes($draggedEmailId)) ? 'opacity-50' : ''}"
         >
           <!-- Checkbox / Avatar toggle area -->
           <button
-            on:click={(e) => toggleSelect(email.id, e)}
-            title={checked ? 'Deselect' : 'Select'}
+            on:click={(e) => toggleSelect(ids, e)}
+            title={checked ? 'Deselect' : (isThread ? 'Select conversation' : 'Select')}
             class="shrink-0 flex items-center justify-center w-12 self-stretch
                    focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
           >
@@ -571,9 +652,28 @@
             </div>
           </button>
 
-          <!-- Email content (opens email) -->
+          <!-- Expand / collapse a conversation. Kept as its own column so the
+               text of single messages and conversations lines up. -->
+          {#if isThread}
+            <button
+              on:click={(e) => toggleExpand(group, e)}
+              title={isOpen ? 'Collapse conversation' : 'Expand conversation'}
+              aria-expanded={isOpen}
+              class="shrink-0 w-5 -ml-1 self-stretch flex items-center justify-center
+                     text-gray-400 dark:text-gray-500 hover:text-gray-700 dark:hover:text-gray-200
+                     focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
+            >
+              <svg class="w-3.5 h-3.5 transition-transform duration-150 {isOpen ? 'rotate-90' : ''}"
+                   viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25"
+                   stroke-linecap="round" stroke-linejoin="round"><polyline points="9 6 15 12 9 18"/></svg>
+            </button>
+          {:else}
+            <div class="shrink-0 w-5 -ml-1" aria-hidden="true"></div>
+          {/if}
+
+          <!-- Email content (opens the newest message, and the conversation) -->
           <button
-            on:click={() => selectedEmailId.set(email.id)}
+            on:click={() => openGroup(group)}
             class="flex-1 min-w-0 flex items-center gap-2 py-3 pr-4 text-left
                    focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
           >
@@ -583,14 +683,14 @@
                   {unread
                     ? 'font-semibold text-gray-900 dark:text-gray-50'
                     : 'font-medium text-gray-700 dark:text-gray-300'}">
-                  {s.name || s.email || 'Unknown'}
+                  {who}
                 </span>
                 <span class="text-xs shrink-0 text-gray-400 dark:text-gray-500">
                   {formatDate(email.receivedAt)}
                 </span>
               </div>
               <div class="flex items-center gap-1.5 mb-0.5">
-                {#if email.hasAttachment}
+                {#if group.emails.some((e) => e.hasAttachment)}
                   <svg class="w-3 h-3 shrink-0 text-gray-400 dark:text-gray-500"
                        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                        stroke-linecap="round" stroke-linejoin="round" aria-label="Has attachment">
@@ -603,13 +703,13 @@
                     : 'text-gray-600 dark:text-gray-400'}">
                   {email.subject || '(no subject)'}
                 </span>
-                {#if email.threadSize > 1}
+                {#if isThread}
                   <span class="shrink-0 text-[10px] font-medium px-1.5 rounded-full
                                bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
-                        title="{email.threadSize} messages in this conversation">{email.threadSize}</span>
+                        title="{summary.count} messages in this conversation">{summary.count}</span>
                 {/if}
               </div>
-              {#if email.preview}
+              {#if email.preview && !isOpen}
                 <div class="text-xs truncate text-gray-400 dark:text-gray-500">
                   {email.preview}
                 </div>
@@ -618,10 +718,66 @@
 
             {#if unread}
               <div class="w-2 h-2 rounded-full bg-blue-500 shrink-0"
-                   aria-label="Unread"></div>
+                   aria-label={group.unread > 1 ? `${group.unread} unread` : 'Unread'}></div>
             {/if}
           </button>
         </div>
+
+        <!-- The open conversation: each message indented under its card,
+             newest first, with a folder tag on anything from outside this one. -->
+        {#if isOpen}
+          <div class="pb-1.5 border-b border-gray-100 dark:border-gray-700/50" role="group"
+               aria-label="Messages in this conversation">
+            {#each convo as m (m.id)}
+              {@const mSelected = $selectedEmailId === m.id}
+              {@const mUnread   = isUnread(m)}
+              {@const ms        = sender(m.from)}
+              {@const folder    = folderLabel(m)}
+              <button
+                id="email-row-{m.id}"
+                draggable="true"
+                on:dragstart={() => draggedEmailId.set(m.id)}
+                on:dragend={() => draggedEmailId.set(null)}
+                on:contextmenu={(e) => {
+                  e.preventDefault();
+                  contextMenu.set({ x: e.clientX, y: e.clientY, emailId: m.id, ids: [m.id] });
+                }}
+                on:click={() => selectedEmailId.set(m.id)}
+                class="w-full flex items-center gap-2 pl-4 pr-4 py-2 text-left ml-[3.75rem] max-w-[calc(100%-3.75rem)]
+                       border-l-2 transition-colors duration-150
+                       focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400
+                       {mSelected
+                         ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/30'
+                         : 'border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700/40'}"
+              >
+                <div class="flex-1 min-w-0">
+                  <div class="flex items-baseline justify-between gap-1">
+                    <span class="text-xs truncate
+                      {mUnread ? 'font-semibold text-gray-900 dark:text-gray-50' : 'font-medium text-gray-700 dark:text-gray-300'}">
+                      {ms.email && ms.email.toLowerCase() === String($currentUser).toLowerCase() ? 'Me' : (ms.name || ms.email || 'Unknown')}
+                    </span>
+                    <span class="text-[11px] shrink-0 text-gray-400 dark:text-gray-500">{formatDate(m.receivedAt)}</span>
+                  </div>
+                  <div class="flex items-center gap-1.5">
+                    {#if folder}
+                      <span class="shrink-0 text-[10px] px-1.5 rounded-sm bg-gray-100 dark:bg-gray-700
+                                   text-gray-500 dark:text-gray-400">{folder}</span>
+                    {/if}
+                    <span class="text-xs truncate text-gray-400 dark:text-gray-500">{m.preview ?? ''}</span>
+                  </div>
+                </div>
+                {#if mUnread}
+                  <div class="w-1.5 h-1.5 rounded-full bg-blue-500 shrink-0" aria-label="Unread"></div>
+                {/if}
+              </button>
+            {/each}
+            {#if !threads.has(group.key)}
+              <div class="flex items-center gap-2 ml-[3.75rem] pl-4 py-1.5 text-[11px] text-gray-400">
+                <Spinner size="xs" label="" /> Loading conversation…
+              </div>
+            {/if}
+          </div>
+        {/if}
       {/each}
 
     {/if}

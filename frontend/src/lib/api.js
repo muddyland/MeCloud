@@ -336,7 +336,7 @@ const LIST_PROPERTIES = [
 ];
 
 /**
- * One page of a message list, each message carrying the size of its thread.
+ * One page of a message list, each message carrying its thread's size and members.
  *
  * The Thread/get rides in the same request, back-referenced from the page's
  * threadIds, so the conversation badge costs no extra round trip.
@@ -360,10 +360,19 @@ async function listPage(accountId, filter, position, limit) {
       accountId,
       '#ids': { resultOf: 'e', name: 'Email/get', path: '/list/*/threadId' },
     }, 't'],
+    // Who is in each conversation and which folders hold them — a few small
+    // properties per message, so a collapsed card can count and name what
+    // expanding it will show (your replies in Sent; not copies in Trash).
+    ['Email/get', {
+      accountId,
+      '#ids': { resultOf: 't', name: 'Thread/get', path: '/list/*/emailIds' },
+      properties: ['id', 'threadId', 'mailboxIds', 'from', 'receivedAt'],
+    }, 'm'],
   ]);
   const emails = data?.methodResponses?.[1]?.[1]?.list ?? [];
   const threads = data?.methodResponses?.[2]?.[1]?.list ?? [];
-  return withThreadSizes(emails, threads);
+  const members = data?.methodResponses?.[3]?.[1]?.list ?? [];
+  return withThreadSizes(emails, threads, members);
 }
 
 export async function getEmails(accountId, mailboxId, position = 0, limit = 50) {
