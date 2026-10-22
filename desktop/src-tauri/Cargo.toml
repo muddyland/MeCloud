@@ -1,6 +1,6 @@
 [package]
 name        = "mecloud-desktop"
-version     = "0.6.1"
+version     = "0.7.0"
 description = "MeCloud desktop client"
 edition     = "2021"
 # 1.89 for std::fs::File::try_lock, which keeps two sync passes from running at
