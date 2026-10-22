@@ -6,7 +6,7 @@
   export let open = false;
   export let title = '';
   export let subtitle = '';
-  /** sm | md | lg | xl */
+  /** sm | md | lg | xl | full (nearly the whole window, for previews) */
   export let size = 'md';
   /** While true the modal refuses to close and shows a spinner in the header. */
   export let busy = false;
@@ -20,6 +20,7 @@
     md: 'max-w-lg',
     lg: 'max-w-2xl',
     xl: 'max-w-4xl',
+    full: 'max-w-[min(96vw,120rem)]',
   };
 
   let panel;

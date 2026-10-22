@@ -17,8 +17,8 @@
   const NUMERIC = /^-?[\d.,]+%?$/;
 </script>
 
-<div class="w-full self-stretch min-h-64 flex flex-col bg-white dark:bg-gray-800">
-  <div class="flex-1 max-h-[64vh] overflow-auto">
+<div class="w-full self-stretch h-[calc(90vh-9.5rem)] flex flex-col bg-white dark:bg-gray-800">
+  <div class="flex-1 min-h-0 overflow-auto">
     {#if sheet.rows.length === 0}
       <p class="text-sm text-gray-500 dark:text-gray-400 py-12 text-center">This sheet is empty.</p>
     {:else}

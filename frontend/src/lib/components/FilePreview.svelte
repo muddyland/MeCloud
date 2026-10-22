@@ -176,7 +176,7 @@
   open={!!node}
   title={node?.name ?? ''}
   subtitle={node ? `${formatBytes(node.size)}${node.type ? ` · ${node.type}` : ''}` : ''}
-  size="xl"
+  size="full"
   on:close={close}
 >
   <div class="flex items-center justify-center min-h-64 bg-gray-50 dark:bg-gray-900/50">
@@ -184,7 +184,7 @@
       <!-- closed -->
     {:else if kind === 'image' && src}
       <img {src} alt={node.name}
-           class="max-w-full max-h-[70vh] object-contain" />
+           class="max-w-full max-h-[calc(90vh-9.5rem)] object-contain" />
     {:else if kind === 'pdf' && src}
       <!-- Deliberately not sandbox="": an empty sandbox disables plugins, and
            the browser's PDF viewer is one, so the frame rendered as "This
@@ -193,7 +193,7 @@
            excludes everything script-capable, with nosniff and a restrictive
            per-response CSP. -->
       <iframe {src} title={node.name} referrerpolicy="no-referrer"
-              class="w-full h-[70vh] border-0 bg-white"></iframe>
+              class="w-full h-[calc(90vh-9.5rem)] border-0 bg-white"></iframe>
     {:else if office}
       {#if loadingOffice}
         <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 py-12">
@@ -207,7 +207,7 @@
         <iframe srcdoc={officeData} title={node.name}
                 sandbox="allow-popups allow-popups-to-escape-sandbox"
                 referrerpolicy="no-referrer"
-                class="w-full h-[70vh] border-0"></iframe>
+                class="w-full h-[calc(90vh-9.5rem)] border-0"></iframe>
       {:else if officeData && office === 'sheet'}
         <SheetView sheets={officeData.sheets} />
       {:else if officeData && office === 'slides'}
@@ -216,7 +216,7 @@
       {/if}
     {:else if kind === 'video' && src}
       <!-- svelte-ignore a11y-media-has-caption -->
-      <video {src} controls class="max-w-full max-h-[70vh]"></video>
+      <video {src} controls class="max-w-full max-h-[calc(90vh-9.5rem)]"></video>
     {:else if kind === 'audio' && src}
       <audio {src} controls class="w-full px-8"></audio>
     {:else if kind === 'text'}
@@ -237,7 +237,7 @@
             bind:value={draft}
             on:keydown={onEditKeydown}
             spellcheck={markdown}
-            class="w-full h-[60vh] resize-none p-4 font-mono text-xs leading-relaxed
+            class="w-full h-[calc(90vh-13rem)] resize-none p-4 font-mono text-xs leading-relaxed
                    bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200
                    focus:outline-hidden"
           ></textarea>
@@ -245,11 +245,11 @@
       {:else if markdown}
         <!-- Sanitised in renderMarkdown(); this renders in the parent document,
              so that call is the only boundary. -->
-        <div class="w-full max-h-[70vh] overflow-auto p-5 bg-white dark:bg-gray-800">
-          <article class="note-prose">{@html renderedMd}</article>
+        <div class="w-full max-h-[calc(90vh-9.5rem)] overflow-auto p-5 bg-white dark:bg-gray-800">
+          <article class="note-prose mx-auto max-w-4xl">{@html renderedMd}</article>
         </div>
       {:else}
-        <pre class="w-full max-h-[70vh] overflow-auto p-4 text-xs leading-relaxed
+        <pre class="w-full max-h-[calc(90vh-9.5rem)] overflow-auto p-4 text-xs leading-relaxed
                     font-mono text-gray-800 dark:text-gray-200 whitespace-pre-wrap
                     wrap-break-word">{textContent}</pre>
       {/if}

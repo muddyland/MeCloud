@@ -19,11 +19,11 @@
   onDestroy(() => { if (url) URL.revokeObjectURL(url); });
 </script>
 
-<div class="w-full max-h-[70vh] overflow-auto bg-white dark:bg-gray-800">
+<div class="w-full max-h-[calc(90vh-9.5rem)] overflow-auto bg-white dark:bg-gray-800">
   {#if url}
     <div class="flex justify-center px-6 pt-6">
       <img src={url} alt="Cover of the presentation"
-           class="max-h-[32vh] rounded-md border border-gray-200 dark:border-gray-700 shadow-sm" />
+           class="max-h-[40vh] rounded-md border border-gray-200 dark:border-gray-700 shadow-sm" />
     </div>
   {/if}
 

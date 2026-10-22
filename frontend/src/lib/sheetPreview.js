@@ -90,15 +90,40 @@ export function formatNumber(value) {
 // quoted text and [colour]/[condition] sections.
 
 const BUILTIN_DATE_FORMATS = new Set([14, 15, 16, 17, 18, 19, 20, 21, 22, 45, 46, 47]);
+// Built-in percentage formats: 9 is "0%", 10 is "0.00%".
+const BUILTIN_PERCENT_DECIMALS = new Map([[9, 0], [10, 2]]);
+
+/** A format code without quoted text, escapes, [Red]/[>100]/[$-409] sections or padding. */
+function bareFormat(code) {
+  return String(code ?? '')
+    .replace(/"[^"]*"/g, '')
+    .replace(/\\./g, '')
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/_.|\*./g, '');
+}
+
+/**
+ * Decimal places if this number format shows a percentage, else null. Excel
+ * stores 65.4% as 0.654, and only the format says to multiply by 100.
+ */
+export function percentDecimals(id, code) {
+  if (BUILTIN_PERCENT_DECIMALS.has(Number(id))) return BUILTIN_PERCENT_DECIMALS.get(Number(id));
+  const bare = bareFormat(code).split(';')[0];
+  if (!bare.includes('%')) return null;
+  return bare.match(/\.([0#?]+)/)?.[1].length ?? 0;
+}
+
+/** A stored fraction as the percentage its format shows: 0.6543 -> "65.43%". */
+export function formatPercent(value, decimals) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return String(value ?? '');
+  return `${(n * 100).toFixed(decimals)}%`;
+}
 
 export function isDateFormat(id, code) {
   if (BUILTIN_DATE_FORMATS.has(Number(id))) return true;
   if (!code) return false;
-  const bare = String(code)
-    .replace(/"[^"]*"/g, '')        // quoted literals
-    .replace(/\\./g, '')            // escaped characters
-    .replace(/\[[^\]]*\]/g, '')     // [Red], [>100], [$-409]
-    .replace(/_.|\*./g, '');        // padding directives
+  const bare = bareFormat(code);
   return /[dmyhs]/i.test(bare) && !/^general$/i.test(bare.trim());
 }
 
@@ -136,9 +161,14 @@ async function readXlsx(doc) {
   const styles = await readXml(doc, 'xl/styles.xml');
   const customFormats = new Map(byName(styles, 'numFmt').map((f) => [attr(f, 'numFmtId'), attr(f, 'formatCode')]));
   const cellXfs = byName(styles, 'cellXfs')[0];
-  const dateStyles = children(cellXfs, 'xf').map((xf) => {
+  // What each cell style's number format means for display: a date, a
+  // percentage (with its decimal places), or a plain number.
+  const styleKinds = children(cellXfs, 'xf').map((xf) => {
     const id = attr(xf, 'numFmtId') ?? '0';
-    return isDateFormat(id, customFormats.get(id));
+    const code = customFormats.get(id);
+    if (isDateFormat(id, code)) return { date: true };
+    const decimals = percentDecimals(id, code);
+    return decimals == null ? null : { percent: decimals };
   });
 
   const sheets = [];
@@ -165,7 +195,7 @@ async function readXlsx(doc) {
           if (children(c, 'v').length || children(c, 'is').length) cut = true;
           continue;
         }
-        cells[col] = cellValue(c, { shared, dateStyles, date1904 });
+        cells[col] = cellValue(c, { shared, styleKinds, date1904 });
       }
       if (rowIndex >= MAX_ROWS) { if (cut) break; continue; }
       rows[rowIndex] = cells;
@@ -179,7 +209,7 @@ async function readXlsx(doc) {
   return { sheets };
 }
 
-function cellValue(c, { shared, dateStyles, date1904 }) {
+function cellValue(c, { shared, styleKinds, date1904 }) {
   const type = attr(c, 't') ?? 'n';
   const v = children(c, 'v')[0]?.textContent ?? '';
   switch (type) {
@@ -190,8 +220,10 @@ function cellValue(c, { shared, dateStyles, date1904 }) {
     case 'd': return v.replace('T', ' ').replace(/(:\d\d)(\.\d+)?Z?$/, '$1');
     default: {
       if (v === '') return '';
-      const style = Number(attr(c, 's') ?? 0);
-      return dateStyles[style] ? serialToText(v, date1904) : formatNumber(v);
+      const kind = styleKinds[Number(attr(c, 's') ?? 0)];
+      if (kind?.date) return serialToText(v, date1904);
+      if (kind?.percent != null) return formatPercent(v, kind.percent);
+      return formatNumber(v);
     }
   }
 }

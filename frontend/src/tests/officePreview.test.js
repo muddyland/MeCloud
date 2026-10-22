@@ -6,6 +6,7 @@ import JSZip from 'jszip';
 import {
   readSpreadsheet, parseCsv, sniffDelimiter, columnIndex, columnLabel,
   formatNumber, isDateFormat, serialToText, finishGrid, MAX_ROWS,
+  percentDecimals, formatPercent,
 } from '$lib/sheetPreview.js';
 import { readPresentation } from '$lib/slidePreview.js';
 import { sniffRasterImage, resolveTarget, OfficeReadError } from '$lib/officeZip.js';
@@ -26,6 +27,8 @@ describe('xlsx', () => {
     expect(budget.rows[1].slice(0, 5)).toEqual(['Boat hire', '3', '1200', '2026-10-26', 'TRUE']);
     expect(budget.rows[2].slice(0, 5)).toEqual(['Plates', '', '340.3', '2026-10-28 14:30', 'FALSE']);
     expect(budget.rows[0][6]).toBe('06:12');
+    expect(budget.rows[0][7]).toBe('65.43%');   // custom 0.00%
+    expect(budget.rows[0][8]).toBe('50%');      // built-in 0%
     expect(budget.rows[5][5]).toBe('far cell');
   });
   it('marks hidden sheets', async () => {
@@ -113,6 +116,15 @@ describe('spreadsheet helpers', () => {
     expect(isDateFormat(166, '[Red]0.00')).toBe(false);
     expect(isDateFormat(167, '"days"0')).toBe(false);
     expect(isDateFormat(0, 'General')).toBe(false);
+  });
+  it('recognises percentage formats and their decimals', () => {
+    expect(percentDecimals(9)).toBe(0);
+    expect(percentDecimals(10)).toBe(2);
+    expect(percentDecimals(170, '0.0%')).toBe(1);
+    expect(percentDecimals(171, '#,##0.00%;[Red]-#,##0.00%')).toBe(2);
+    expect(percentDecimals(172, '"100%" 0.00')).toBeNull();    // % only in quoted text
+    expect(percentDecimals(173, '0.00')).toBeNull();
+    expect(formatPercent('0.654257142857143', 2)).toBe('65.43%');
   });
   it('turns serial dates into text, in both date systems', () => {
     expect(serialToText(46321)).toBe('2026-10-26');
