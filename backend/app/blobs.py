@@ -32,8 +32,11 @@ INLINE_SAFE_TYPES = frozenset({
 _BLOB_ID_RE = re.compile(r"^[A-Za-z0-9_\-=.:~]{1,256}$")
 
 # Header-unsafe characters in a user-supplied filename. RFC 6266 gives us
-# filename* for the real name; this is the ASCII fallback.
-_UNSAFE_NAME_RE = re.compile(r'[^\w.\-+ ]')
+# filename* for the real name; this is the ASCII fallback, so it must be ASCII.
+# re.ASCII matters: without it `\w` matches every Unicode letter, a name like
+# "文件.txt" passes through untouched, and the header fails to encode — a 500
+# on every download of a file named in a non-Latin script.
+_UNSAFE_NAME_RE = re.compile(r'[^\w.\-+ ]', re.ASCII)
 
 
 def validate_blob_id(blob_id: str) -> str:

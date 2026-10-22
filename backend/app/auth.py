@@ -3,10 +3,11 @@ import base64
 import hashlib
 import os
 import secrets
+import time
 from urllib.parse import urlencode, urlparse
 
 from .config import get_settings
-from .http import client, raise_for_status
+from .http import UpstreamError, client, raise_for_status
 
 _oauth_endpoints: dict = {}
 _discovery_lock = asyncio.Lock()
@@ -111,7 +112,7 @@ async def exchange_code(code: str, state: str, session: dict) -> dict:
     return response.json()
 
 
-async def refresh_access_token(refresh_token: str) -> dict:
+async def _post_refresh(refresh_token: str) -> dict:
     endpoints = await _discover_endpoints()
     settings = get_settings()
 
@@ -126,6 +127,73 @@ async def refresh_access_token(refresh_token: str) -> dict:
     )
     raise_for_status(response, "OAuth token refresh")
     return response.json()
+
+
+# ── Refresh, once per refresh token ─────────────────────────────────────────
+#
+# A page load fires several API calls at once, and every one of them carries the
+# same cookie, hence the same refresh token. Without coordination each call
+# refreshes independently; with refresh-token rotation (Stalwart rotates) the
+# first one spends the token and every other one fails with invalid_grant —
+# which used to log the user out at random, a few minutes before expiry.
+#
+# So one refresh runs per refresh token, and its result is kept briefly so the
+# requests that were already in flight with the old cookie get the same new
+# tokens instead of trying to spend the old one again.
+
+_REFRESH_RESULT_TTL = 120          # seconds; long enough for in-flight requests
+_refresh_locks: dict[str, asyncio.Lock] = {}
+_refresh_results: dict[str, tuple[dict, float]] = {}
+
+
+class RefreshRejected(Exception):
+    """The authorisation server refused the refresh token: sign in again."""
+
+
+def _rt_key(refresh_token: str) -> str:
+    return hashlib.sha256(refresh_token.encode()).hexdigest()
+
+
+def _prune_refresh_results(now: float) -> None:
+    for key, (_, expires) in list(_refresh_results.items()):
+        if expires < now:
+            _refresh_results.pop(key, None)
+
+
+async def refresh_access_token(refresh_token: str) -> dict:
+    """Exchange a refresh token, at most once however many callers ask.
+
+    Raises :class:`RefreshRejected` when the server says the token is no good
+    (an OAuth error response: 400 invalid_grant, 401). Anything else — a
+    timeout, a 5xx, a DNS failure — propagates unchanged, because a mail server
+    restarting is not a reason to sign the user out.
+    """
+    key = _rt_key(refresh_token)
+    now = time.monotonic()
+    _prune_refresh_results(now)
+    cached = _refresh_results.get(key)
+    if cached:
+        return cached[0]
+
+    lock = _refresh_locks.setdefault(key, asyncio.Lock())
+    try:
+        async with lock:
+            cached = _refresh_results.get(key)
+            if cached:
+                return cached[0]
+            try:
+                tokens = await _post_refresh(refresh_token)
+            except UpstreamError as e:
+                if e.status in (400, 401, 403):
+                    raise RefreshRejected(str(e)) from e
+                raise
+            if not isinstance(tokens, dict) or not tokens.get("access_token"):
+                raise RefreshRejected("Token endpoint returned no access_token")
+            _refresh_results[key] = (tokens, time.monotonic() + _REFRESH_RESULT_TTL)
+            return tokens
+    finally:
+        if not lock.locked():
+            _refresh_locks.pop(key, None)
 
 
 def safe_local_path(value: str | None) -> str | None:

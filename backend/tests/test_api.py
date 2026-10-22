@@ -395,3 +395,29 @@ def test_an_explicit_origin_drops_x_frame_options():
 def test_frame_ancestors_is_sanitised(hostile, expected):
     from app.config import Settings
     assert Settings(frame_ancestors=hostile, **_SETTINGS_STUB).frame_ancestors_value == expected
+
+
+# ── script-src: hashes, not 'unsafe-inline' ─────────────────────────────────
+
+def test_inline_script_hashes_match_what_a_browser_hashes():
+    import base64
+    import hashlib
+    from app.main import inline_script_hashes
+
+    body = "\n  boot();\n"
+    page = f'<head><script src="/a.js"></script></head><body><script>{body}</script></body>'
+    expected = base64.b64encode(hashlib.sha256(body.encode()).digest()).decode()
+    assert inline_script_hashes(page) == [f"'sha256-{expected}'"]
+
+
+def test_external_scripts_are_not_hashed():
+    from app.main import inline_script_hashes
+
+    assert inline_script_hashes('<script type="module" src="/x.js"></script>') == []
+
+
+async def test_script_src_never_allows_unsafe_inline(client):
+    r = await client.get("/health")
+    script_src = r.headers["content-security-policy"].split("script-src", 1)[1].split(";", 1)[0]
+    assert "'unsafe-inline'" not in script_src
+    assert "'self'" in script_src

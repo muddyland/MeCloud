@@ -111,7 +111,10 @@ def test_bearer_token_parsing(header, expected):
 
 def test_a_sealed_pairing_request_round_trips():
     sealed = devices.seal_pairing(SECRET, redirect="http://127.0.0.1:4321/paired", name="Laptop")
-    assert devices.open_pairing(SECRET, sealed) == ("http://127.0.0.1:4321/paired", "Laptop")
+    assert devices.open_pairing(SECRET, sealed) == ("http://127.0.0.1:4321/paired", "Laptop", "")
+    sealed = devices.seal_pairing(SECRET, redirect="http://127.0.0.1:4321/paired", name="Laptop",
+                                  state="s" * 32)
+    assert devices.open_pairing(SECRET, sealed)[2] == "s" * 32
 
 
 def test_a_sealed_pairing_request_cannot_be_forged():
@@ -202,3 +205,84 @@ def test_the_handoff_escapes_what_it_puts_in_the_page():
     body = _handoff_page('http://127.0.0.1:1/p?token=a"><script>x</script>').body.decode()
     assert "<script>" not in body
     assert "&lt;script&gt;" in body
+
+
+# ── state nonce and the POST hand-off ───────────────────────────────────────
+
+@pytest.mark.parametrize("state,ok", [
+    ("a" * 16, True), ("A-z_09" * 5, True), ("a" * 128, True),
+    ("a" * 15, False), ("a" * 129, False), ("a" * 20 + "!", False), ("", False),
+    ("a" * 20 + "&token=x", False),
+])
+def test_state_shape(state, ok):
+    assert devices.is_valid_state(state) is ok
+
+
+@pytest.mark.parametrize("url,origin", [
+    ("http://127.0.0.1:41234/paired", "http://127.0.0.1:41234"),
+    ("http://[::1]:8123/paired?x=1", "http://[::1]:8123"),
+])
+def test_loopback_origin(url, origin):
+    assert devices.loopback_origin(url) == origin
+
+
+def test_the_form_handoff_posts_token_and_state_and_scopes_form_action():
+    import base64
+    import hashlib
+    import re
+    from app.main import _handoff_form
+
+    response = _handoff_form("http://127.0.0.1:41234/paired", "tok/+=", "s" * 32)
+    body = response.body.decode()
+    csp = response.headers["content-security-policy"]
+    assert 'method="post"' in body and 'action="http://127.0.0.1:41234/paired"' in body
+    assert 'name="token" value="tok/+="' in body
+    assert 'name="state" value="' + "s" * 32 + '"' in body
+    assert "token=" not in body.split("<form", 1)[0]          # never in a URL
+    assert "form-action http://127.0.0.1:41234;" in csp
+    assert "unsafe-inline" not in csp.split("script-src", 1)[1].split(";", 1)[0]
+    # The inline script on the page is exactly the one the policy allows.
+    script = re.search(r"<script>(.*?)</script>", body, re.S).group(1)
+    digest = base64.b64encode(hashlib.sha256(script.encode()).digest()).decode()
+    assert f"'sha256-{digest}'" in csp
+
+
+def test_the_form_handoff_escapes_its_values():
+    from app.main import _handoff_form
+
+    body = _handoff_form("http://127.0.0.1:1/p", '"><script>x</script>', "s" * 32).body.decode()
+    assert "<script>x" not in body
+
+
+async def test_an_invalid_state_is_refused(client):
+    response = await client.get("/auth/device", params={
+        "redirect": "http://127.0.0.1:41234/paired", "state": "short"})
+    assert response.status_code == 400
+
+
+async def test_approve_with_state_returns_the_form_handoff(monkeypatch):
+    """A sealed request carrying a nonce is answered with the POST hand-off."""
+    from app import main
+
+    sealed = devices.seal_pairing(main.settings.session_secret,
+                                  redirect="http://127.0.0.1:41234/paired", name="Laptop",
+                                  state="s" * 32)
+
+    async def fake_create(token, name):
+        return {"secret": "pw", "id": "p1", "username": "ada"}
+
+    monkeypatch.setattr(main, "create_app_password", fake_create)
+
+    # Drive the route directly with a session that is signed in.
+    from starlette.requests import Request
+    body = f"request_token={sealed}".encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    scope = {"type": "http", "method": "POST", "path": "/auth/device/approve", "headers": [],
+             "query_string": b"", "session": {"access_token": "t"}, "client": ("127.0.0.1", 1),
+             "server": ("test", 80), "scheme": "http", "root_path": "", "app": main.app}
+    response = await main.device_approve.__wrapped__(Request(scope, receive))
+    assert "form-action http://127.0.0.1:41234;" in response.headers["content-security-policy"]
+    assert 'name="state"' in response.body.decode()

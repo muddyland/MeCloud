@@ -1,0 +1,10 @@
+# Direct runtime dependencies. Edit this file, then regenerate the hashed
+# lockfiles (requirements.txt, requirements-dev.txt) — see README, "Upgrading
+# dependencies". The image and CI install only from the lockfiles.
+fastapi==0.141.1
+uvicorn[standard]==0.52.3
+httpx==0.28.1
+pydantic-settings==2.15.0
+starlette==1.6.0
+cryptography==50.0.0
+slowapi==0.1.10

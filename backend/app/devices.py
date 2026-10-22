@@ -19,6 +19,7 @@ of them, and every browser session with it.
 from __future__ import annotations
 
 import json
+import re
 import time
 from dataclasses import dataclass
 
@@ -140,7 +141,7 @@ def _pairing_fernet(secret: str) -> Fernet:
     return Fernet(base64.urlsafe_b64encode(raw))
 
 
-def seal_pairing(secret: str, *, redirect: str, name: str) -> str:
+def seal_pairing(secret: str, *, redirect: str, name: str, state: str = "") -> str:
     """Wrap a pairing request so the consent page cannot be pointed elsewhere.
 
     The redirect travels through the browser, and an unsigned one would let any
@@ -148,18 +149,44 @@ def seal_pairing(secret: str, *, redirect: str, name: str) -> str:
     choosing. Sealing it means the value the approval acts on is the value this
     server produced after checking it.
     """
-    payload = json.dumps({"r": redirect, "n": name[:120]}).encode()
+    payload = json.dumps({"r": redirect, "n": name[:120], "s": state}).encode()
     return _pairing_fernet(secret).encrypt(payload).decode()
 
 
-def open_pairing(secret: str, sealed: str) -> tuple[str, str] | None:
-    """Unwrap a pairing request. Returns (redirect, name) or None."""
+def open_pairing(secret: str, sealed: str) -> tuple[str, str, str] | None:
+    """Unwrap a pairing request. Returns (redirect, name, state) or None.
+
+    `state` is empty for a client that predates it.
+    """
     try:
         raw = _pairing_fernet(secret).decrypt(sealed.encode(), ttl=PAIRING_MAX_AGE)
         data = json.loads(raw)
-        return str(data["r"]), str(data.get("n", ""))
+        return str(data["r"]), str(data.get("n", "")), str(data.get("s", ""))
     except (InvalidToken, ValueError, KeyError, TypeError):
         return None
+
+
+_STATE_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
+
+
+def is_valid_state(state: str) -> bool:
+    """A client nonce binding the reply to the request the client made.
+
+    Without it, anything that can reach the client's loopback port while it
+    waits could hand it a token of its own choosing. With it, the client only
+    accepts a reply carrying the value it generated, which never left the
+    machine except through this signed-in, sealed round trip.
+    """
+    return bool(_STATE_RE.match(state or ""))
+
+
+def loopback_origin(url: str) -> str:
+    """scheme://host:port of an already-validated loopback redirect, for CSP."""
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    host = f"[{parsed.hostname}]" if ":" in (parsed.hostname or "") else parsed.hostname
+    return f"{parsed.scheme}://{host}:{parsed.port}"
 
 
 def is_loopback_redirect(url: str) -> bool:

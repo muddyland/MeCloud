@@ -102,6 +102,18 @@ def test_unicode_filename_survives_via_rfc6266():
     assert "%C3%A9" in header          # é percent-encoded in the UTF-8 form
 
 
+@pytest.mark.parametrize("name", [
+    "réunion été.pdf", "文件.txt", "Отчёт.txt", "Ελληνικά.md", "emoji 🎉.png", "naïve–dash.txt",
+])
+def test_any_filename_yields_an_encodable_header(name):
+    # The check that matters is the one the server makes: headers go out as
+    # latin-1. Asserting on the string alone is how a 500 shipped.
+    for inline in (True, False):
+        header = content_disposition(name, inline=inline)
+        header.encode("ascii")
+        assert "filename*=UTF-8''" in header
+
+
 def test_empty_filename_falls_back():
     assert 'filename="download"' in content_disposition("", inline=False)
     assert 'filename="download"' in content_disposition(None, inline=False)
@@ -277,3 +289,35 @@ async def test_html_is_still_sandboxed_even_when_inline_is_requested(auth_client
     assert r.headers["content-type"].startswith("application/octet-stream")
     assert r.headers["content-disposition"].startswith("attachment;")
     assert "sandbox" in r.headers["content-security-policy"]
+
+
+# ---------------------------------------------------------------------------
+# End to end through the route: the header is encoded by the server, not us
+# ---------------------------------------------------------------------------
+
+class _FakeUpstream:
+    headers = {"content-type": "text/plain", "content-length": "5"}
+
+    async def aiter_bytes(self):
+        yield b"hello"
+
+
+class _FakeCtx:
+    async def __aexit__(self, *exc):
+        return None
+
+
+@pytest.mark.parametrize("name", ["report.txt", "Résumé.txt", "文件.txt", "Отчёт.txt"])
+async def test_download_route_serves_non_ascii_names(auth_client, monkeypatch, name):
+    from app import blobs, main
+
+    async def fake_open(token, blob_id, filename, type_):
+        return blobs.BlobStream(_FakeCtx(), _FakeUpstream())
+
+    monkeypatch.setattr(main, "open_blob", fake_open)
+    response = await auth_client.get(
+        "/api/files/blob/abc", params={"name": name, "type": "text/plain", "inline": "true"}
+    )
+    assert response.status_code == 200
+    assert response.text == "hello"
+    assert "filename*=UTF-8''" in response.headers["content-disposition"]

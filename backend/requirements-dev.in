@@ -1,0 +1,6 @@
+# Test-only dependencies, compiled with the runtime set as a constraint so the
+# versions tests run against are exactly the versions that ship.
+-c requirements.txt
+-r requirements.in
+pytest==9.1.1
+pytest-asyncio==1.4.0

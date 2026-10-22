@@ -1,5 +1,8 @@
+import base64
+import hashlib
 import html
 import logging
+import re
 import mimetypes
 import os
 import time
@@ -26,7 +29,7 @@ from . import http as upstream
 from .config import get_settings
 from .auth import (
     get_authorization_url, exchange_code, refresh_access_token, _discover_endpoints,
-    safe_local_path,
+    safe_local_path, RefreshRejected,
 )
 from .http import UpstreamError
 from .jmap import (
@@ -47,14 +50,43 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
-# 'unsafe-inline' in script-src is required by SvelteKit's hydration bootstrap,
-# which is emitted as an inline <script>. It is not the app's XSS boundary:
-# untrusted email HTML is rendered in a sandboxed iframe with no allow-scripts,
-# so it cannot execute script at all regardless of this directive. Removing it
-# means switching SvelteKit to `csp: { mode: 'hash' }` in svelte.config.js.
+def inline_script_hashes(index_html: str) -> list[str]:
+    """CSP source expressions for every inline <script> in the SPA shell.
+
+    SvelteKit's static build boots from one inline script in index.html. Rather
+    than allow *all* inline script for it ('unsafe-inline'), the policy names
+    that script by its SHA-256, computed from the file actually being served, so
+    a rebuild cannot leave a stale hash behind. An injected script — or an
+    inline event handler — matches no hash and does not run.
+    """
+    hashes = []
+    for match in _INLINE_SCRIPT_RE.finditer(index_html):
+        body = match.group(1)
+        digest = hashlib.sha256(body.encode("utf-8")).digest()
+        hashes.append(f"'sha256-{base64.b64encode(digest).decode()}'")
+    return hashes
+
+
+# Inline scripts only: a <script src=…> is covered by 'self'.
+_INLINE_SCRIPT_RE = re.compile(r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", re.S | re.I)
+
+
+def _script_src() -> str:
+    index = os.path.join(settings.frontend_static_dir, "index.html")
+    try:
+        with open(index, encoding="utf-8") as f:
+            hashes = inline_script_hashes(f.read())
+    except OSError:
+        hashes = []          # no built frontend (API-only / tests): nothing inline to allow
+    return " ".join(["'self'", *hashes])
+
+
 _CSP = (
     "default-src 'self'; "
-    "script-src 'self' 'unsafe-inline'; "
+    f"script-src {_script_src()}; "
+    # Styles stay 'unsafe-inline': Svelte transitions and the sanitised mail
+    # markup set inline styles. Style cannot execute script, and remote url()
+    # in mail is stripped by the frontend sanitiser.
     "style-src 'self' 'unsafe-inline'; "
     "img-src 'self' data: blob: https:; "    # emails may contain external images
     "font-src 'self' data:; "
@@ -336,17 +368,29 @@ async def require_auth(request: Request) -> str:
             request.session.clear()
             raise HTTPException(status_code=401, detail="Session expired, please log in again")
         try:
-            old_token = token
             new_tokens = await refresh_access_token(rt)
-            token = new_tokens["access_token"]
-            request.session["access_token"] = token
-            if "refresh_token" in new_tokens:
-                request.session["refresh_token"] = new_tokens["refresh_token"]
-            request.session["token_expires_at"] = time.time() + new_tokens.get("expires_in", 3600)
-            invalidate_session(old_token)
-        except Exception:
+        except RefreshRejected:
+            # The server refused the refresh token itself: only a new sign-in helps.
             request.session.clear()
             raise HTTPException(status_code=401, detail="Session expired, please log in again")
+        except (UpstreamError, httpx.HTTPError, ValueError) as e:
+            # The mail server is restarting, slow, or unreachable. That is not
+            # the user's session failing, so it must not sign them out. While
+            # the current token is still inside its lifetime, keep using it.
+            logger.warning("Token refresh failed transiently: %s: %s", type(e).__name__, e)
+            if time.time() < expires_at:
+                return token
+            raise HTTPException(status_code=503, detail="Mail server unavailable, try again shortly",
+                                headers={"Retry-After": "10"})
+
+        old_token = token
+        token = new_tokens["access_token"]
+        request.session["access_token"] = token
+        if "refresh_token" in new_tokens:
+            request.session["refresh_token"] = new_tokens["refresh_token"]
+        request.session["token_expires_at"] = time.time() + new_tokens.get("expires_in", 3600)
+        if old_token != token:
+            invalidate_session(old_token)
 
     return token
 
@@ -446,9 +490,65 @@ def _handoff_page(target: str) -> HTMLResponse:
     return HTMLResponse(body, headers={"Cache-Control": "no-store"})
 
 
+_HANDOFF_SUBMIT_JS = "document.getElementById('handoff').submit();"
+_HANDOFF_SUBMIT_HASH = "'sha256-" + base64.b64encode(
+    hashlib.sha256(_HANDOFF_SUBMIT_JS.encode()).digest()).decode() + "'"
+
+
+def _handoff_form(redirect: str, token: str, state: str) -> HTMLResponse:
+    """Post the device token to the waiting client, with the client's nonce.
+
+    A POST rather than the legacy `?token=` navigation, so a year-long
+    credential never lands in browser history or a synced history database.
+
+    The page carries its own policy. `form-action` names exactly one origin —
+    the loopback port this request was sealed with — so the relaxation that
+    makes the hand-off possible applies to this one response and nowhere else.
+    The one script it runs is pinned by hash; the button is the no-script path.
+    """
+    origin = devices.loopback_origin(redirect)
+    csp = (
+        "default-src 'none'; "
+        f"script-src {_HANDOFF_SUBMIT_HASH}; "
+        "style-src 'unsafe-inline'; "
+        f"form-action {origin}; "
+        "base-uri 'none'; "
+        f"frame-ancestors 'none';"
+    )
+    body = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Connecting…</title>
+<style>
+ :root {{ color-scheme: light dark; }}
+ body {{ margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+        background:#f6f7f9; color:#111827;
+        font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; text-align:center; }}
+ @media (prefers-color-scheme: dark) {{ body {{ background:#0b1220; color:#f3f4f6; }} }}
+ p {{ margin:.4rem; }} .muted {{ color:#6b7280; font-size:.88rem; }}
+ button {{ margin-top:.8rem; padding:.55rem 1.1rem; border:0; border-radius:9px;
+           font-weight:600; background:#3b82f6; color:#fff; cursor:pointer; }}
+</style></head><body><div>
+  <p>Connecting to MeCloud on this computer…</p>
+  <form id="handoff" method="post" action="{html.escape(redirect, quote=True)}">
+    <input type="hidden" name="token" value="{html.escape(token, quote=True)}">
+    <input type="hidden" name="state" value="{html.escape(state, quote=True)}">
+    <p class="muted">If nothing happens, press the button.</p>
+    <button type="submit">Finish connecting</button>
+  </form>
+</div><script>{_HANDOFF_SUBMIT_JS}</script></body></html>"""
+    return HTMLResponse(body, headers={
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": csp,
+        "Referrer-Policy": "no-referrer",
+    })
+
+
 @app.get("/auth/device")
 @limiter.limit("20/minute")
-async def device_pairing(request: Request, redirect: str = "", name: str = "MeCloud Desktop"):
+async def device_pairing(request: Request, redirect: str = "", name: str = "MeCloud Desktop",
+                         state: str = ""):
     """Ask the signed-in user to approve a device.
 
     Reached by the desktop client opening a browser here. Requiring the session
@@ -460,6 +560,8 @@ async def device_pairing(request: Request, redirect: str = "", name: str = "MeCl
             status_code=400,
             detail="A device can only be paired to an address on this computer.",
         )
+    if state and not devices.is_valid_state(state):
+        raise HTTPException(status_code=400, detail="Invalid pairing request.")
     if not request.session.get("access_token"):
         # Sign in first, then come back to this exact request. Path and query
         # only: the callback refuses anything absolute, since that value is the
@@ -468,7 +570,8 @@ async def device_pairing(request: Request, redirect: str = "", name: str = "MeCl
         request.session["after_login"] = f"/auth/device?{query}" if query else "/auth/device"
         return RedirectResponse(url="/auth/login", status_code=302)
 
-    sealed = devices.seal_pairing(settings.session_secret, redirect=redirect, name=name)
+    sealed = devices.seal_pairing(settings.session_secret, redirect=redirect, name=name,
+                                  state=state)
     # Named from the JMAP session for the same reason: our own session record
     # has no username in it.
     try:
@@ -496,7 +599,7 @@ async def device_approve(request: Request):
     opened = devices.open_pairing(settings.session_secret, request_token)
     if opened is None:
         raise HTTPException(status_code=400, detail="This pairing request has expired. Try again.")
-    redirect, name = opened
+    redirect, name, state = opened
     # Checked again after unsealing: the value acted on must be the checked one.
     if not devices.is_loopback_redirect(redirect):
         raise HTTPException(status_code=400, detail="Invalid pairing address.")
@@ -515,6 +618,9 @@ async def device_approve(request: Request):
         username=created["username"],
         name=name,
     )
+    if state:
+        return _handoff_form(redirect, token, state)
+    # A client from before the nonce: the legacy GET hand-off it understands.
     joiner = "&" if "?" in redirect else "?"
     return _handoff_page(f"{redirect}{joiner}token={quote(token)}")
 
