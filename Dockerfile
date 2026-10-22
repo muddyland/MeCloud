@@ -49,7 +49,10 @@ RUN node scripts/gen-icons.mjs && npm run build
 # Skippable with --build-arg WITH_DESKTOP=0 when iterating on the web app: the
 # Rust build is by far the slowest part of this Dockerfile. The image is still
 # valid without it — /api/desktop/releases simply reports nothing to download.
-FROM ${BASE_REGISTRY}rust:1-trixie AS desktop-builder
+#
+# The compiler is pinned to a minor version, matching desktop/Dockerfile.build,
+# so a rebuild of the same commit uses the same toolchain. Bump both together.
+FROM ${BASE_REGISTRY}rust:1.99-trixie AS desktop-builder
 
 ARG WITH_DESKTOP=1
 
@@ -62,11 +65,31 @@ RUN if [ "$WITH_DESKTOP" = "1" ]; then \
     fi
 
 WORKDIR /build
+
+# Dependencies first, in their own layer. Everything the build script and the
+# dependency graph need, but not src/: with stub sources in place, editing the
+# client's code (or its README) no longer recompiles ~540 crates.
+COPY desktop/src-tauri/Cargo.toml desktop/src-tauri/Cargo.lock desktop/src-tauri/build.rs \
+     desktop/src-tauri/tauri.conf.json ./desktop/src-tauri/
+COPY desktop/src-tauri/capabilities/ ./desktop/src-tauri/capabilities/
+COPY desktop/src-tauri/icons/ ./desktop/src-tauri/icons/
+COPY desktop/ui/ ./desktop/ui/
+RUN if [ "$WITH_DESKTOP" = "1" ]; then \
+      cd desktop/src-tauri && mkdir -p src && \
+      echo 'fn main() {}' > src/main.rs && echo '' > src/lib.rs && \
+      cargo build --release --locked && \
+      rm -rf src target/release/mecloud-desktop* target/release/deps/mecloud_desktop* \
+             target/release/.fingerprint/mecloud-desktop-*; \
+    fi
+
 COPY desktop/ ./desktop/
 
+# --locked and nothing else. A `|| cargo build` fallback would quietly
+# re-resolve a stale Cargo.lock — the very drift `npm ci` above refuses — and
+# turn a real compile error into two full builds before failing.
 RUN mkdir -p /out && \
     if [ "$WITH_DESKTOP" = "1" ]; then \
-      cd desktop/src-tauri && cargo build --release --locked || cargo build --release; \
+      cd desktop/src-tauri && cargo build --release --locked && \
       cd /build && sh desktop/package-linux.sh /out; \
     else \
       echo "WITH_DESKTOP=0 — skipping the desktop client"; \
@@ -79,10 +102,12 @@ FROM ${PYTHON_BUILDER_IMAGE} AS python-deps
 WORKDIR /deps
 
 COPY backend/requirements.txt ./
-# --target rather than --prefix or a venv: a plain directory on PYTHONPATH
-# does not depend on where the interpreter lives, which differs between the
-# slim image (/usr/local) and the hardened one (/usr).
-RUN pip install --no-cache-dir --target=/opt/pydeps -r requirements.txt
+# requirements.txt is the compiled lockfile: every package in the tree, pinned,
+# with hashes, so pip runs in hash-checking mode and two builds of one commit
+# install the same bytes. --target rather than --prefix or a venv: a plain
+# directory on PYTHONPATH does not depend on where the interpreter lives, which
+# differs between the slim image (/usr/local) and the hardened one (/usr).
+RUN pip install --no-cache-dir --require-hashes --target=/opt/pydeps -r requirements.txt
 
 
 # ── Stage 4: Final image ──────────────────────────────────────────────────────
@@ -98,8 +123,9 @@ WORKDIR /app
 
 COPY --from=python-deps /opt/pydeps /opt/pydeps
 
-# Copy backend application code
-COPY backend/ ./
+# Application code only — tests, dev requirements and caches stay out of the
+# image (see also .dockerignore).
+COPY backend/app/ ./app/
 
 # Copy built frontend static files
 COPY --from=frontend-builder /app/build ./static
@@ -115,7 +141,8 @@ ENV ENVIRONMENT=production \
     DESKTOP_DOWNLOAD_DIR=/app/downloads \
     PYTHONPATH=/opt/pydeps \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    FORWARDED_ALLOW_IPS=127.0.0.1
 
 EXPOSE 8000
 
@@ -127,6 +154,13 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # --proxy-headers so the app sees the real client IP behind a reverse proxy
 # (per-IP rate limiting depends on it); --no-server-header so we don't advertise
 # the exact server stack to scanners.
+#
+# Which peers may set X-Forwarded-For comes from FORWARDED_ALLOW_IPS, which
+# uvicorn reads itself. It defaults to loopback only: trusting "*" let anyone
+# who reached the port directly pick their own IP, and with it their own rate
+# limit bucket. Set it to your reverse proxy's address (or its Docker network,
+# e.g. 172.18.0.0/16) in .env.
+#
 # `python -m`: the uvicorn launcher script is in /opt/pydeps/bin, not on PATH.
 CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--forwarded-allow-ips", "*", "--no-server-header"]
+     "--proxy-headers", "--no-server-header"]

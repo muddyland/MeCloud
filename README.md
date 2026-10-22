@@ -97,6 +97,10 @@ are built from the source archive, because each uses its own system webview:*
   modal covering all six apps plus privacy and security, available from every
   page and from the command palette
 - **Command palette** (`Ctrl`/`Cmd` + `K`) — fuzzy jump to any app, mailbox, contact, calendar or file, plus commands like compose and toggle theme
+- **Drafts** — compose autosaves to Drafts as you type; closing keeps the draft,
+  Discard removes it, and a draft reopens with **Edit draft**
+- **Undo** on every move and delete-to-Trash, and a conversation view in the
+  reading pane with a thread count on each list row
 - **Keyboard shortcuts** — `j`/`k` to move, `r`/`a`/`f` to reply, `c` to compose, `?` for the full list
 - Correct reply threading (`In-Reply-To` / `References`), Cc and Bcc
 - Loading indicators throughout — a global activity bar, skeleton lists, and a spinner on every action that talks to the server
@@ -109,7 +113,7 @@ are built from the source archive, because each uses its own system webview:*
 | Layer | Technology |
 |---|---|
 | Backend | Python 3.14, FastAPI, Starlette, httpx |
-| Frontend | SvelteKit 2, Svelte 5, Vite 8, Tailwind CSS |
+| Frontend | SvelteKit 2, Svelte 5, Vite 8, Tailwind CSS 4 |
 | Sanitisation | DOMPurify, plus a script-less sandboxed iframe |
 | Auth | OAuth2 authorization code flow with PKCE (S256) |
 | Session | Encrypted cookie (Fernet: AES-CBC + HMAC-SHA256) |
@@ -222,8 +226,18 @@ build shipped nothing to download.
 docker build -t mecloud .
 
 # Run
-docker run -p 8000:8000 --env-file .env mecloud
+docker run -p 127.0.0.1:8000:8000 --env-file .env mecloud
 ```
+
+### Behind a reverse proxy
+
+`docker-compose.yml` publishes the port on `127.0.0.1` only, and runs the
+container read-only with no capabilities. Per-IP rate limits key on the client
+address, so the app only believes `X-Forwarded-For` from peers listed in
+`FORWARDED_ALLOW_IPS` (default `127.0.0.1`). Set it to your proxy's address or
+its Docker network in `.env`; if the proxy runs on another host, also set
+`MECLOUD_BIND=0.0.0.0`. Never trust `*` while anything but the proxy can reach
+the port: whoever can set that header chooses their own rate-limit bucket.
 
 ## CI/CD (GitLab)
 
@@ -231,41 +245,31 @@ The included `.gitlab-ci.yml` pipeline:
 
 | Stage | Job | What it does |
 |---|---|---|
-| `build` | `build-image` | Builds and pushes `:sha` + `:branch` tags to the GitLab registry |
+| `build` | `build-image` | Builds and pushes `:sha` + `:branch` tags, plus a `:desktop-cache-<branch>` layer cache for the Rust stage |
 | `test` | `backend-tests` | `pytest` |
-| `test` | `frontend-tests` | `npm ci`, `svelte-check`, `vitest` |
-| `test` | `dependency-audit` | CVE scan of both manifests via the internal registry |
-| `test` | `smoke-test` | Starts the container and asserts `/health` returns `{"status":"ok"}` |
-| `release` | `tag-latest` | Promotes `:sha` to `:latest` — only on `main` |
+| `test` | `frontend-tests` | lockfile host check, `npm ci`, `svelte-check`, `vitest` |
+| `test` | `audit:dependencies` | CVE scan of every lockfile via the internal registry (internal instance only) |
+| `test` | `smoke-test` | Starts the image in **production** mode, read-only, and checks `/health`, the SPA shell, the CSP script hash, HSTS and the host allow-list |
+| `release` | `tag-latest` | Promotes `:sha` to `:latest` — only on `main`, only after every test job |
 
 Uses GitLab's built-in container registry (`$CI_REGISTRY_IMAGE`), and pulls
 public base images from Docker Hub. No additional variables are needed beyond
-the defaults GitLab injects, with one optional exception.
+the defaults GitLab injects. A branch or tag whose slug is `latest` is refused
+in the build stage, so it can never overwrite the release tag before tests run.
 
-### Enabling the dependency audit
+### The dependency audit
 
-`dependency-audit` runs `minireg audit --fail-on high` against
-`backend/requirements.txt` and `frontend/package-lock.json`, failing the
-pipeline on a high or critical CVE and blocking promotion to `:latest`.
+`audit:dependencies` comes from a shared template, included only when the
+`CI_TEMPLATES` variable names the templates project. On the public mirror that
+variable does not exist and the job is simply absent. Where it runs, it audits
+every lockfile it finds — `backend/requirements.txt`,
+`frontend/package-lock.json` and `desktop/src-tauri/Cargo.lock` — fails on a
+high or critical CVE, and blocks promotion to `:latest`.
 
-It is **off unless explicitly enabled.** Two CI/CD variables are needed under
-*Settings → CI/CD → Variables*:
-
-| Variable | Value | Notes |
-|---|---|---|
-| `MINIREG_ENABLED` | `true` | The opt-in switch — the job is skipped for any other value, including unset |
-| `MINIREG_URL` | registry base URL | e.g. `https://registry.example.internal` |
-| `MINIREG_TOKEN` | a read token | Mask it; `read` scope is sufficient |
-| `MINIREG_HOST_IP` | registry IP | Optional — only if CI runners cannot resolve the hostname |
-
-None of these are committed. The pipeline reads them from project settings so
-that this repository discloses no internal hostnames or addresses.
-
-An explicit flag rather than inferring from the token's presence: whether a
-security gate is running should be a stated decision, not a side effect of which
-secrets happen to exist. If `MINIREG_ENABLED` is `true` but the token is
-missing, the job fails immediately and says so, rather than dying later with an
-opaque *not logged in*.
+It needs a `MINIREG_TOKEN` project variable (masked, read scope). The registry
+URL is derived from the group-level `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY`, or
+set explicitly with `MINIREG_URL`. None of these are committed, so this
+repository discloses no internal hostnames or addresses.
 
 To run the same scan locally:
 
@@ -384,7 +388,7 @@ mecloud/
 
 - Message bodies render inside an iframe whose `sandbox` omits `allow-scripts` and `allow-same-origin`. Script in an email cannot execute and cannot reach this origin — that is the actual boundary, not the sanitiser.
 - DOMPurify runs as defence in depth, and rewrites every link to `target="_blank" rel="noopener noreferrer nofollow"`.
-- Remote images, `srcset`, `poster`, `background`, and remote `url()` in inline CSS are stripped by default and restored only when the user clicks **Show images** (or trusts the sender). A remote image in an email is a read receipt the sender never asked permission for.
+- Remote images, `srcset`, `poster`, `background`, and remote references in CSS — `url()`, `@import` and `image-set()`, in style attributes and in `<style>` elements, with CSS escapes and comments decoded first — are stripped by default and restored only when the user clicks **Show images** (or trusts the sender). Trust can be withdrawn from the message itself. A remote image in an email is a read receipt the sender never asked permission for.
 
 **Rendering notes**
 
@@ -393,7 +397,9 @@ document rather than a sandboxed iframe, so the sanitiser is the only boundary
 rather than defence in depth. Every render path goes through it — there is no
 "trusted" note, since a `.md` file can arrive from any sync tool with write
 access to the account. Script tags, inline event handlers, `javascript:` URLs,
-iframes, objects and form controls are all removed, and surviving links get
+iframes, objects and form controls are all removed, as are `<style>`
+elements and `position: fixed`/`sticky`, so a note or a quoted reply cannot
+restyle or overlay the app; and surviving links get
 `target="_blank" rel="noopener noreferrer nofollow"`. GFM task lists are
 rendered as styled spans rather than real checkboxes, so no form control has to
 be allowed through for them.
@@ -437,9 +443,14 @@ allow-list and would otherwise keep blocking the frame regardless of the CSP.
 - All upstream calls run through a pooled `httpx` client with explicit connect/read timeouts, and concurrent SSE streams are capped.
 - An upstream `401` maps to a `401` (log back in) rather than a `502`, so a revoked token no longer traps the client in a retry loop.
 
-**Known residual risk**
+**Script policy**
 
-- `script-src` still includes `'unsafe-inline'`, which SvelteKit's hydration bootstrap requires. Because email content cannot execute script at all (see above), this is not the app's XSS boundary. To remove it, enable `csp: { mode: 'hash' }` in `svelte.config.js` and verify the build still hydrates.
+- `script-src` has no `'unsafe-inline'`. The backend hashes the inline
+  hydration script of the `index.html` it serves, at startup, and names it in
+  the header; SvelteKit's hash mode (`svelte.config.js`) adds the same hash as a
+  page-level policy. An injected inline script or event handler matches neither
+  and does not run. `style-src` keeps `'unsafe-inline'`, which Svelte's
+  transitions need; style cannot execute script.
 
 ## Testing
 
@@ -449,10 +460,10 @@ cd desktop && docker run --rm -e CARGO_HOME=/cargo -v "$PWD":/src \
   -v "$PWD/.cargo-cache":/cargo -w /src/src-tauri mecloud-rust:trixie cargo test
 
 # Backend
-cd backend && pip install -r requirements-dev.txt && pytest
+cd backend && pip install -r requirements-dev.txt && pytest  # 250 tests
 
 # Frontend
-cd frontend && npm install && npm test        # 299 unit tests
+cd frontend && npm ci && npm test             # 376 unit tests
 cd frontend && npm run check                  # svelte-check
 ```
 
@@ -465,11 +476,38 @@ out of the `.svelte` file so it can be tested directly.
 
 ## Upgrading dependencies
 
-Both the Docker build and CI use `npm ci`, which installs the committed
-lockfile exactly and fails if it has drifted from `package.json`. So after
-changing `frontend/package.json`, run `npm install` in `frontend/` and commit
-the regenerated `package-lock.json` in the same change — otherwise the build
-stops, by design.
+**Frontend.** Both the Docker build and CI use `npm ci`, which installs the
+committed lockfile exactly and fails if it has drifted from `package.json`. So
+after changing `frontend/package.json`, regenerate `package-lock.json` in the
+same change — otherwise the build stops, by design. Resolve against the public
+registry, even when you normally install through a mirror:
+
+```bash
+cd frontend && npm install --registry=https://registry.npmjs.org
+```
+
+A lockfile resolved through a private mirror records the mirror's URLs, and
+`npm ci` then fails anywhere that mirror is unreachable. CI refuses such a
+lockfile.
+
+**Backend.** Direct dependencies live in `backend/requirements.in`. The
+`requirements.txt` and `requirements-dev.txt` beside it are compiled lockfiles
+— every package in the tree, pinned, with hashes — and the image installs in
+hash-checking mode. After editing `requirements.in` (or `requirements-dev.in`),
+regenerate both on the Python version the image uses:
+
+```bash
+cd backend && docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/w -w /w \
+  python:3.14-slim sh -c 'pip install -q --user pip-tools && export PATH=$HOME/.local/bin:$PATH &&
+  for f in requirements requirements-dev; do
+    pip-compile -q --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url -o $f.txt $f.in
+  done'
+```
+
+**Desktop.** The version lives only in `desktop/src-tauri/Cargo.toml`, and the
+Rust toolchain tag (`rust:1.99-trixie`) appears in the root `Dockerfile` and
+`desktop/Dockerfile.build`; bump the two together. Cargo builds with
+`--locked`, so commit `Cargo.lock` with any dependency change.
 
 ## AI Disclosure
 

@@ -3,21 +3,33 @@ services:
     build: .
     image: mecloud:latest
     ports:
-      - "8000:8000"
+      # Loopback by default: a reverse proxy on this host reaches it, nothing
+      # else does. If the proxy runs on another machine, set MECLOUD_BIND in
+      # .env (e.g. 0.0.0.0) and set FORWARDED_ALLOW_IPS to that proxy.
+      - "${MECLOUD_BIND:-127.0.0.1}:8000:8000"
     env_file: .env
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
-      interval: 30s
-      timeout: 5s
-      start_period: 10s
-      retries: 3
+    # The app is stateless and writes nothing to disk, so the container can be
+    # locked down at no cost. The healthcheck comes from the image.
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 256
 
 # Production: pull a specific image from the registry instead of building locally:
 #
 #   mecloud:
 #     image: registry.gitlab.com/yourgroup/mecloud:latest
 #     ports:
-#       - "8000:8000"
+#       - "127.0.0.1:8000:8000"
 #     env_file: .env
 #     restart: unless-stopped
+#     read_only: true
+#     tmpfs: [/tmp]
+#     cap_drop: [ALL]
+#     security_opt: [no-new-privileges:true]

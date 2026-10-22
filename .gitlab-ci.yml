@@ -97,17 +97,40 @@ variables:
 # ---------------------------------------------------------------------------
 # build stage — compile the image and push two tags to the registry:
 #   • :$CI_COMMIT_SHORT_SHA  — immutable, identifies this exact commit
-#   • :$CI_COMMIT_REF_SLUG   — mutable branch/tag pointer, reused as layer cache
+#   • :$CI_COMMIT_REF_SLUG   — mutable branch/tag pointer
+# plus a layer cache for the Rust stage, :desktop-cache-$CI_COMMIT_REF_SLUG.
+#
+# Why a separate cache image: an image only carries cache for its own layers,
+# and the final image contains none of the desktop-builder stage — so
+# --cache-from on the final tag alone never saved the Rust build, which is the
+# slow part. The stage is built and pushed on its own with inline cache
+# metadata, and the final build reads both. A branch with no cache of its own
+# yet falls back to main's.
 # ---------------------------------------------------------------------------
 build-image:
   extends: .docker_base
   stage: build
   before_script:
     - *wait-for-docker
-    # $CI_REGISTRY for pulling the cache tag and pushing the result.
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    # $CI_REGISTRY for pulling the cache tags and pushing the result.
+    # --password-stdin keeps the token out of the process list.
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
-    - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" || true
+    # `latest` is the release tag, promoted only by tag-latest after every test
+    # has passed. A branch or tag whose slug is also `latest` would overwrite
+    # it here, in the build stage, before any test ran.
+    - |
+      case "$CI_COMMIT_REF_SLUG" in
+        latest|desktop-cache-*)
+          echo "ERROR: the ref '$CI_COMMIT_REF_NAME' maps to the reserved tag '$CI_COMMIT_REF_SLUG'. Rename it."
+          exit 1 ;;
+      esac
+    - |
+      DESKTOP_CACHE="$CI_REGISTRY_IMAGE:desktop-cache-$CI_COMMIT_REF_SLUG"
+      for ref in "$DESKTOP_CACHE" "$CI_REGISTRY_IMAGE:desktop-cache-main" \
+                 "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" "$CI_REGISTRY_IMAGE:main"; do
+        docker pull -q "$ref" || true
+      done
     # BASE_REGISTRY defaults to empty, so base images come from Docker Hub.
     # Set it (trailing slash included) to build from a mirror instead.
     # Push a single image manifest. Docker 29 builds into the containerd image
@@ -126,14 +149,18 @@ build-image:
         PY_ARGS="--build-arg PYTHON_BUILDER_IMAGE=${DHI_PYTHON_IMAGE}:${DHI_PYTHON_TAG}-dev"
         PY_ARGS="$PY_ARGS --build-arg PYTHON_RUNTIME_IMAGE=${DHI_PYTHON_IMAGE}:${DHI_PYTHON_TAG}"
       fi
-      docker build \
-        --provenance=false --sbom=false \
-        --build-arg BASE_REGISTRY="$BASE_REGISTRY" \
-        $PY_ARGS \
+      COMMON="--provenance=false --sbom=false --build-arg BUILDKIT_INLINE_CACHE=1"
+      COMMON="$COMMON --build-arg BASE_REGISTRY=$BASE_REGISTRY"
+      CACHE="--cache-from $DESKTOP_CACHE --cache-from $CI_REGISTRY_IMAGE:desktop-cache-main"
+
+      docker build $COMMON $CACHE --target desktop-builder --tag "$DESKTOP_CACHE" .
+      docker build $COMMON $PY_ARGS $CACHE \
         --cache-from "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
+        --cache-from "$CI_REGISTRY_IMAGE:main" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" \
         --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
         .
+    - docker push "$DESKTOP_CACHE"
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
   rules:
@@ -167,6 +194,16 @@ frontend-tests:
   image: $NODE_IMAGE
   script:
     - cd frontend
+    # Every tarball must come from the public registry. Installing through a
+    # private mirror records *its* URLs in the lockfile, and `npm ci` then
+    # fails anywhere that mirror is unreachable (the public mirror of this
+    # repo, a fresh laptop). Fix with:
+    #   npm install --registry=https://registry.npmjs.org
+    - |
+      if grep -n '"resolved": "' package-lock.json | grep -v '"resolved": "https://registry.npmjs.org/'; then
+        echo "ERROR: package-lock.json resolves the packages above outside registry.npmjs.org."
+        exit 1
+      fi
     # `npm ci`, not `npm install`: CI should fail on lockfile drift rather than
     # quietly resolving a tree that differs from the one we ship.
     - npm ci
@@ -183,17 +220,23 @@ smoke-test:
     - build-image
   before_script:
     - *wait-for-docker
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
     - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    # Production mode, as deployed: the host allow-list, the secret-strength
+    # check, Secure cookies and HSTS are all production-only, and a smoke test
+    # in development mode passed while any of them could have been broken.
+    # Run read-only and without capabilities, as docker-compose.yml does.
     - |
       docker run -d --name test-app \
-        -e ENVIRONMENT=development \
+        --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+        -e ENVIRONMENT=production \
+        -e APP_URL=http://docker:8000 \
         -e STALWART_URL=http://localhost \
         -e OAUTH_CLIENT_ID=test \
         -e OAUTH_CLIENT_SECRET=test \
-        -e OAUTH_REDIRECT_URI=http://localhost/callback \
-        -e SESSION_SECRET=testsecretplaceholder00000000000 \
+        -e OAUTH_REDIRECT_URI=http://docker:8000/auth/callback \
+        -e SESSION_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef \
         -p 8000:8000 \
         "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
     - |
@@ -203,7 +246,26 @@ smoke-test:
         sleep 2
       done
     - wget -qO- http://docker:8000/health | grep -q '"status":"ok"'
+    # The SPA shell is served, and its policy names the boot script by hash
+    # rather than allowing all inline script.
+    - wget -qO- http://docker:8000/ | grep -q '_app/immutable/entry/start'
+    - wget -S -qO /dev/null http://docker:8000/ 2>&1 | tee /tmp/headers | grep -qi "script-src 'self' 'sha256-"
+    - grep -qi 'strict-transport-security' /tmp/headers
+    # `if … exit 1`, never a bare `! cmd`: under `set -e` a negated command
+    # cannot fail the job, so the check would pass whatever it found.
+    - |
+      if grep -i "script-src[^;]*unsafe-inline" /tmp/headers; then
+        echo "ERROR: script-src allows 'unsafe-inline'"; exit 1
+      fi
+    # The host allow-list is live: addressed by bare IP, the Host header is not
+    # one APP_URL names, and the request must be refused.
+    - |
+      IP=$(getent hosts docker | awk '{print $1; exit}')
+      if wget -qO- "http://$IP:8000/health"; then
+        echo "ERROR: a request for an unlisted host ($IP) was served"; exit 1
+      fi
   after_script:
+    - docker logs test-app 2>&1 | tail -50 || true
     - docker rm -f test-app || true
   rules:
     - if: '$CI_COMMIT_BRANCH'
@@ -227,7 +289,7 @@ tag-latest:
       optional: true
   before_script:
     - *wait-for-docker
-    - docker login -u "$CI_REGISTRY_USER" -p "$CI_REGISTRY_PASSWORD" "$CI_REGISTRY"
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
   script:
     - docker pull "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
     - docker tag  "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" "$CI_REGISTRY_IMAGE:latest"
