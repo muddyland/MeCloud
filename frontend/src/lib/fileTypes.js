@@ -76,7 +76,27 @@ export function fileKind(node) {
 const PREVIEWABLE = new Set(['image', 'pdf', 'text', 'video', 'audio']);
 
 export function isPreviewable(node) {
-  return PREVIEWABLE.has(fileKind(node));
+  return PREVIEWABLE.has(fileKind(node)) || isWordDocument(node);
+}
+
+const WORD_EXTENSIONS = new Set(['docx', 'docm', 'dotx', 'dotm']);
+const WORD_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.template',
+  'application/vnd.ms-word.document.macroenabled.12',
+  'application/vnd.ms-word.template.macroenabled.12',
+]);
+
+/**
+ * An Office Open XML word-processing file, which the Word preview can render.
+ * Only these: the older binary .doc, .odt, .rtf and .pages share the 'doc'
+ * kind (and icon) but are not readable here. Macros in .docm are never run —
+ * the preview reads the document XML and nothing else.
+ */
+export function isWordDocument(node) {
+  if (!node?.blobId) return false;
+  const type = String(node.type ?? '').toLowerCase().split(';')[0].trim();
+  return WORD_TYPES.has(type) || WORD_EXTENSIONS.has(extensionOf(node.name));
 }
 
 /**

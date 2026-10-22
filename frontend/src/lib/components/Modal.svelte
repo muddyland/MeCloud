@@ -34,6 +34,15 @@
     dispatch('close');
   }
 
+  // A double-click on something that opens a modal lands its second click on
+  // the backdrop the first one just put up, which closed it again at once —
+  // double-clicking a file in Files did nothing. That second click reports a
+  // click count of 2; a deliberate click on the backdrop never does.
+  function onBackdropClick(event) {
+    if (event.detail > 1) return;
+    requestClose();
+  }
+
   function onKeydown(event) {
     if (!open) return;
 
@@ -92,7 +101,8 @@
     class="fixed inset-0 z-50 flex items-end sm:items-center justify-center
            p-0 sm:p-4 bg-gray-900/40 dark:bg-black/60 backdrop-blur-[2px]"
     transition:fade={{ duration: 120 }}
-    on:click|self={requestClose}
+    on:click|self={onBackdropClick}
+    on:mousedown|self={(e) => { if (e.detail > 1) e.preventDefault(); }}
     role="presentation"
   >
     <div

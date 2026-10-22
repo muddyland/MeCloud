@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "docx-preview": "^0.4.1",
     "dompurify": "^3.4.16",
     "marked": "^18.0.10"
   },

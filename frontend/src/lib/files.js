@@ -473,6 +473,20 @@ export async function fetchTextBlob(node, { maxBytes = 512 * 1024 } = {}) {
   return text.length > maxBytes ? `${text.slice(0, maxBytes)}\n\n… truncated` : text;
 }
 
+/**
+ * A file's bytes, for previews the browser cannot render from a URL (Word).
+ * Fetched as a download, so the backend serves it as opaque bytes.
+ */
+export async function fetchBlobBytes(node, { maxBytes } = {}) {
+  if (maxBytes && (node?.size ?? 0) > maxBytes) {
+    throw new Error('This file is too large to preview. Download it instead.');
+  }
+  const res = await fetch(blobUrl(node, { inline: false }), { credentials: 'include' });
+  if (res.status === 401) { sessionExpired(); throw new Error('Your session expired.'); }
+  if (!res.ok) throw new Error('Could not load a preview of this file.');
+  return res.arrayBuffer();
+}
+
 /** Trigger a browser download without navigating away from the app. */
 export function downloadNode(node) {
   const url = blobUrl(node, { inline: false });

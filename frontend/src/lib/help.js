@@ -132,7 +132,8 @@ export const HELP = [
         title: 'Looking at things',
         body: [
           'Images show their own contents in place of an icon, in both the grid and the list, so a folder of photographs is readable at a glance.',
-          'Clicking a file previews it. Images, PDFs, text, audio and video open in the app; anything else downloads, because previewing it safely is not something the server can promise.',
+          'Clicking a file previews it. Images, PDFs, text, audio, video and Word documents (.docx) open in the app; anything else downloads, because previewing it safely is not something the server can promise.',
+          'A Word preview is read-only and approximate: complex layouts can differ from Word. It is shown in a sealed frame that cannot run anything, and images load only from inside the document. Download it to edit.',
         ],
         tip: 'Very large images keep a plain icon rather than a thumbnail — there is no thumbnail service, so a preview means downloading the whole picture.',
       },
