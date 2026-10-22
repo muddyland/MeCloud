@@ -4,8 +4,11 @@
   import MarkdownToolbar from './MarkdownToolbar.svelte';
   import { previewNode } from '$lib/stores/files.js';
   import { blobUrl, downloadNode, fetchBlobBytes, fetchTextBlob, saveTextFile } from '$lib/files.js';
-  import { fileKind, formatBytes, isPreviewable, isWordDocument } from '$lib/fileTypes.js';
+  import { fileKind, formatBytes, isPreviewable, isWordDocument, isSpreadsheet, isPresentation } from '$lib/fileTypes.js';
   import { MAX_DOCX_BYTES, renderDocxDocument } from '$lib/docxPreview.js';
+  import { MAX_OFFICE_BYTES, OfficeReadError } from '$lib/officeZip.js';
+  import SheetView from './SheetView.svelte';
+  import SlideOutline from './SlideOutline.svelte';
   import { isMarkdown, renderMarkdown, imageResolver } from '$lib/markdown.js';
   import { resolvePath } from '$lib/notes.js';
   import { fileNodes } from '$lib/stores/files.js';
@@ -29,7 +32,7 @@
   }
 
   $: markdown = node ? isMarkdown(node) : false;
-  $: editable = node ? (kind === 'text' || markdown) : false;
+  $: editable = node && !office ? (kind === 'text' || markdown) : false;
   // Same relative-path resolution the Notes app uses, so a wiki-style note
   // renders identically whichever app opened it.
   $: mdResolver = imageResolver((path) => {
@@ -49,42 +52,57 @@
   // "Refused to display ... X-Frame-Options" error naming the app root.
   $: src  = node ? blobUrl(node, { inline: true }) : '';
 
-  // Word documents are rendered here, sanitised, and shown in a sandboxed
-  // frame (see docxPreview.js). Same per-file load guard as text.
-  $: word = node ? isWordDocument(node) : false;
-  let docHtml    = '';
-  let docError   = '';
-  let loadingDoc = false;
-  let docFor     = null;
-  $: if (node && word && node.id !== docFor) {
-    docFor = node.id;
-    loadDocx(node);
+  // Office documents are read here, in the browser. Word is rendered,
+  // sanitised and shown in a sandboxed frame (docxPreview.js); spreadsheets
+  // and presentations are parsed into plain values and rendered as text by
+  // SheetView and SlideOutline. One per-file load guard covers all three.
+  $: office = !node ? null
+    : isWordDocument(node) ? 'word'
+    : isSpreadsheet(node) ? 'sheet'
+    : isPresentation(node) ? 'slides'
+    : null;
+  let officeData   = null;   // word: html string; sheet: {sheets}; slides: {thumbnail, slides, truncated}
+  let officeError  = '';
+  let loadingOffice = false;
+  let officeFor    = null;
+  $: if (node && office && node.id !== officeFor) {
+    officeFor = node.id;
+    loadOffice(node, office);
   }
 
-  async function loadDocx(target) {
-    const current = () => $previewNode?.id === target.id && docFor === target.id;
-    loadingDoc = true;
-    docError   = '';
-    docHtml    = '';
+  async function readOffice(target, type) {
+    if (type === 'word') {
+      return renderDocxDocument(await fetchBlobBytes(target, { maxBytes: MAX_DOCX_BYTES }));
+    }
+    const bytes = await fetchBlobBytes(target, { maxBytes: MAX_OFFICE_BYTES });
+    if (type === 'sheet') return (await import('$lib/sheetPreview.js')).readSpreadsheet(bytes, target.name);
+    return (await import('$lib/slidePreview.js')).readPresentation(bytes, target.name);
+  }
+
+  async function loadOffice(target, type) {
+    const current = () => $previewNode?.id === target.id && officeFor === target.id;
+    loadingOffice = true;
+    officeError   = '';
+    officeData    = null;
     try {
-      const bytes = await fetchBlobBytes(target, { maxBytes: MAX_DOCX_BYTES });
-      const html = await renderDocxDocument(bytes);
-      if (current()) docHtml = html;
+      const data = await readOffice(target, type);
+      if (current()) officeData = data;
     } catch (e) {
       if (current()) {
-        docError = /too large|session/i.test(e?.message ?? '')
+        // Our own messages are written for the user; a library's are not.
+        officeError = e instanceof OfficeReadError || /too large|session/i.test(e?.message ?? '')
           ? e.message
-          : 'This document could not be previewed. Download it to open it in Word or LibreOffice.';
+          : 'This file could not be previewed. Download it to open it in its own app.';
       }
     } finally {
-      if (current()) loadingDoc = false;
+      if (current()) loadingOffice = false;
     }
   }
 
   // Text previews are fetched here too; the rest are handled by the browser
   // via a src attribute.
   let loadedFor = null;
-  $: if (node && kind === 'text' && node.id !== loadedFor) {
+  $: if (node && kind === 'text' && !office && node.id !== loadedFor) {
     loadedFor = node.id;
     editing = false;
     draft = '';
@@ -145,8 +163,8 @@
       if (!confirm('Discard unsaved changes to this file?')) return;
     }
     previewNode.set(null);
-    docHtml = '';
-    docFor = null;
+    officeData = null;
+    officeFor = null;
     textContent = '';
     draft = '';
     editing = false;
@@ -176,20 +194,25 @@
            per-response CSP. -->
       <iframe {src} title={node.name} referrerpolicy="no-referrer"
               class="w-full h-[70vh] border-0 bg-white"></iframe>
-    {:else if word}
-      {#if loadingDoc}
+    {:else if office}
+      {#if loadingOffice}
         <div class="flex items-center gap-2 text-sm text-gray-500 dark:text-gray-400 py-12">
           <Spinner size="sm" label="" /> Loading preview…
         </div>
-      {:else if docError}
-        <p class="text-sm text-red-500 py-12 px-6 text-center">{docError}</p>
-      {:else if docHtml}
+      {:else if officeError}
+        <p class="text-sm text-red-500 py-12 px-6 text-center">{officeError}</p>
+      {:else if officeData && office === 'word'}
         <!-- Sanitised in renderDocxDocument(), and sandboxed like a message
              body: no scripts, no same-origin access; links open outside. -->
-        <iframe srcdoc={docHtml} title={node.name}
+        <iframe srcdoc={officeData} title={node.name}
                 sandbox="allow-popups allow-popups-to-escape-sandbox"
                 referrerpolicy="no-referrer"
                 class="w-full h-[70vh] border-0"></iframe>
+      {:else if officeData && office === 'sheet'}
+        <SheetView sheets={officeData.sheets} />
+      {:else if officeData && office === 'slides'}
+        <SlideOutline thumbnail={officeData.thumbnail} slides={officeData.slides}
+                      truncated={officeData.truncated} />
       {/if}
     {:else if kind === 'video' && src}
       <!-- svelte-ignore a11y-media-has-caption -->
@@ -284,7 +307,7 @@
       {/if}
     {/if}
 
-    {#if node && isPreviewable(node) && !editing && !word}
+    {#if node && isPreviewable(node) && !editing && !office}
       <a
         href={src}
         target="_blank"

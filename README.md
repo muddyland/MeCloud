@@ -60,7 +60,7 @@ are built from the source archive, because each uses its own system webview:*
   code), autosave, full-text search, and front-matter aware titles. Relative
   image links are resolved against the note's own folder, so wiki-style
   attachment paths (`.attachments.NNN/image%20(4).png`) render
-- **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio, video and Word documents. Images thumbnail in place of their icon in both views, and a right-click menu carries the per-item actions — open, download, rename, delete, and share via email
+- **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio, video, Word documents, spreadsheets (values) and presentations (outline). Images thumbnail in place of their icon in both views, and a right-click menu carries the per-item actions — open, download, rename, delete, and share via email
 - Mail attachments — downloadable through the same authenticated blob proxy, and
   sendable from either source: **from this device**, by picker or by dropping onto
   the compose window, with per-file upload progress; or **from Files**, browsing
@@ -413,6 +413,18 @@ Word file is opened. Its images and fonts come only from inside the file, as
 are switched off. The output then goes through the mail sanitiser and into a
 sandboxed iframe with no `allow-scripts` and no `allow-same-origin` — the same
 boundary as a message body. The preview is read-only.
+
+**Previewing spreadsheets and presentations**
+
+`.xlsx`, `.ods`, `.csv`/`.tsv`, `.pptx` and `.odp` are read in the browser
+with the zip library already in the bundle, by small parsers in
+`frontend/src/lib/` — no spreadsheet or slide library. Spreadsheets become a
+grid of cell values; presentations become the file's cover thumbnail plus each
+slide's title and text. Everything is rendered by Svelte as text, so nothing
+from a file is ever parsed as HTML, and the thumbnail is used only when its
+bytes are really a PNG, JPEG, GIF or WebP. Each zip entry is checked against
+its declared size before it is inflated, and sheets are capped at 1,000 rows
+and 100 columns, so a hostile or enormous file cannot hang the page.
 
 **Serving stored files**
 

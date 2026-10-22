@@ -134,6 +134,8 @@ export const HELP = [
           'Images show their own contents in place of an icon, in both the grid and the list, so a folder of photographs is readable at a glance.',
           'Clicking a file previews it. Images, PDFs, text, audio, video and Word documents (.docx) open in the app; anything else downloads, because previewing it safely is not something the server can promise.',
           'A Word preview is read-only and approximate: complex layouts can differ from Word. It is shown in a sealed frame that cannot run anything, and images load only from inside the document. Download it to edit.',
+          'Spreadsheets (.xlsx, .ods, .csv, .tsv) open as a grid of values, one tab per sheet: dates and numbers as the cells hold them, without formatting, charts or formulas. Very large sheets show their first 1,000 rows and 100 columns and say so.',
+          'Presentations (.pptx, .odp) open as an outline: the cover picture the file carries, then each slide’s title and text. Download the file to see the slides as designed. Older .xls, .ppt, Numbers and Keynote files download.',
         ],
         tip: 'Very large images keep a plain icon rather than a thumbnail — there is no thumbnail service, so a preview means downloading the whole picture.',
       },

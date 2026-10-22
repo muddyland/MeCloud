@@ -34,8 +34,8 @@ export function extensionOf(name) {
 const BY_EXTENSION = {
   pdf: 'pdf',
   doc: 'doc', docx: 'doc', odt: 'doc', rtf: 'doc', pages: 'doc',
-  xls: 'sheet', xlsx: 'sheet', ods: 'sheet', csv: 'sheet', numbers: 'sheet',
-  ppt: 'slides', pptx: 'slides', odp: 'slides', key: 'slides',
+  xls: 'sheet', xlsx: 'sheet', xlsm: 'sheet', ods: 'sheet', csv: 'sheet', tsv: 'sheet', numbers: 'sheet',
+  ppt: 'slides', pptx: 'slides', pptm: 'slides', ppsx: 'slides', odp: 'slides', key: 'slides',
   txt: 'text', md: 'text', log: 'text',
   js: 'code', mjs: 'code', ts: 'code', jsx: 'code', tsx: 'code', json: 'code',
   py: 'code', rb: 'code', go: 'code', rs: 'code', java: 'code', c: 'code',
@@ -76,7 +76,7 @@ export function fileKind(node) {
 const PREVIEWABLE = new Set(['image', 'pdf', 'text', 'video', 'audio']);
 
 export function isPreviewable(node) {
-  return PREVIEWABLE.has(fileKind(node)) || isWordDocument(node);
+  return PREVIEWABLE.has(fileKind(node)) || isWordDocument(node) || isSpreadsheet(node) || isPresentation(node);
 }
 
 const WORD_EXTENSIONS = new Set(['docx', 'docm', 'dotx', 'dotm']);
@@ -194,4 +194,37 @@ export function uniqueName(name, existingNames) {
     if (!taken.has(candidate)) return candidate;
   }
   return `${stem}-x${ext ? `.${ext}` : ''}`;
+}
+
+const SHEET_EXTENSIONS = new Set(['xlsx', 'xlsm', 'xltx', 'ods', 'csv', 'tsv']);
+const SHEET_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel.sheet.macroenabled.12',
+  'application/vnd.oasis.opendocument.spreadsheet',
+  'text/csv', 'text/tab-separated-values',
+]);
+
+/**
+ * A spreadsheet the values preview can read: Office Open XML, OpenDocument,
+ * or delimited text. Binary .xls and Apple .numbers still download.
+ */
+export function isSpreadsheet(node) {
+  if (!node?.blobId) return false;
+  const type = String(node.type ?? '').toLowerCase().split(';')[0].trim();
+  return SHEET_TYPES.has(type) || SHEET_EXTENSIONS.has(extensionOf(node.name));
+}
+
+const SLIDE_EXTENSIONS = new Set(['pptx', 'pptm', 'ppsx', 'potx', 'odp']);
+const SLIDE_TYPES = new Set([
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.presentationml.slideshow',
+  'application/vnd.ms-powerpoint.presentation.macroenabled.12',
+  'application/vnd.oasis.opendocument.presentation',
+]);
+
+/** A presentation the outline preview can read. Binary .ppt and Keynote download. */
+export function isPresentation(node) {
+  if (!node?.blobId) return false;
+  const type = String(node.type ?? '').toLowerCase().split(';')[0].trim();
+  return SLIDE_TYPES.has(type) || SLIDE_EXTENSIONS.has(extensionOf(node.name));
 }
