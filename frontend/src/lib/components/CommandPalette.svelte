@@ -197,7 +197,7 @@
 
 {#if $commandPaletteOpen}
   <div
-    class="fixed inset-0 z-[70] flex items-start justify-center px-4 pt-[12vh]
+    class="fixed inset-0 z-70 flex items-start justify-center px-4 pt-[12vh]
            bg-gray-900/40 dark:bg-black/60 backdrop-blur-[2px]"
     transition:fade={{ duration: 120 }}
     on:click|self={close}
@@ -212,7 +212,7 @@
     >
       <!-- Query -->
       <div class="flex items-center gap-2.5 px-4 h-12 border-b border-gray-200 dark:border-gray-700">
-        <svg class="w-4 h-4 text-gray-400 flex-shrink-0" viewBox="0 0 24 24" fill="none"
+        <svg class="w-4 h-4 text-gray-400 shrink-0" viewBox="0 0 24 24" fill="none"
              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" />
         </svg>
@@ -222,9 +222,9 @@
           placeholder="Jump to an app, folder, contact or file… or type a command"
           aria-label="Search commands"
           class="flex-1 min-w-0 bg-transparent text-sm text-gray-800 dark:text-gray-100
-                 placeholder-gray-400 dark:placeholder-gray-500 outline-none"
+                 placeholder-gray-400 dark:placeholder-gray-500 outline-hidden"
         />
-        <kbd class="text-[10px] font-sans px-1.5 py-0.5 rounded flex-shrink-0
+        <kbd class="text-[10px] font-sans px-1.5 py-0.5 rounded shrink-0
                     bg-gray-100 dark:bg-gray-700 text-gray-400 dark:text-gray-500">esc</kbd>
       </div>
 
@@ -250,7 +250,7 @@
                 class="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors duration-75
                        {active ? 'bg-blue-50 dark:bg-blue-900/40' : ''}"
               >
-                <svg class="w-4 h-4 flex-shrink-0 {active ? 'text-blue-500 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}"
+                <svg class="w-4 h-4 shrink-0 {active ? 'text-blue-500 dark:text-blue-400' : 'text-gray-400 dark:text-gray-500'}"
                      viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"
                      stroke-linecap="round" stroke-linejoin="round">
                   {#if item.icon === 'app'}
@@ -279,12 +279,12 @@
                 </span>
 
                 {#if item.hint}
-                  <span class="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 truncate max-w-[12rem]">
+                  <span class="text-xs text-gray-400 dark:text-gray-500 shrink-0 truncate max-w-48">
                     {item.hint}
                   </span>
                 {/if}
                 {#if active}
-                  <kbd class="text-[10px] font-sans px-1 py-0.5 rounded flex-shrink-0
+                  <kbd class="text-[10px] font-sans px-1 py-0.5 rounded shrink-0
                               bg-white dark:bg-gray-700 text-gray-400 dark:text-gray-400
                               border border-gray-200 dark:border-gray-600">↵</kbd>
                 {/if}

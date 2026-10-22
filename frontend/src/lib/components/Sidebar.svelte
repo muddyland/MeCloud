@@ -3,8 +3,8 @@
     mailboxes, selectedMailbox, newFolderOpen,
     draggedEmailId, emails, selectedEmailId, selectedEmailIds, jmapAccountId
   } from '$lib/stores/mail.js';
-  import { moveEmail, bulkMove, renameMailbox, deleteMailbox } from '$lib/api.js';
-  import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
+  import { renameMailbox, deleteMailbox } from '$lib/api.js';
+  import { moveMessages } from '$lib/mailActions.js';
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
   import Spinner from './Spinner.svelte';
@@ -119,20 +119,7 @@
     draggedEmailId.set(null);
     droppingId = mailbox.id;
     try {
-      if (Array.isArray(dragged)) {
-        const idSet = new Set(dragged);
-        await bulkMove($jmapAccountId, dragged, mailbox.id, sourceId);
-        emails.update(l => l.filter(em => !idSet.has(em.id)));
-        if (idSet.has($selectedEmailId)) selectedEmailId.set(null);
-        selectedEmailIds.set(new Set());
-        toast(`${dragged.length} messages moved to ${mailbox.name}`, 'success');
-      } else {
-        await moveEmail($jmapAccountId, dragged, mailbox.id, sourceId);
-        emails.update(l => l.filter(em => em.id !== dragged));
-        if ($selectedEmailId === dragged) selectedEmailId.set(null);
-        toast(`Moved to ${mailbox.name}`, 'success');
-      }
-      await refreshMailboxCounts();
+      await moveMessages(Array.isArray(dragged) ? dragged : [dragged], mailbox, sourceId);
     } catch (e) {
       toast(e?.message ?? 'Move failed', 'error');
     } finally {
@@ -157,8 +144,8 @@
            empty box reads as "broken" where shimmering rows read as "loading". -->
       {#each Array(5) as _}
         <div class="flex items-center gap-2 px-3 py-2 mb-0.5">
-          <div class="w-4 h-4 rounded bg-gray-200 dark:bg-gray-700 animate-pulse flex-shrink-0"></div>
-          <div class="h-3 rounded bg-gray-200 dark:bg-gray-700 animate-pulse flex-1 max-w-[7rem]"></div>
+          <div class="w-4 h-4 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse shrink-0"></div>
+          <div class="h-3 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse flex-1 max-w-28"></div>
         </div>
       {/each}
     {/if}
@@ -181,7 +168,7 @@
                  {isDragOver ? 'ring-2 ring-blue-400 dark:ring-blue-500' : ''}"
         >
           <span class="flex items-center gap-2 truncate">
-            <MailboxIcon role={mailbox.role} cls="w-4 h-4 flex-shrink-0 opacity-60" />
+            <MailboxIcon role={mailbox.role} cls="w-4 h-4 shrink-0 opacity-60" />
             <span class="truncate">{mailbox.name}</span>
           </span>
           {#if droppingId === mailbox.id}
@@ -220,13 +207,13 @@
           <!-- ── Inline rename ───────────────────────────────────── -->
           <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-lg
                       bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-700/50">
-            <MailboxIcon role={mailbox.role} cls="w-4 h-4 flex-shrink-0 text-gray-500 dark:text-gray-400" />
+            <MailboxIcon role={mailbox.role} cls="w-4 h-4 shrink-0 text-gray-500 dark:text-gray-400" />
             <input
               bind:value={renameValue}
               on:keydown={(e) => handleRenameKey(e, mailbox)}
               disabled={renaming}
               class="flex-1 min-w-0 text-sm bg-transparent text-gray-800 dark:text-gray-100
-                     border-b border-blue-400 dark:border-blue-500 focus:outline-none py-0.5"
+                     border-b border-blue-400 dark:border-blue-500 focus:outline-hidden py-0.5"
               autofocus
             />
             <button
@@ -234,7 +221,7 @@
               disabled={renaming}
               title="Save"
               class="text-xs text-blue-600 dark:text-blue-400 hover:text-blue-700 font-medium
-                     flex-shrink-0 disabled:opacity-50 w-4 flex items-center justify-center"
+                     shrink-0 disabled:opacity-50 w-4 flex items-center justify-center"
             >
               {#if renaming}
                 <Spinner size="xs" label="Renaming" />
@@ -244,7 +231,7 @@
             </button>
             <button
               on:click={cancelRename}
-              class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 flex-shrink-0"
+              class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 shrink-0"
             >✕</button>
           </div>
           {#if renameError}
@@ -260,7 +247,7 @@
               <button
                 on:click|stopPropagation={() => toggleCollapse(mailbox.id)}
                 title={collapsed.has(mailbox.id) ? 'Expand' : 'Collapse'}
-                class="flex-shrink-0 flex items-center justify-center w-5 h-8
+                class="shrink-0 flex items-center justify-center w-5 h-8
                        text-gray-400 dark:text-gray-500
                        hover:text-gray-600 dark:hover:text-gray-300
                        transition-colors duration-100 rounded"
@@ -275,7 +262,7 @@
                 </svg>
               </button>
             {:else}
-              <div class="w-5 flex-shrink-0"></div>
+              <div class="w-5 shrink-0"></div>
             {/if}
 
             <!-- Folder button -->
@@ -292,7 +279,7 @@
                      {isDragOver ? 'ring-2 ring-blue-400 dark:ring-blue-500' : ''}"
             >
               <span class="flex items-center gap-2 truncate">
-                <MailboxIcon role={mailbox.role} cls="w-4 h-4 flex-shrink-0 opacity-60" />
+                <MailboxIcon role={mailbox.role} cls="w-4 h-4 shrink-0 opacity-60" />
                 <span class="truncate">{mailbox.name}</span>
               </span>
               {#if droppingId === mailbox.id}

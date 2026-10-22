@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findNotesFolder, collectNotes, noteFilename, resolvePath, NOTES_FOLDER } from '$lib/notes.js';
+import { findNotesFolder, collectNotes, noteFilename, resolvePath, NOTES_FOLDER, saveDecision } from '$lib/notes.js';
 
 const folder = (id, name, parentId = null) => ({ id, name, parentId, blobId: null });
 const file = (id, name, parentId = null) => ({ id, name, parentId, blobId: `b${id}`, type: 'text/markdown' });
@@ -183,5 +183,27 @@ describe('resolvePath', () => {
     expect(resolvePath(tree, 'notes', null)).toBeNull();
     // A stray % is not a valid escape; the literal segment is used instead.
     expect(resolvePath(tree, 'notes', '100%.png')).toBeNull();
+  });
+});
+
+describe('saveDecision', () => {
+  const base = { nodeId: 'b', loadedId: 'b', draft: 'new', saved: 'old', inFlight: false };
+
+  it('writes changed text for the note that is loaded', () => {
+    expect(saveDecision(base)).toBe('write');
+  });
+
+  it('refuses when the editor text belongs to another note', () => {
+    // The failed-load case: note B selected, editor still holding note A.
+    expect(saveDecision({ ...base, loadedId: 'a' })).toBe('mismatch');
+    expect(saveDecision({ ...base, loadedId: null })).toBe('mismatch');
+  });
+
+  it('queues behind a save that is already running', () => {
+    expect(saveDecision({ ...base, inFlight: true })).toBe('queue');
+  });
+
+  it('skips text the server already has', () => {
+    expect(saveDecision({ ...base, saved: 'new' })).toBe('unchanged');
   });
 });

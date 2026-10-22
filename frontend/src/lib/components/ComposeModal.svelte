@@ -1,7 +1,8 @@
 <script>
+  import { onDestroy } from 'svelte';
   import { fly } from 'svelte/transition';
   import { composeOpen, composeContext, jmapAccountId, jmapSession, mailboxes, currentUser } from '$lib/stores/mail.js';
-  import { getIdentities, getMailboxes, sendEmail } from '$lib/api.js';
+  import { getIdentities, getMailboxes, sendEmail, saveDraft, discardDraft } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
   import { sanitizeEmailHtml } from '$lib/sanitize.js';
   import { uploadBlob, supportsFiles } from '$lib/files.js';
@@ -224,7 +225,9 @@
       to      = $composeContext.to      ?? '';
       cc      = $composeContext.cc      ?? '';
       subject = $composeContext.subject ?? '';
+      bcc     = $composeContext.bcc     ?? '';
       showCc  = !!$composeContext.cc;
+      showBcc = !!$composeContext.bcc;
       // Pre-attached blobs — a file shared from the drive. They are already
       // uploaded, so they arrive complete rather than as an upload row.
       attachments = ($composeContext.attachments ?? [])
@@ -242,7 +245,135 @@
         }));
       // body is set via use:initBody on the contenteditable when it mounts
     }
+    draftId      = $composeContext?.draftId ?? null;
+    lastDraftSig = null;
+    draftStatus  = draftId ? 'saved' : '';
+    // Handed over by a previous mount whose last save was still in flight:
+    // every save here queues behind it and replaces the copy it wrote, rather
+    // than leaving it behind as a second draft.
+    const handoff = $composeContext?.pendingDraftId;
+    if (handoff) {
+      const gen = composeGen;
+      draftChain = handoff.then((id) => { if (id && gen === composeGen) draftId = id; });
+    }
   }
+
+  // ── Drafts ────────────────────────────────────────────────────────────────
+  //
+  // The message is saved to the Drafts mailbox a few seconds after each pause
+  // in typing, so a closed tab, a crash or navigating to another app costs at
+  // most those few seconds — and the draft is there on every other device.
+
+  const DRAFT_DELAY_MS = 3000;
+  let draftId      = null;   // the server copy of this message, if one exists
+  let draftStatus  = '';     // '' | 'saving' | 'saved' | 'error'
+  let draftTimer;
+  let lastDraftSig = null;   // what the server copy holds, to skip no-op saves
+  let draftChain   = Promise.resolve();   // saves run one at a time, in order
+  let bodyHtml     = '';     // the editor's markup, kept so it outlives the DOM
+
+  $: draftsMailbox = $mailboxes.find((m) => m.role === 'drafts') ?? null;
+
+  function fields() {
+    return {
+      fromEmail: selectedIdentity?.email ?? $currentUser,
+      fromName:  selectedIdentity?.name  ?? '',
+      to, cc, bcc, subject,
+      html: editorEl?.innerHTML?.trim() ?? bodyHtml,
+      inReplyTo:  $composeContext?.inReplyTo  ?? null,
+      references: $composeContext?.references ?? null,
+      attachments: attachments.filter((a) => a.blobId),
+    };
+  }
+
+  const signature = (f) => JSON.stringify([
+    f.to, f.cc, f.bcc, f.subject, f.html, f.attachments.map((a) => a.blobId),
+  ]);
+
+  function scheduleDraft() {
+    if (!$composeOpen) return;
+    if (editorEl) bodyHtml = editorEl.innerHTML;
+    clearTimeout(draftTimer);
+    draftTimer = setTimeout(saveDraftNow, DRAFT_DELAY_MS);
+  }
+
+  // Attachment changes are edits too.
+  $: if (attachedBlobIds) scheduleDraft();
+
+  /** Save now if there is anything new. Resolves once the save has landed. */
+  function saveDraftNow() {
+    clearTimeout(draftTimer);
+    draftChain = draftChain.then(async () => {
+      if (!$composeOpen || !draftsMailbox || !$jmapAccountId) return;
+      if (!draftId && !isDirty()) return;        // an untouched reply is not a draft
+      if (uploadingCount > 0) { scheduleDraft(); return; }
+      const f = fields();
+      const sig = signature(f);
+      if (sig === lastDraftSig) return;
+      const gen = composeGen;
+      draftStatus = 'saving';
+      try {
+        const id = await saveDraft($jmapAccountId, f, {
+          draftsMailboxId: draftsMailbox.id, replaceId: draftId,
+        });
+        if (gen !== composeGen) {
+          // The window was sent or discarded while this was in flight: the
+          // copy just written belongs to nothing, so it goes too.
+          if (pendingDiscard.has(gen)) await discardDraft($jmapAccountId, id).catch(() => {});
+          return;
+        }
+        draftId = id;
+        lastDraftSig = sig;
+        draftStatus = 'saved';
+      } catch {
+        if (gen === composeGen) draftStatus = 'error';
+      }
+    });
+    return draftChain;
+  }
+
+  // Each compose session gets a generation, so a save that lands after the
+  // window has moved on can tell. Sessions that ended in send or discard are
+  // remembered, because their late drafts must be cleaned up.
+  let composeGen = 0;
+  const pendingDiscard = new Set();
+
+  /** End this session; `discard` removes the server copy as well. */
+  async function endDraftSession(discard) {
+    clearTimeout(draftTimer);
+    const gen = composeGen;
+    const id = draftId;
+    const accountId = $jmapAccountId;
+    if (discard) pendingDiscard.add(gen);
+    composeGen += 1;
+    draftId = null;
+    draftStatus = '';
+    lastDraftSig = null;
+    if (discard && id) await discardDraft(accountId, id).catch(() => {});
+  }
+
+  // Leaving the page with unsaved edits: start the save and ask the browser to
+  // hold the user back for a moment. Most of the time the save wins.
+  function onBeforeUnload(event) {
+    if (!$composeOpen || !isDirty()) return;
+    if (signature(fields()) === lastDraftSig) return;
+    saveDraftNow();
+    event.preventDefault();
+    event.returnValue = '';
+  }
+
+  // The modal is mounted per route, so switching app while composing destroys
+  // it. Hand the current text back to the shared context so the next mount
+  // picks up exactly where this one stopped, and get it on the server.
+  onDestroy(() => {
+    clearTimeout(draftTimer);
+    if (!$composeOpen || !isDirty()) return;
+    const f = fields();
+    const saved = saveDraftNow().then(() => draftId);
+    composeContext.set({ ...($composeContext ?? { mode: 'compose' }),
+      to: f.to, cc: f.cc, bcc: f.bcc, subject: f.subject, body: f.html,
+      attachments: f.attachments, draftId, pendingDraftId: saved });
+  });
 
   // ── Send state ────────────────────────────────────────────────────────────
   let sending   = false;
@@ -258,10 +389,12 @@
     // Anything attached beyond what was handed in is the user's own work, and
     // an upload they waited for is the last thing to throw away silently.
     if (attachments.length !== (prefill.attachments?.length ?? 0)) return true;
-    return (editorEl?.innerHTML ?? '').trim() !== initialBody;
+    return (editorEl?.innerHTML ?? bodyHtml).trim() !== initialBody;
   }
 
-  function reset() {
+  function reset({ discard = false } = {}) {
+    endDraftSession(discard);
+    bodyHtml = '';
     composeOpen.set(false);
     composeContext.set(null);
     appliedContext = null;
@@ -280,13 +413,35 @@
    * Losing a half-written message to a stray backdrop click is the classic
    * webmail papercut, so an unsent draft asks before it goes.
    */
-  function close() {
+  async function close() {
     if (sending) return;
+    if (isDirty() && draftsMailbox) {
+      // Closing keeps the work: it is saved to Drafts, the way every mail app
+      // behaves. Throwing it away is the Discard button's job.
+      await saveDraftNow();
+      if (draftStatus === 'error') {
+        sendError = 'The draft could not be saved. Discard it, or try again.';
+        return;
+      }
+      if (draftId) toast('Saved to Drafts', 'success');
+      reset();
+      return;
+    }
     if (isDirty() && !confirmingDiscard) {
       confirmingDiscard = true;
       return;
     }
     reset();
+  }
+
+  /** The Discard button: always asks once when there is something to lose. */
+  function discard() {
+    if (sending) return;
+    if ((isDirty() || draftId) && !confirmingDiscard) {
+      confirmingDiscard = true;
+      return;
+    }
+    reset({ discard: true });
   }
 
   function onKeydown(e) {
@@ -344,7 +499,8 @@
       });
       sending = false;
       toast('Message sent', 'success');
-      reset();
+      await draftChain;
+      reset({ discard: true });              // the draft has become the sent message
     } catch (e) {
       sendError = e?.message ?? 'Failed to send. Please try again.';
       sending = false;
@@ -361,7 +517,7 @@
   // turn a header into script. allowRemote is true because anything the user
   // was not meant to see has already been stripped by this point.
   function initBody(node, body) {
-    node.innerHTML = sanitizeEmailHtml(body ?? '', { allowRemote: true }).html;
+    node.innerHTML = sanitizeEmailHtml(body ?? '', { allowRemote: true, inParent: true }).html;
     // Read back what the DOM actually stored: the browser normalises markup on
     // assignment, so comparing against the string we passed in would report a
     // pristine reply as edited and prompt to discard on every close.
@@ -400,12 +556,12 @@
     transition-colors duration-100 text-sm leading-none`;
 
   const field = `flex-1 py-2.5 text-sm bg-transparent text-gray-800 dark:text-gray-100
-    placeholder-gray-400 dark:placeholder-gray-500 outline-none`;
+    placeholder-gray-400 dark:placeholder-gray-500 outline-hidden`;
 
-  const label = `text-xs text-gray-400 dark:text-gray-500 w-16 flex-shrink-0 select-none`;
+  const label = `text-xs text-gray-400 dark:text-gray-500 w-16 shrink-0 select-none`;
 </script>
 
-<svelte:window on:keydown={onKeydown} />
+<svelte:window on:keydown={onKeydown} on:beforeunload={onBeforeUnload} />
 
 {#if $composeOpen}
   <div
@@ -423,6 +579,8 @@
       role="dialog"
       aria-label={title}
       on:click|stopPropagation
+      on:input={scheduleDraft}
+      on:change={scheduleDraft}
       on:dragenter={onDragEnter}
       on:dragover|preventDefault
       on:dragleave={onDragLeave}
@@ -444,7 +602,7 @@
       {/if}
 
       <!-- Header -->
-      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+      <div class="flex items-center justify-between px-4 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0">
         <span class="text-sm font-semibold text-gray-800 dark:text-gray-100">{title}</span>
         <button on:click={close}
           class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 text-xl leading-none"
@@ -452,14 +610,14 @@
       </div>
 
       <!-- Address fields -->
-      <div class="flex flex-col divide-y divide-gray-100 dark:divide-gray-700 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+      <div class="flex flex-col divide-y divide-gray-100 dark:divide-gray-700 border-b border-gray-200 dark:border-gray-700 shrink-0">
 
         <!-- From -->
         {#if identities.length > 1}
           <div class="flex items-center px-4 gap-2">
             <span class={label}>From</span>
             <select bind:value={selectedIdentityId} class="flex-1 py-2.5 text-sm bg-transparent
-              text-gray-800 dark:text-gray-100 outline-none">
+              text-gray-800 dark:text-gray-100 outline-hidden">
               {#each identities as id}
                 <option value={id.id}>{id.name ? `${id.name} <${id.email}>` : id.email}</option>
               {/each}
@@ -480,7 +638,7 @@
           <!-- svelte-ignore a11y-autofocus -->
           <input bind:value={to} placeholder="Recipients" type="text" class={field}
             autocomplete="off" autofocus={!$composeContext?.to} />
-          <div class="flex items-center gap-1 flex-shrink-0">
+          <div class="flex items-center gap-1 shrink-0">
             {#if !showCc}
               <button on:click={() => (showCc = true)}
                 class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 px-1">
@@ -520,7 +678,7 @@
       </div>
 
       <!-- Formatting toolbar -->
-      <div class="flex items-center gap-0.5 px-3 py-1.5 border-b border-gray-100 dark:border-gray-700 flex-shrink-0 flex-wrap">
+      <div class="flex items-center gap-0.5 px-3 py-1.5 border-b border-gray-100 dark:border-gray-700 shrink-0 flex-wrap">
         <button on:click={() => fmt('bold')}          class="{tbtn} font-bold" title="Bold">B</button>
         <button on:click={() => fmt('italic')}        class="{tbtn} italic"    title="Italic">I</button>
         <button on:click={() => fmt('underline')}     class="{tbtn} underline" title="Underline">U</button>
@@ -592,7 +750,7 @@
         use:initBody={$composeContext?.body ?? ''}
         contenteditable="true"
         class="flex-1 overflow-y-auto px-4 py-3 text-sm text-gray-800 dark:text-gray-100
-               outline-none leading-relaxed"
+               outline-hidden leading-relaxed"
         style="min-height: 280px"
         data-placeholder="Write your message…"
       ></div>
@@ -602,7 +760,7 @@
 
       <!-- Attachments -->
       {#if attachments.length || attachError}
-        <div class="px-4 py-2 border-t border-gray-100 dark:border-gray-700 flex-shrink-0
+        <div class="px-4 py-2 border-t border-gray-100 dark:border-gray-700 shrink-0
                     max-h-40 overflow-y-auto">
           {#if attachError}
             <p class="text-xs text-red-500 mb-2">{attachError}</p>
@@ -627,12 +785,12 @@
                   {#if att.uploading}
                     <Spinner size="xs" label="" />
                   {:else if att.error}
-                    <svg class="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none"
+                    <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="2" stroke-linecap="round">
                       <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16h.01" />
                     </svg>
                   {:else}
-                    <svg class="w-3.5 h-3.5 flex-shrink-0" viewBox="0 0 24 24" fill="none"
+                    <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none"
                          stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                       <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
                     </svg>
@@ -641,11 +799,11 @@
                   <span class="truncate">{att.name}</span>
 
                   {#if att.uploading}
-                    <span class="tabular-nums text-gray-400 dark:text-gray-500 flex-shrink-0">
+                    <span class="tabular-nums text-gray-400 dark:text-gray-500 shrink-0">
                       {Math.round(att.progress * 100)}%
                     </span>
                   {:else if !att.error && att.size}
-                    <span class="text-gray-400 dark:text-gray-500 flex-shrink-0">
+                    <span class="text-gray-400 dark:text-gray-500 shrink-0">
                       {formatBytes(att.size)}
                     </span>
                   {/if}
@@ -653,7 +811,7 @@
                   <button
                     on:click={() => removeAttachment(att.id)}
                     aria-label="Remove {att.name}"
-                    class="p-0.5 rounded flex-shrink-0 text-gray-400 hover:text-gray-700
+                    class="p-0.5 rounded shrink-0 text-gray-400 hover:text-gray-700
                            dark:hover:text-gray-100 hover:bg-gray-200 dark:hover:bg-gray-600
                            transition-colors duration-100"
                   >
@@ -670,11 +828,11 @@
       {/if}
 
       <!-- Footer -->
-      <div class="flex items-center justify-between px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex-shrink-0 gap-4">
+      <div class="flex items-center justify-between px-4 py-3 border-t border-gray-200 dark:border-gray-700 shrink-0 gap-4">
         <div class="flex items-center gap-3 min-w-0">
           {#if confirmingDiscard}
             <span class="text-xs text-gray-600 dark:text-gray-300">Discard this draft?</span>
-            <button on:click={reset}
+            <button on:click={() => reset({ discard: true })}
               class="text-xs font-medium text-red-600 dark:text-red-400 hover:underline">
               Discard
             </button>
@@ -683,11 +841,18 @@
               Keep editing
             </button>
           {:else}
-            <button on:click={close} disabled={sending}
+            <button on:click={discard} disabled={sending}
               class="text-sm text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200
                      transition-colors duration-150 disabled:opacity-40">
               Discard
             </button>
+            {#if draftStatus}
+              <span class="text-[11px] {draftStatus === 'error' ? 'text-red-500' : 'text-gray-400 dark:text-gray-500'}">
+                {draftStatus === 'saving' ? 'Saving draft…'
+                  : draftStatus === 'saved' ? 'Draft saved'
+                  : 'Draft not saved'}
+              </span>
+            {/if}
           {/if}
           {#if sendError}
             <p class="text-xs text-red-500 truncate">{sendError}</p>
@@ -698,7 +863,7 @@
           title="Send (⌘/Ctrl + Enter)"
           class="flex items-center gap-2 px-5 py-2 text-sm font-medium rounded-lg
                  bg-blue-500 hover:bg-blue-600 dark:bg-blue-600 dark:hover:bg-blue-500
-                 text-white transition-colors duration-150 flex-shrink-0
+                 text-white transition-colors duration-150 shrink-0
                  disabled:opacity-60 disabled:cursor-not-allowed">
           {#if sending}
             <Spinner size="sm" label="" accent="border-t-white" cls="border-white/40" />

@@ -1,11 +1,14 @@
 <script>
+  import { isTyping } from '$lib/dom.js';
   import { onMount, onDestroy } from 'svelte';
   import {
     emails, selectedEmailId, selectedMailbox, loading,
     draggedEmailId, contextMenu, composeOpen, jmapAccountId, searchQuery,
     selectedEmailIds, movePickerOpen, mailboxes, visibleEmails, mailRefresher
   } from '$lib/stores/mail.js';
-  import { getEmails, searchEmails, bulkMarkSeen, bulkDestroy, bulkMove } from '$lib/api.js';
+  import { getEmails, searchEmails, bulkMarkSeen } from '$lib/api.js';
+  import { deleteMessages } from '$lib/mailActions.js';
+  import { appendUnique } from '$lib/mailList.js';
   import { toast } from '$lib/stores/toast.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
@@ -108,7 +111,7 @@
       if ($searchQuery.trim() !== q) return;
       if (more.length < PAGE) searchHasMore = false;
       if (more.length > 0) {
-        searchResults   = [...searchResults, ...more];
+        searchResults   = appendUnique(searchResults, more);
         searchPosition += more.length;
       }
     } catch {
@@ -128,7 +131,7 @@
       const more = await getEmails($jmapAccountId, mailboxId, position, PAGE);
       if ($selectedMailbox?.id !== mailboxId) return;
       if (more.length < PAGE) hasMore = false;
-      if (more.length > 0) emails.update(list => [...list, ...more]);
+      if (more.length > 0) emails.update(list => appendUnique(list, more));
     } catch {
       // silent
     } finally {
@@ -144,7 +147,7 @@
   }
 
   function handleGlobalKeydown(e) {
-    if (e.key === '/' && document.activeElement?.tagName !== 'INPUT' && document.activeElement?.tagName !== 'TEXTAREA') {
+    if (e.key === '/' && !isTyping(document.activeElement)) {
       e.preventDefault();
       searchInput?.focus();
     }
@@ -251,22 +254,9 @@
     if (bulkLoading) return;
     bulkLoading = true;
     bulkAction  = 'delete';
-    const idSet = new Set($selectedEmailIds);
-    const ids   = [...idSet];
-    const trashMailbox = $mailboxes.find(m => m.role === 'trash');
-    const inTrash = $selectedMailbox?.role === 'trash';
+    const ids   = [...$selectedEmailIds];
     try {
-      if (inTrash) {
-        await bulkDestroy($jmapAccountId, ids);
-        toast(`${ids.length} message${ids.length === 1 ? '' : 's'} deleted permanently`, 'success');
-      } else if (trashMailbox) {
-        await bulkMove($jmapAccountId, ids, trashMailbox.id, $selectedMailbox?.id);
-        toast(`${ids.length} message${ids.length === 1 ? '' : 's'} moved to Trash`, 'success');
-      } else {
-        throw new Error('No Trash folder on this account.');
-      }
-      emails.update(list => list.filter(e => !idSet.has(e.id)));
-      if (idSet.has($selectedEmailId)) selectedEmailId.set(null);
+      await deleteMessages(ids);
       clearSelection();
     } catch (e) {
       toast(e?.message ?? 'Delete failed', 'error');
@@ -285,12 +275,12 @@
 <section class="flex flex-col h-full w-full bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
   <!-- Header: normal or bulk-action toolbar -->
   {#if selectionMode}
-    <div class="px-3 py-2.5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 flex items-center gap-1">
+    <div class="px-3 py-2.5 border-b border-gray-200 dark:border-gray-700 shrink-0 flex items-center gap-1">
       <!-- Select-all / clear toggle -->
       <button
         on:click={allSelected ? clearSelection : selectAll}
         title={allSelected ? 'Deselect all' : 'Select all'}
-        class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded
+        class="shrink-0 w-7 h-7 flex items-center justify-center rounded
                text-gray-400 dark:text-gray-500
                hover:text-gray-600 dark:hover:text-gray-300
                hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-150"
@@ -315,7 +305,7 @@
         on:click={() => bulkMark(true)}
         disabled={bulkLoading}
         title="Mark as read"
-        class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded
+        class="shrink-0 w-7 h-7 flex items-center justify-center rounded
                text-gray-400 dark:text-gray-500
                hover:text-gray-600 dark:hover:text-gray-300
                hover:bg-gray-100 dark:hover:bg-gray-700
@@ -336,7 +326,7 @@
         on:click={() => bulkMark(false)}
         disabled={bulkLoading}
         title="Mark as unread"
-        class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded
+        class="shrink-0 w-7 h-7 flex items-center justify-center rounded
                text-gray-400 dark:text-gray-500
                hover:text-gray-600 dark:hover:text-gray-300
                hover:bg-gray-100 dark:hover:bg-gray-700
@@ -358,7 +348,7 @@
         on:click={handleBulkMove}
         disabled={bulkLoading}
         title="Move to folder"
-        class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded
+        class="shrink-0 w-7 h-7 flex items-center justify-center rounded
                text-gray-400 dark:text-gray-500
                hover:text-gray-600 dark:hover:text-gray-300
                hover:bg-gray-100 dark:hover:bg-gray-700
@@ -375,7 +365,7 @@
         on:click={handleBulkDelete}
         disabled={bulkLoading}
         title={$selectedMailbox?.role === 'trash' ? 'Delete permanently' : 'Delete'}
-        class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded
+        class="shrink-0 w-7 h-7 flex items-center justify-center rounded
                text-red-400 dark:text-red-500
                hover:text-red-600 dark:hover:text-red-400
                hover:bg-red-50 dark:hover:bg-red-900/20
@@ -396,7 +386,7 @@
       <button
         on:click={clearSelection}
         title="Clear selection"
-        class="flex-shrink-0 p-1.5 rounded text-gray-400 dark:text-gray-500
+        class="shrink-0 p-1.5 rounded text-gray-400 dark:text-gray-500
                hover:text-gray-600 dark:hover:text-gray-300
                hover:bg-gray-100 dark:hover:bg-gray-700
                transition-colors duration-150"
@@ -407,11 +397,11 @@
       </button>
     </div>
   {:else}
-    <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 flex items-center justify-between gap-2">
+    <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0 flex items-center justify-between gap-2">
       <h2 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider truncate">
         {isSearching ? 'Search results' : ($selectedMailbox?.name ?? 'Inbox')}
       </h2>
-      <div class="flex items-center gap-0.5 flex-shrink-0">
+      <div class="flex items-center gap-0.5 shrink-0">
         <button
           on:click={refresh}
           disabled={refreshing || !$mailRefresher}
@@ -450,9 +440,9 @@
   {/if}
 
   <!-- Search bar -->
-  <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+  <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 shrink-0">
     <div class="relative flex items-center">
-      <svg class="absolute left-2.5 w-3.5 h-3.5 text-gray-400 dark:text-gray-500 pointer-events-none flex-shrink-0"
+      <svg class="absolute left-2.5 w-3.5 h-3.5 text-gray-400 dark:text-gray-500 pointer-events-none shrink-0"
            viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
            stroke-linecap="round" stroke-linejoin="round">
         <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -469,7 +459,7 @@
                text-gray-800 dark:text-gray-200
                placeholder-gray-400 dark:placeholder-gray-500
                border border-transparent focus:border-blue-400 dark:focus:border-blue-500
-               focus:outline-none focus:ring-0
+               focus:outline-hidden focus:ring-0
                transition-colors duration-150"
       />
       {#if searchLoading}
@@ -480,7 +470,7 @@
         <button
           on:click={() => { searchQuery.set(''); searchInput?.focus(); }}
           title="Clear search"
-          class="absolute right-2 p-0.5 rounded text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors duration-100"
+          class="absolute right-2 p-0.5 rounded-sm text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 transition-colors duration-100"
         >
           <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
                stroke-linecap="round" stroke-linejoin="round">
@@ -496,14 +486,14 @@
     {#if showSkeleton}
       {#each Array(skeletonRows) as _}
         <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-700/50">
-          <div class="w-9 h-9 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse flex-shrink-0"></div>
+          <div class="w-9 h-9 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse shrink-0"></div>
           <div class="flex-1 min-w-0 space-y-2">
             <div class="flex justify-between">
-              <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-1/3"></div>
-              <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-10"></div>
+              <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded-sm animate-pulse w-1/3"></div>
+              <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded-sm animate-pulse w-10"></div>
             </div>
-            <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-2/3"></div>
-            <div class="h-2.5 bg-gray-100 dark:bg-gray-700/60 rounded animate-pulse w-full"></div>
+            <div class="h-3 bg-gray-200 dark:bg-gray-700 rounded-sm animate-pulse w-2/3"></div>
+            <div class="h-2.5 bg-gray-100 dark:bg-gray-700/60 rounded-sm animate-pulse w-full"></div>
           </div>
         </div>
       {/each}
@@ -555,8 +545,8 @@
           <button
             on:click={(e) => toggleSelect(email.id, e)}
             title={checked ? 'Deselect' : 'Select'}
-            class="flex-shrink-0 flex items-center justify-center w-12 self-stretch
-                   focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
+            class="shrink-0 flex items-center justify-center w-12 self-stretch
+                   focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
           >
             <div class="relative w-9 h-9">
               <!-- Avatar: hidden on hover or when checked/selectionMode -->
@@ -585,7 +575,7 @@
           <button
             on:click={() => selectedEmailId.set(email.id)}
             class="flex-1 min-w-0 flex items-center gap-2 py-3 pr-4 text-left
-                   focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
+                   focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-400"
           >
             <div class="flex-1 min-w-0">
               <div class="flex items-baseline justify-between gap-1 mb-0.5">
@@ -595,13 +585,13 @@
                     : 'font-medium text-gray-700 dark:text-gray-300'}">
                   {s.name || s.email || 'Unknown'}
                 </span>
-                <span class="text-xs flex-shrink-0 text-gray-400 dark:text-gray-500">
+                <span class="text-xs shrink-0 text-gray-400 dark:text-gray-500">
                   {formatDate(email.receivedAt)}
                 </span>
               </div>
               <div class="flex items-center gap-1.5 mb-0.5">
                 {#if email.hasAttachment}
-                  <svg class="w-3 h-3 flex-shrink-0 text-gray-400 dark:text-gray-500"
+                  <svg class="w-3 h-3 shrink-0 text-gray-400 dark:text-gray-500"
                        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                        stroke-linecap="round" stroke-linejoin="round" aria-label="Has attachment">
                     <path d="M21.44 11.05l-9.19 9.19a6 6 0 01-8.49-8.49l9.19-9.19a4 4 0 015.66 5.66l-9.2 9.19a2 2 0 01-2.83-2.83l8.49-8.48"/>
@@ -613,6 +603,11 @@
                     : 'text-gray-600 dark:text-gray-400'}">
                   {email.subject || '(no subject)'}
                 </span>
+                {#if email.threadSize > 1}
+                  <span class="shrink-0 text-[10px] font-medium px-1.5 rounded-full
+                               bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400"
+                        title="{email.threadSize} messages in this conversation">{email.threadSize}</span>
+                {/if}
               </div>
               {#if email.preview}
                 <div class="text-xs truncate text-gray-400 dark:text-gray-500">
@@ -622,7 +617,7 @@
             </div>
 
             {#if unread}
-              <div class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"
+              <div class="w-2 h-2 rounded-full bg-blue-500 shrink-0"
                    aria-label="Unread"></div>
             {/if}
           </button>

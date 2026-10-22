@@ -24,7 +24,7 @@
   };
 
   const SIZES = { sm: 'w-5 h-5', lg: 'w-12 h-12' };
-  $: cls = `${SIZES[size] ?? SIZES.sm} ${ACCENT[kind] ?? ACCENT.file} flex-shrink-0`;
+  $: cls = `${SIZES[size] ?? SIZES.sm} ${ACCENT[kind] ?? ACCENT.file} shrink-0`;
 </script>
 
 <svg class={cls} viewBox="0 0 24 24" fill="none" stroke="currentColor"

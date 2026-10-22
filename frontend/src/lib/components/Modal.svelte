@@ -112,7 +112,7 @@
     >
       {#if title || $$slots.header}
         <header
-          class="flex items-start justify-between gap-4 px-5 py-4 flex-shrink-0
+          class="flex items-start justify-between gap-4 px-5 py-4 shrink-0
                  border-b border-gray-200 dark:border-gray-700"
         >
           <slot name="header">
@@ -126,7 +126,7 @@
             </div>
           </slot>
 
-          <div class="flex items-center gap-2 flex-shrink-0">
+          <div class="flex items-center gap-2 shrink-0">
             {#if busy}
               <Spinner size="sm" label="Working" />
             {/if}
@@ -138,7 +138,7 @@
               class="p-1 -m-1 rounded-lg text-gray-400
                      hover:text-gray-600 dark:hover:text-gray-200
                      hover:bg-gray-100 dark:hover:bg-gray-700
-                     focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500
+                     focus:outline-hidden focus-visible:ring-2 focus-visible:ring-blue-500
                      disabled:opacity-40 disabled:cursor-not-allowed
                      transition-colors duration-150"
             >
@@ -157,7 +157,7 @@
 
       {#if $$slots.footer}
         <footer
-          class="flex items-center justify-between gap-3 px-5 py-3 flex-shrink-0
+          class="flex items-center justify-between gap-3 px-5 py-3 shrink-0
                  border-t border-gray-200 dark:border-gray-700
                  bg-gray-50/60 dark:bg-gray-800/60"
         >

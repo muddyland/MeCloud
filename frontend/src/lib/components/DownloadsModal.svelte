@@ -66,7 +66,7 @@
 
   const btn = `inline-flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium
     bg-blue-500 hover:bg-blue-600 text-white disabled:opacity-60
-    transition-colors duration-150 flex-shrink-0`;
+    transition-colors duration-150 shrink-0`;
 </script>
 
 <Modal
@@ -94,7 +94,7 @@
       <!-- Linux: built and served by this server -->
       {#if linux}
         <div class="flex items-start gap-3 p-4 rounded-xl border border-gray-200 dark:border-gray-700">
-          <svg class="w-5 h-5 mt-0.5 flex-shrink-0 text-gray-500 dark:text-gray-400"
+          <svg class="w-5 h-5 mt-0.5 shrink-0 text-gray-500 dark:text-gray-400"
                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
                stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="4" width="18" height="12" rx="2" /><path d="M8 20h8M12 16v4" />
@@ -137,7 +137,7 @@
 
       {#if source}
         <div class="flex items-center gap-3 p-3 rounded-xl border border-gray-200 dark:border-gray-700 mb-4">
-          <svg class="w-5 h-5 flex-shrink-0 text-gray-500 dark:text-gray-400" viewBox="0 0 24 24"
+          <svg class="w-5 h-5 shrink-0 text-gray-500 dark:text-gray-400" viewBox="0 0 24 24"
                fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
             <path d="m10 12-2 2 2 2M14 12l2 2-2 2" />
             <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" /><path d="M14 3v5h5" />

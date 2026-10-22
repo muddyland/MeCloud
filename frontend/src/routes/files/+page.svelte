@@ -1,4 +1,5 @@
 <script>
+  import { isTyping } from '$lib/dom.js';
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/stores';
   import { fly, fade } from 'svelte/transition';
@@ -17,7 +18,7 @@
     jmapAccountId, jmapSession, currentUser, sidebarWidth,
     composeOpen, composeContext,
   } from '$lib/stores/mail.js';
-  import { getJMAPSession, getAppConfig } from '$lib/api.js';
+  import { ensureSession } from '$lib/session.js';
   import {
     fileNodes, filesLoading, filesError, currentFolderId, selectedFileIds,
     previewNode, fileSearch, viewMode, sortKey, sortAsc, fileContextMenu,
@@ -29,9 +30,10 @@
     readDropEntries, buildDropTree, countTreeFiles,
   } from '$lib/files.js';
   import {
-    fileKind, formatBytes, isPreviewable, validateName, breadcrumbTrail, uniqueName,
+    fileKind, formatBytes, isPreviewable, validateName, breadcrumbTrail,
   } from '$lib/fileTypes.js';
   import { toast } from '$lib/stores/toast.js';
+  import { createUploader } from '$lib/uploads.js';
 
   const INCOMPLETE_LISTING =
     'This server cannot list the whole drive in one request and does not support paging '
@@ -371,21 +373,32 @@
 
   let uploadSeq = 0;
 
+  // Orchestration lives in lib/uploads.js; this wires it to the stores, the
+  // transport and the progress list.
+  const uploader = createUploader({
+    uploadFile: (file, opts) => uploadFile($jmapAccountId, $jmapSession, file, opts),
+    createFolder: (name, parentId) => createFolder($jmapAccountId, $jmapSession, name, parentId),
+    siblingNames: (parentId) => ($childrenByParent.get(parentId) ?? []).map((n) => n.name),
+    onCreated: (node) => fileNodes.update((list) => [...list, node]),
+    rows: {
+      add: (row) => {
+        const id = ++uploadSeq;
+        uploads.update((u) => [...u, { id, ...row }]);
+        return id;
+      },
+      patch: (id, fields) => uploads.update((u) => u.map((x) => (x.id === id ? { ...x, ...fields } : x))),
+      remove: (id) => uploads.update((u) => u.filter((x) => x.id !== id)),
+    },
+    onError: (name, message) => {
+      uploadError = message;
+      toast(`${name}: ${message}`, 'error');
+    },
+  });
+
   async function uploadFiles(fileList) {
     const files = [...(fileList ?? [])];
     if (!files.length) return;
-
-    const parentId = $currentFolderId;
-    const taken = new Set(($childrenByParent.get(parentId ?? null) ?? []).map((n) => n.name));
-
-    let failures = 0;
-    for (const file of files) {
-      // Uploading two files with the same name into one folder should not
-      // silently produce two identical entries.
-      const name = uniqueName(file.name, taken);
-      taken.add(name);
-      if (!(await uploadOne(file, name, parentId))) failures += 1;
-    }
+    const { failures } = await uploader.uploadBatch(files, $currentFolderId);
     await reconcile(failures);
   }
 
@@ -460,71 +473,12 @@
     if (total === 0 && !tree.some((n) => n.kind === 'dir')) return;
 
     try {
-      await uploadInto(tree, $currentFolderId);
+      await uploader.uploadTree(tree, $currentFolderId);
     } catch (e) {
       uploadError = e?.message ?? 'Upload failed.';
       toast(uploadError, 'error');
     } finally {
       await reconcile();
-    }
-  }
-
-  /**
-   * Depth-first: create each folder before uploading anything into it, so a
-   * child never references a parent that does not exist yet.
-   */
-  async function uploadInto(nodes, parentId) {
-    const siblings = new Set(
-      ($childrenByParent.get(parentId ?? null) ?? []).map((n) => n.name),
-    );
-
-    for (const node of nodes) {
-      const name = uniqueName(node.name, siblings);
-      siblings.add(name);
-
-      if (node.kind === 'dir') {
-        const created = await createFolder($jmapAccountId, $jmapSession, name, parentId);
-        if (!created?.id) {
-          // Children have to be created against a known parent id, so an
-          // unconfirmed folder stops this branch rather than silently
-          // flattening its contents into the parent.
-          throw new Error(`Could not confirm the folder "${name}" — its contents were not uploaded.`);
-        }
-        fileNodes.update((list) => [...list, created]);
-        if (node.children?.length) await uploadInto(node.children, created.id);
-      } else {
-        await uploadOne(node.file, name, parentId);
-      }
-    }
-  }
-
-  /** Upload a single file with its own progress row. @returns {boolean} ok */
-  async function uploadOne(file, name, parentId) {
-    const id = ++uploadSeq;
-    uploads.update((u) => [...u, { id, name, progress: 0, error: '', waiting: '', done: false }]);
-    const patch = (fields) =>
-      uploads.update((u) => u.map((x) => (x.id === id ? { ...x, ...fields } : x)));
-
-    try {
-      const created = await uploadFile($jmapAccountId, $jmapSession, file, {
-        parentId,
-        name,
-        onProgress: (p) => patch({ progress: p, waiting: '' }),
-        onWait: (ms) => patch({ waiting: `rate limited — retrying in ${Math.ceil(ms / 1000)}s` }),
-      });
-      // Null means the server did not echo the new node. reconcile() reads the
-      // real state back, so nothing needs inventing here.
-      if (created) fileNodes.update((list) => [...list, created]);
-      patch({ progress: 1, done: true });
-      setTimeout(() => uploads.update((u) => u.filter((x) => x.id !== id)), 1200);
-      return true;
-    } catch (e) {
-      patch({ error: e?.message ?? 'Upload failed.', done: true });
-      // A toast is easy to miss on a phone, so the failure also stays pinned in
-      // the upload list until dismissed.
-      uploadError = e?.message ?? 'Upload failed.';
-      toast(`${name}: ${e?.message ?? 'upload failed'}`, 'error');
-      return false;
     }
   }
 
@@ -534,8 +488,7 @@
     // The preview and the context menu both handle their own keys; letting the
     // listing act as well would clear the selection out from under them.
     if ($previewNode || $fileContextMenu || $composeOpen) return;
-    const tag = e.target?.tagName;
-    if (tag === 'INPUT' || tag === 'TEXTAREA' || e.target?.isContentEditable) return;
+    if (isTyping(e.target)) return;
     if (e.metaKey || e.ctrlKey) {
       if (e.key === 'a') { e.preventDefault(); selectAll(); }
       return;
@@ -550,21 +503,11 @@
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   onMount(async () => {
-    const config = await getAppConfig();
-    stalwartUrl = config.stalwartUrl ?? '';
-
-    if (!$jmapAccountId) {
-      try {
-        const session = await getJMAPSession();
-        if (!session) return;
-        jmapSession.set(session);
-        const accountId = Object.keys(session.accounts ?? {})[0];
-        jmapAccountId.set(accountId);
-        currentUser.set(session.username || session.accounts?.[accountId]?.name || '');
-      } catch (e) {
-        filesError.set(e?.message ?? 'Could not reach the server.');
-        return;
-      }
+    const result = await ensureSession();
+    stalwartUrl = result.stalwartUrl;
+    if (!result.ready) {
+      if (result.error) filesError.set(result.error);
+      return;
     }
 
     supported = supportsFiles($jmapSession);
@@ -622,15 +565,15 @@
         {#if $filesLoading && $fileNodes.length === 0}
           {#each Array(4) as _}
             <div class="flex items-center gap-2 px-3 py-2">
-              <div class="w-4 h-4 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
-              <div class="h-3 flex-1 max-w-[6rem] rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+              <div class="w-4 h-4 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+              <div class="h-3 flex-1 max-w-24 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
             </div>
           {/each}
         {/if}
       </div>
 
       <!-- Storage summary -->
-      <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
+      <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 shrink-0">
         <p class="text-xs text-gray-500 dark:text-gray-400">
           {$fileNodes.length} item{$fileNodes.length === 1 ? '' : 's'} · {formatBytes($totalUsage)}
         </p>
@@ -648,7 +591,7 @@
       on:drop={onDrop}
     >
       <!-- Breadcrumbs + toolbar -->
-      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+      <div class="flex items-center gap-2 px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 shrink-0">
         <nav class="flex items-center gap-1 min-w-0 flex-1 text-sm" aria-label="Breadcrumb">
           <button on:click={() => openFolder(null)}
             class="px-1.5 py-0.5 rounded text-gray-600 dark:text-gray-300
@@ -658,7 +601,7 @@
           {#each trail as crumb (crumb.id)}
             <span class="text-gray-300 dark:text-gray-600 select-none">/</span>
             <button on:click={() => openFolder(crumb.id)}
-              class="px-1.5 py-0.5 rounded truncate max-w-[12rem]
+              class="px-1.5 py-0.5 rounded truncate max-w-48
                      text-gray-600 dark:text-gray-300
                      hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-100">
               {crumb.name}
@@ -673,7 +616,7 @@
         </nav>
 
         <!-- Search -->
-        <div class="relative flex items-center flex-shrink-0">
+        <div class="relative flex items-center shrink-0">
           <svg class="absolute left-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none"
                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
@@ -687,13 +630,13 @@
                    bg-gray-100 dark:bg-gray-700/60 text-gray-800 dark:text-gray-200
                    placeholder-gray-400 dark:placeholder-gray-500
                    border border-transparent focus:border-blue-400 dark:focus:border-blue-500
-                   focus:outline-none transition-colors duration-150"
+                   focus:outline-hidden transition-colors duration-150"
           />
         </div>
       </div>
 
       <!-- Action bar -->
-      <div class="flex items-center gap-1 px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+      <div class="flex items-center gap-1 px-3 py-2 border-b border-gray-200 dark:border-gray-700 shrink-0">
         {#if selectionCount > 0}
           <span class="text-xs font-medium text-gray-600 dark:text-gray-300 px-2">
             {selectionCount} selected
@@ -755,7 +698,7 @@
           aria-label="Sort by"
           class="text-xs rounded-md border border-gray-200 dark:border-gray-600
                  bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300
-                 px-1.5 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                 px-1.5 py-1 focus:outline-hidden focus:ring-1 focus:ring-blue-500"
         >
           <option value="name">Name</option>
           <option value="size">Size</option>
@@ -809,7 +752,7 @@
               if (e.key === 'Escape') { creatingFolder = false; newFolderName = ''; }
             }}
             class="flex-1 max-w-xs text-sm bg-transparent border-b border-blue-400
-                   text-gray-800 dark:text-gray-100 focus:outline-none py-0.5"
+                   text-gray-800 dark:text-gray-100 focus:outline-hidden py-0.5"
           />
           <button class="text-xs text-blue-600 dark:text-blue-400 font-medium"
                   on:click={submitNewFolder}>Create</button>
@@ -821,16 +764,16 @@
       <!-- Write failures stay on screen: a toast is far too easy to miss on a
            phone, and a silently dropped upload is the worst outcome here. -->
       {#if uploadError}
-        <div class="flex items-start gap-2 px-4 py-2.5 flex-shrink-0
+        <div class="flex items-start gap-2 px-4 py-2.5 shrink-0
                     bg-red-50 dark:bg-red-900/25
                     border-b border-red-200 dark:border-red-800/60">
-          <svg class="w-4 h-4 mt-0.5 flex-shrink-0 text-red-500" viewBox="0 0 24 24" fill="none"
+          <svg class="w-4 h-4 mt-0.5 shrink-0 text-red-500" viewBox="0 0 24 24" fill="none"
                stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5h.01" />
           </svg>
           <span class="text-xs text-red-800 dark:text-red-200 flex-1 min-w-0">{uploadError}</span>
           <button on:click={() => (uploadError = '')} aria-label="Dismiss"
-            class="text-xs text-red-600 dark:text-red-300 hover:underline flex-shrink-0">
+            class="text-xs text-red-600 dark:text-red-300 hover:underline shrink-0">
             Dismiss
           </button>
         </div>
@@ -838,16 +781,16 @@
 
       <!-- Upload progress -->
       {#if $uploads.length}
-        <div class="px-4 py-2 border-b border-gray-200 dark:border-gray-700 space-y-1.5 flex-shrink-0">
+        <div class="px-4 py-2 border-b border-gray-200 dark:border-gray-700 space-y-1.5 shrink-0">
           {#each $uploads as up (up.id)}
             <div class="flex items-center gap-2" transition:fade={{ duration: 120 }}>
               {#if up.error}
-                <svg class="w-3.5 h-3.5 text-red-500 flex-shrink-0" viewBox="0 0 24 24" fill="none"
+                <svg class="w-3.5 h-3.5 text-red-500 shrink-0" viewBox="0 0 24 24" fill="none"
                      stroke="currentColor" stroke-width="2" stroke-linecap="round">
                   <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16h.01" />
                 </svg>
               {:else if up.done}
-                <svg class="w-3.5 h-3.5 text-green-500 flex-shrink-0" viewBox="0 0 24 24" fill="none"
+                <svg class="w-3.5 h-3.5 text-green-500 shrink-0" viewBox="0 0 24 24" fill="none"
                      stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
                   <path d="m20 6-11 11-5-5" />
                 </svg>
@@ -862,11 +805,11 @@
                   {up.waiting}
                 </span>
               {:else}
-                <div class="w-32 h-1 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden flex-shrink-0">
+                <div class="w-32 h-1 rounded-full bg-gray-200 dark:bg-gray-700 overflow-hidden shrink-0">
                   <div class="h-full bg-blue-500 transition-all duration-150"
                        style="width: {Math.round(up.progress * 100)}%"></div>
                 </div>
-                <span class="text-xs text-gray-400 w-9 text-right tabular-nums flex-shrink-0">
+                <span class="text-xs text-gray-400 w-9 text-right tabular-nums shrink-0">
                   {Math.round(up.progress * 100)}%
                 </span>
               {/if}
@@ -902,7 +845,7 @@
             {#each Array(12) as _}
               <div class="flex flex-col items-center gap-2 p-3 rounded-xl">
                 <div class="w-12 h-12 rounded-lg bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
-                <div class="h-3 w-3/4 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+                <div class="h-3 w-3/4 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
               </div>
             {/each}
           </div>
@@ -975,11 +918,11 @@
                       if (e.key === 'Escape') renamingId = null;
                     }}
                     class="w-full text-xs text-center bg-white dark:bg-gray-700 rounded
-                           border border-blue-400 px-1 py-0.5 focus:outline-none
+                           border border-blue-400 px-1 py-0.5 focus:outline-hidden
                            text-gray-800 dark:text-gray-100"
                   />
                 {:else}
-                  <span class="text-xs text-gray-700 dark:text-gray-200 break-words line-clamp-2 w-full">
+                  <span class="text-xs text-gray-700 dark:text-gray-200 wrap-break-word line-clamp-2 w-full">
                     {node.name}
                   </span>
                   <span class="text-[11px] text-gray-400 dark:text-gray-500">
@@ -1069,7 +1012,7 @@
                             if (e.key === 'Escape') renamingId = null;
                           }}
                           class="flex-1 min-w-0 text-sm bg-white dark:bg-gray-700 rounded
-                                 border border-blue-400 px-1 py-0.5 focus:outline-none
+                                 border border-blue-400 px-1 py-0.5 focus:outline-hidden
                                  text-gray-800 dark:text-gray-100"
                         />
                       {:else}

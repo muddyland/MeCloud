@@ -50,7 +50,7 @@
 
 <svelte:window on:keydown={onKeydown} />
 
-<nav class="app-navbar flex items-center gap-3 px-3 flex-shrink-0 z-20
+<nav class="app-navbar flex items-center gap-3 px-3 shrink-0 z-20
             bg-white dark:bg-gray-900 border-b border-gray-200 dark:border-gray-700">
 
   <!-- Drawer toggle. Only while the sidebar is an overlay *and* the current
@@ -59,7 +59,7 @@
     <button
       on:click={toggleSidebar}
       aria-label="Toggle sidebar"
-      class="w-9 h-9 -ml-1 flex items-center justify-center rounded-lg flex-shrink-0
+      class="w-9 h-9 -ml-1 flex items-center justify-center rounded-lg shrink-0
              text-gray-600 dark:text-gray-300
              hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
     >
@@ -72,7 +72,7 @@
 
   <!-- Wordmark. Desktop only: on mobile the app menu already names where you
        are, and two labels competing for the same row is what made this cramped. -->
-  <span class="hidden lg:flex items-center gap-1.5 flex-shrink-0 select-none
+  <span class="hidden lg:flex items-center gap-1.5 shrink-0 select-none
                text-sm font-semibold text-gray-800 dark:text-gray-100 tracking-tight">
     <BrandMark cls="w-4 h-4 opacity-80" />
     {$appName}
@@ -85,7 +85,7 @@
   <div class="flex-1"></div>
 
   <!-- Right controls -->
-  <div class="flex items-center justify-end gap-1 flex-shrink-0">
+  <div class="flex items-center justify-end gap-1 shrink-0">
 
   <!-- Command palette -->
   <button

@@ -71,7 +71,7 @@
   ];
 
   const btn =
-    'flex-shrink-0 h-7 min-w-[1.75rem] px-1.5 flex items-center justify-center rounded-md ' +
+    'shrink-0 h-7 min-w-7 px-1.5 flex items-center justify-center rounded-md ' +
     'text-gray-500 dark:text-gray-400 hover:text-gray-800 dark:hover:text-gray-100 ' +
     'hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-150 ' +
     'text-xs font-semibold';
@@ -80,7 +80,7 @@
 <!-- Scrolls rather than wraps: a wrapping toolbar changes height and shoves the
      editor around as the window narrows. -->
 <div
-  class="flex items-center gap-0.5 px-2 py-1.5 flex-shrink-0 overflow-x-auto
+  class="flex items-center gap-0.5 px-2 py-1.5 shrink-0 overflow-x-auto
          border-b border-gray-200 dark:border-gray-700
          bg-gray-50/60 dark:bg-gray-800/40"
   role="toolbar"
@@ -88,7 +88,7 @@
 >
   {#each GROUPS as group, g}
     {#if g > 0}
-      <div class="w-px h-4 bg-gray-200 dark:bg-gray-600 mx-1 flex-shrink-0"></div>
+      <div class="w-px h-4 bg-gray-200 dark:bg-gray-600 mx-1 shrink-0"></div>
     {/if}
     {#each group as item}
       <button
@@ -136,7 +136,7 @@
 
   {#if !compact}
     <div class="flex-1"></div>
-    <span class="hidden sm:inline text-[10px] text-gray-400 dark:text-gray-500 flex-shrink-0 pr-1">
+    <span class="hidden sm:inline text-[10px] text-gray-400 dark:text-gray-500 shrink-0 pr-1">
       Markdown
     </span>
   {/if}

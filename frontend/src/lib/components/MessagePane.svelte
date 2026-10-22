@@ -6,13 +6,13 @@
     mailboxes, selectedMailbox, jmapAccountId, emails,
     composeContext, composeOpen, darkMode, messageActions
   } from '$lib/stores/mail.js';
-  import { getEmailBody, moveEmail, destroyEmail, markEmailSeen } from '$lib/api.js';
-  import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
+  import { getEmailBody, markEmailSeen, getThreadEmails } from '$lib/api.js';
+  import { deleteMessages } from '$lib/mailActions.js';
   import { toast } from '$lib/stores/toast.js';
   import { sanitizeEmailHtml, escapeText, decodeEntities } from '$lib/sanitize.js';
   import { formatBytes } from '$lib/fileTypes.js';
   import { downloadNode } from '$lib/files.js';
-  import { isTrustedSender, trustSender } from '$lib/trustedSenders.js';
+  import { isTrustedSender, trustSender, untrustSender } from '$lib/trustedSenders.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
   import { isCompact } from '$lib/stores/viewport.js';
@@ -27,6 +27,12 @@
   let rawHtml       = '';    // kept so "show images" can re-sanitise without a refetch
   let blockedCount  = 0;
   let imagesAllowed = false;
+  let senderTrusted = false;  // images load because of a standing per-sender choice
+
+  // The conversation this message belongs to, oldest first. Empty unless the
+  // thread has more than one message.
+  let thread    = [];
+  let threadSeq = 0;
 
   // Per-action busy flags so each control can show its own spinner rather than
   // freezing the whole pane.
@@ -88,7 +94,7 @@
   function quotedBodyHtml() {
     if (framePlain) return `<pre>${frameContent}</pre>`;
     if (!rawHtml) return '';
-    return sanitizeEmailHtml(rawHtml, { allowRemote: imagesAllowed }).html;
+    return sanitizeEmailHtml(rawHtml, { allowRemote: imagesAllowed, inParent: true }).html;
   }
 
   function showImages() {
@@ -98,8 +104,39 @@
 
   function alwaysShowImages() {
     if (primaryFrom?.email) trustSender(primaryFrom.email);
+    senderTrusted = !!primaryFrom?.email;
     showImages();
   }
+
+  /** Withdraw "always show images" for this sender, and re-block this message. */
+  function stopTrustingSender() {
+    if (primaryFrom?.email) untrustSender(primaryFrom.email);
+    senderTrusted = false;
+    imagesAllowed = false;
+    renderBody();
+  }
+
+  async function loadThread(data, accountId) {
+    const seq = ++threadSeq;
+    thread = [];
+    if (!data?.threadId) return;
+    // The list already knows the thread size; skip the request for the common
+    // single-message case.
+    const listed = $emails.find((e) => e.id === data.id);
+    if (listed && (listed.threadSize ?? 1) <= 1) return;
+    try {
+      const all = await getThreadEmails(accountId, data.threadId);
+      if (seq === threadSeq && all.length > 1) thread = all;
+    } catch {
+      // The conversation strip is a convenience; the message itself is shown.
+    }
+  }
+
+  // The mailbox this message actually lives in: the folder on screen when it
+  // is in it, otherwise (opened from a conversation) the first one it is in.
+  $: homeMailbox = email?.mailboxIds?.[$selectedMailbox?.id]
+    ? $selectedMailbox
+    : ($mailboxes.find((m) => email?.mailboxIds?.[m.id]) ?? $selectedMailbox);
 
   // Guards against a slow request for message A landing after the user has
   // already clicked message B and overwriting the pane with stale content.
@@ -117,6 +154,9 @@
     framePlain    = false;
     blockedCount  = 0;
     imagesAllowed = false;
+    senderTrusted = false;
+    thread        = [];
+    threadSeq    += 1;
 
     try {
       const accountId = Object.keys($jmapSession.accounts)[0];
@@ -130,6 +170,7 @@
       // Trust decisions are per sender, so this has to happen before the first
       // render rather than after the banner has already flashed up.
       imagesAllowed = isTrustedSender(data.from?.[0]?.email);
+      senderTrusted = imagesAllowed;
 
       // Fetch the htmlBody value, but only treat it as real HTML if it
       // actually contains markup — Stalwart sometimes points htmlBody at a
@@ -159,6 +200,7 @@
       }
 
       email = data;
+      loadThread(data, accountId);
       // Auto-mark as read on open
       if (!data.keywords?.['$seen']) {
         email = { ...data, keywords: { ...(data.keywords ?? {}), '$seen': true } };
@@ -197,8 +239,7 @@
   $: primaryFrom  = email?.from?.[0] ?? null;
 
   const btnCls = 'px-3 py-1.5 text-xs font-medium rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 transition-colors duration-150';
-  $: trashMailbox = $mailboxes.find(m => m.role === 'trash') ?? null;
-  $: inTrash      = $selectedMailbox?.role === 'trash';
+  $: inTrash      = homeMailbox?.role === 'trash';
 
   // Reply All is only meaningful when there are multiple participants
   $: allAddrs = [
@@ -282,21 +323,35 @@
     composeOpen.set(true);
   }
 
+  // A draft opens back into compose. Saving there replaces this copy, so the
+  // Drafts folder keeps exactly one version of it.
+  $: isDraft = !!email?.keywords?.['$draft'];
+
+  function editDraft() {
+    if (!email) return;
+    composeContext.set({
+      mode: 'compose',
+      to: formatAddress(email.to),
+      cc: formatAddress(email.cc),
+      bcc: formatAddress(email.bcc),
+      subject: email.subject ?? '',
+      body: quotedBodyHtml(),
+      attachments: attachments.filter((a) => a.blobId),
+      inReplyTo: email.inReplyTo?.[0] ?? null,
+      // The saved References already end with the parent; sending appends it
+      // again, so it is taken off here to keep the header free of repeats.
+      references: (email.references ?? []).filter((r) => r !== email.inReplyTo?.[0]),
+      draftId: email.id,
+    });
+    composeOpen.set(true);
+  }
+
   async function deleteEmail() {
     if (!email || deleting) return;
     const emailId = email.id;
     deleting = true;
     try {
-      if (inTrash) {
-        await destroyEmail($jmapAccountId, emailId);
-        toast('Message deleted permanently', 'success');
-      } else if (trashMailbox) {
-        await moveEmail($jmapAccountId, emailId, trashMailbox.id, $selectedMailbox?.id);
-        toast('Moved to Trash', 'success');
-      }
-      emails.update(list => list.filter(e => e.id !== emailId));
-      selectedEmailId.set(null);
-      await refreshMailboxCounts();
+      await deleteMessages([emailId], homeMailbox);
     } catch (e) {
       toast(e?.message ?? 'Delete failed', 'error');
     } finally {
@@ -361,21 +416,21 @@
       <div class="px-6 py-5 border-b border-gray-200 dark:border-gray-700">
         <!-- Avatar + sender skeleton -->
         <div class="flex items-center gap-3 mb-4">
-          <div class="w-11 h-11 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse flex-shrink-0"></div>
+          <div class="w-11 h-11 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse shrink-0"></div>
           <div class="flex-1 space-y-2">
-            <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-1/3"></div>
-            <div class="h-3 bg-gray-100 dark:bg-gray-700/60 rounded animate-pulse w-1/4"></div>
+            <div class="h-4 bg-gray-200 dark:bg-gray-700 rounded-sm animate-pulse w-1/3"></div>
+            <div class="h-3 bg-gray-100 dark:bg-gray-700/60 rounded-sm animate-pulse w-1/4"></div>
           </div>
-          <div class="h-3 bg-gray-100 dark:bg-gray-700/60 rounded animate-pulse w-20"></div>
+          <div class="h-3 bg-gray-100 dark:bg-gray-700/60 rounded-sm animate-pulse w-20"></div>
         </div>
         <!-- Subject skeleton -->
-        <div class="h-5 bg-gray-200 dark:bg-gray-700 rounded animate-pulse w-2/3 mb-2"></div>
-        <div class="h-3 bg-gray-100 dark:bg-gray-700/60 rounded animate-pulse w-1/3"></div>
+        <div class="h-5 bg-gray-200 dark:bg-gray-700 rounded-sm animate-pulse w-2/3 mb-2"></div>
+        <div class="h-3 bg-gray-100 dark:bg-gray-700/60 rounded-sm animate-pulse w-1/3"></div>
       </div>
       <!-- Body skeleton -->
       <div class="flex-1 px-6 py-5 space-y-3">
         {#each [1, 0.9, 0.95, 0.6, 0.85, 0.7, 1, 0.5] as w}
-          <div class="h-3 bg-gray-100 dark:bg-gray-700/50 rounded animate-pulse" style="width: {w * 100}%"></div>
+          <div class="h-3 bg-gray-100 dark:bg-gray-700/50 rounded-sm animate-pulse" style="width: {w * 100}%"></div>
         {/each}
       </div>
 
@@ -406,7 +461,7 @@
       <div class="flex flex-col h-full" in:fly={{ x: 16, duration: 220, opacity: 0 }}>
 
         <!-- Header -->
-        <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+        <div class="px-6 py-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
           {#if $isCompact}
             <button
               on:click={() => selectedEmailId.set(null)}
@@ -439,7 +494,7 @@
                 {/if}
               </div>
             </div>
-            <span class="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0 mt-0.5">
+            <span class="text-xs text-gray-400 dark:text-gray-500 shrink-0 mt-0.5">
               {formatDate(email.receivedAt)}
             </span>
           </div>
@@ -459,6 +514,12 @@
 
           <!-- Actions -->
           <div class="flex flex-wrap gap-2 mt-3">
+            {#if isDraft}
+              <button on:click={editDraft}
+                class="px-3 py-1.5 text-xs font-medium rounded-md bg-blue-600 hover:bg-blue-700 text-white transition-colors duration-150">
+                Edit draft
+              </button>
+            {/if}
             <button on:click={() => openCompose('reply')} class={btnCls}>
               <svg class="w-3.5 h-3.5 inline-block mr-1" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 17 4 12 9 7"/><path d="M20 18v-2a4 4 0 00-4-4H4"/></svg>Reply
             </button>
@@ -511,19 +572,19 @@
                   on:click={() => downloadNode({ blobId: att.blobId, name: att.name, type: att.type })}
                   disabled={!att.blobId}
                   title={att.blobId ? `Download ${att.name || 'attachment'}` : 'This attachment has no downloadable content'}
-                  class="inline-flex items-center gap-1.5 max-w-[14rem] px-2 py-1 rounded-md
+                  class="inline-flex items-center gap-1.5 max-w-56 px-2 py-1 rounded-md
                          bg-gray-100 dark:bg-gray-700/60 text-xs text-gray-600 dark:text-gray-300
                          hover:bg-gray-200 dark:hover:bg-gray-600
                          disabled:opacity-50 disabled:cursor-not-allowed
                          transition-colors duration-150"
                 >
-                  <svg class="w-3 h-3 flex-shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  <svg class="w-3 h-3 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                        stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
                     <path d="M12 3v12m0 0-4-4m4 4 4-4M5 19h14" />
                   </svg>
                   <span class="truncate">{att.name || 'attachment'}</span>
                   {#if att.size}
-                    <span class="text-gray-400 dark:text-gray-500 flex-shrink-0">{formatBytes(att.size)}</span>
+                    <span class="text-gray-400 dark:text-gray-500 shrink-0">{formatBytes(att.size)}</span>
                   {/if}
                 </button>
               {/each}
@@ -531,14 +592,54 @@
           {/if}
         </div>
 
+        <!-- Conversation: every message in the thread, including your own
+             replies from Sent, so the context is one click away. -->
+        {#if thread.length > 1}
+          <details class="px-6 py-2 shrink-0 border-b border-gray-200 dark:border-gray-700 group/thread">
+            <summary class="text-xs text-gray-500 dark:text-gray-400 cursor-pointer select-none
+                            hover:text-gray-700 dark:hover:text-gray-200">
+              Conversation · {thread.length} messages
+            </summary>
+            <ul class="mt-2 space-y-0.5 max-h-48 overflow-y-auto">
+              {#each thread as t (t.id)}
+                <li>
+                  <button
+                    on:click={() => selectedEmailId.set(t.id)}
+                    disabled={t.id === email.id}
+                    class="w-full flex items-baseline gap-2 px-2 py-1 rounded-md text-left text-xs
+                           hover:bg-gray-100 dark:hover:bg-gray-800 disabled:cursor-default
+                           {t.id === email.id ? 'bg-blue-50 dark:bg-blue-900/30' : ''}"
+                  >
+                    <span class="font-medium text-gray-700 dark:text-gray-200 truncate max-w-40 shrink-0">
+                      {t.from?.[0]?.name || t.from?.[0]?.email || 'Unknown'}
+                    </span>
+                    <span class="truncate flex-1 text-gray-400 dark:text-gray-500">{t.preview ?? ''}</span>
+                    <span class="shrink-0 text-gray-400 dark:text-gray-500">{formatDate(t.receivedAt)}</span>
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          </details>
+        {/if}
+
+        {#if senderTrusted && imagesAllowed}
+          <div class="px-6 py-1.5 shrink-0 text-[11px] text-gray-400 dark:text-gray-500
+                      border-b border-gray-100 dark:border-gray-800">
+            Images from this sender always load.
+            <button on:click={stopTrustingSender} class="underline hover:text-gray-600 dark:hover:text-gray-300">
+              Stop
+            </button>
+          </div>
+        {/if}
+
         <!-- Remote-content notice: a remote <img> is a read receipt the sender
              gets without asking, so nothing off-origin loads until requested. -->
         {#if blockedCount > 0 && !imagesAllowed}
-          <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-6 py-2.5 flex-shrink-0
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-6 py-2.5 shrink-0
                       bg-amber-50 dark:bg-amber-900/20
                       border-b border-amber-200 dark:border-amber-800/50"
                in:fade={{ duration: 150 }}>
-            <svg class="w-4 h-4 flex-shrink-0 text-amber-500 dark:text-amber-400" viewBox="0 0 24 24"
+            <svg class="w-4 h-4 shrink-0 text-amber-500 dark:text-amber-400" viewBox="0 0 24 24"
                  fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
               <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19"/>
               <path d="M14.12 14.12a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>
@@ -547,7 +648,7 @@
               {blockedCount} remote {blockedCount === 1 ? 'image was' : 'images were'} blocked to stop
               the sender tracking when you opened this message.
             </span>
-            <div class="flex items-center gap-2 flex-shrink-0">
+            <div class="flex items-center gap-2 shrink-0">
               <button on:click={showImages}
                 class="text-xs font-medium px-2.5 py-1 rounded-md
                        bg-amber-100 dark:bg-amber-800/60 hover:bg-amber-200 dark:hover:bg-amber-800

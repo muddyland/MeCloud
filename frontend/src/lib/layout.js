@@ -13,7 +13,7 @@
 
 /** Classes for the list pane. */
 export function listPaneClass(compact, hasSelection) {
-  if (!compact) return 'flex-shrink-0';
+  if (!compact) return 'shrink-0';
   return hasSelection ? 'hidden' : 'flex-1 min-w-0';
 }
 

@@ -7,7 +7,7 @@
  * go through the backend's blob routes instead of straight at the JMAP
  * upload/download endpoints.
  */
-import { jmapPost } from './api.js';
+import { jmapPost, sessionExpired } from './api.js';
 import { JmapSetError } from './jmapErrors.js';
 import { begin, end } from './stores/activity.js';
 
@@ -342,7 +342,7 @@ function uploadBlobOnce(file, { onProgress, signal } = {}) {
 
     xhr.onload = () => {
       if (xhr.status === 401) {
-        window.location.href = '/auth/login';
+        sessionExpired();
         fail(new Error('Your session expired.'));
         return;
       }
@@ -380,7 +380,10 @@ function uploadBlobOnce(file, { onProgress, signal } = {}) {
     xhr.onabort = () => fail(new DOMException('Upload cancelled', 'AbortError'));
 
     if (signal) {
-      if (signal.aborted) { xhr.abort(); return; }
+      // Aborting an XHR that was never sent fires no event at all, so an
+      // already-cancelled upload has to be rejected here or the promise (and
+      // the activity bar's in-flight count) would never settle.
+      if (signal.aborted) { fail(new DOMException('Upload cancelled', 'AbortError')); return; }
       signal.addEventListener('abort', () => xhr.abort(), { once: true });
     }
 
@@ -464,6 +467,7 @@ export async function saveTextFile(accountId, session, node, text, { type } = {}
 /** Fetch a text blob's contents, for the inline preview. */
 export async function fetchTextBlob(node, { maxBytes = 512 * 1024 } = {}) {
   const res = await fetch(blobUrl(node, { inline: true }), { credentials: 'include' });
+  if (res.status === 401) { sessionExpired(); throw new Error('Your session expired.'); }
   if (!res.ok) throw new Error('Could not load a preview of this file.');
   const text = await res.text();
   return text.length > maxBytes ? `${text.slice(0, maxBytes)}\n\n… truncated` : text;

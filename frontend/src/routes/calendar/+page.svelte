@@ -1,6 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import Navbar from '$lib/components/Navbar.svelte';
+  import ErrorBanner from '$lib/components/ErrorBanner.svelte';
+  import { ensureSession } from '$lib/session.js';
   import CalendarGrid from '$lib/components/CalendarGrid.svelte';
   import EventModal from '$lib/components/EventModal.svelte';
   import Toasts from '$lib/components/Toasts.svelte';
@@ -12,7 +14,7 @@
   } from '$lib/stores/calendar.js';
   import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
   import {
-    getCalendars, getCalendarEvents, getAppConfig, getJMAPSession,
+    getCalendars, getCalendarEvents,
     createCalendar, deleteCalendar
   } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
@@ -23,9 +25,12 @@
   let creatingCal    = false;
   let deletingCalId  = null;
 
+  let loadError = '';
+
   async function loadEvents() {
     if (!$jmapAccountId) return;
     calendarLoading.set(true);
+    loadError = '';
     try {
       const d      = $calendarDate;
       const after  = new Date(d.getFullYear(), d.getMonth(), 1).toISOString();
@@ -33,7 +38,7 @@
       const events = await getCalendarEvents($jmapAccountId, $jmapSession, $selectedCalendar, after, before);
       calendarEvents.set(events);
     } catch (e) {
-      console.error('Failed to load calendar events', e);
+      loadError = e?.message ?? 'Could not load events.';
     } finally {
       calendarLoading.set(false);
     }
@@ -70,32 +75,26 @@
     finally { deletingCalId = null; }
   }
 
-  onMount(async () => {
-    const config = await getAppConfig();
-    stalwartUrl = config.stalwartUrl ?? '';
-
-    if (!$jmapAccountId) {
-      try {
-        const session = await getJMAPSession();
-        jmapSession.set(session);
-        const accountId = Object.keys(session.accounts)[0];
-        jmapAccountId.set(accountId);
-        currentUser.set(session.username || session.accounts[accountId]?.name || '');
-      } catch (e) { console.error('JMAP session failed', e); }
+  async function start() {
+    const result = await ensureSession();
+    stalwartUrl = result.stalwartUrl;
+    loadError = result.error;
+    if (!result.ready) return;
+    try {
+      calendars.set(await getCalendars($jmapAccountId, $jmapSession));
+    } catch (e) {
+      loadError = e?.message ?? 'Could not load your calendars.';
+      return;
     }
+    await loadEvents();
+  }
 
-    if ($jmapAccountId) {
-      try {
-        const cals = await getCalendars($jmapAccountId, $jmapSession);
-        calendars.set(cals);
-      } catch (e) { console.error('Failed to load calendars', e); }
-      await loadEvents();
-    }
-  });
+  onMount(start);
 </script>
 
 <div class="flex flex-col app-shell bg-gray-100 dark:bg-gray-950">
   <Navbar {stalwartUrl} />
+  <ErrorBanner message={loadError} onRetry={start} />
 
   <div class="flex flex-1 min-h-0 overflow-hidden">
 
@@ -123,7 +122,7 @@
               on:keydown={(e) => { if (e.key === 'Enter') confirmNewCal(); if (e.key === 'Escape') newCalInput = false; }}
               placeholder="Calendar name"
               class="flex-1 text-xs px-2 py-1 rounded border border-blue-400 dark:border-blue-500
-                     bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 focus:outline-none"
+                     bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 focus:outline-hidden"
               autofocus />
             <button on:click={confirmNewCal} disabled={creatingCal} title="Create"
               class="text-xs text-blue-600 dark:text-blue-400 disabled:opacity-50
@@ -140,7 +139,7 @@
                  {$selectedCalendar === null
                    ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-medium'
                    : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'}">
-          <span class="w-2.5 h-2.5 rounded-full bg-blue-500 flex-shrink-0"></span>
+          <span class="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0"></span>
           All Calendars
         </button>
 
@@ -151,7 +150,7 @@
                      {$selectedCalendar === cal.id
                        ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-medium'
                        : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'}">
-              <span class="w-2.5 h-2.5 rounded-full bg-blue-400 flex-shrink-0"></span>
+              <span class="w-2.5 h-2.5 rounded-full bg-blue-400 shrink-0"></span>
               <span class="truncate flex-1 text-left">{cal.name}</span>
             </button>
             <button on:click={() => confirmDeleteCal(cal)} disabled={deletingCalId === cal.id}

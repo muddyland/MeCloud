@@ -82,7 +82,7 @@
 
 {#if $appPasswordsOpen}
   <!-- Backdrop -->
-  <div class="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center p-4"
+  <div class="fixed inset-0 z-50 bg-black/40 backdrop-blur-xs flex items-center justify-center p-4"
        transition:fade={{ duration: 150 }}
        on:click={close}
        aria-hidden="true">
@@ -126,7 +126,7 @@
                 {revealed.secret}
               </code>
               <button on:click={copy}
-                class="flex-shrink-0 px-3 py-2 text-xs font-medium rounded-md
+                class="shrink-0 px-3 py-2 text-xs font-medium rounded-md
                        {copied
                          ? 'bg-green-500 text-white'
                          : 'bg-green-100 dark:bg-green-800 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-700'}
@@ -146,7 +146,7 @@
             class="flex-1 text-sm rounded-lg border border-gray-300 dark:border-gray-600
                    bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100
                    placeholder-gray-400 dark:placeholder-gray-500
-                   px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                   px-3 py-2 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
           />
           <button
             type="submit"
@@ -154,7 +154,7 @@
             class="inline-flex items-center gap-2 px-4 py-2 text-sm font-medium rounded-lg
                    bg-blue-600 hover:bg-blue-700 text-white
                    disabled:opacity-60 disabled:cursor-not-allowed
-                   transition-colors duration-150 flex-shrink-0">
+                   transition-colors duration-150 shrink-0">
             {#if creating}
               <Spinner size="xs" label="" accent="border-t-white" cls="border-white/40" />
               Creating…
@@ -192,7 +192,7 @@
                   on:click={() => remove(pw.id)}
                   disabled={deletingId !== null}
                   title="Delete"
-                  class="flex-shrink-0 w-7 h-7 flex items-center justify-center rounded-md
+                  class="shrink-0 w-7 h-7 flex items-center justify-center rounded-md
                          text-gray-400 hover:text-red-500
                          hover:bg-red-50 dark:hover:bg-red-900/20
                          disabled:opacity-50 disabled:cursor-not-allowed

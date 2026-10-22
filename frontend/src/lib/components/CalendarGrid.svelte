@@ -91,7 +91,7 @@
 <div class="flex flex-col h-full">
 
   <!-- Month nav -->
-  <div class="flex items-center gap-3 px-4 py-3 flex-shrink-0 border-b border-gray-200 dark:border-gray-700">
+  <div class="flex items-center gap-3 px-4 py-3 shrink-0 border-b border-gray-200 dark:border-gray-700">
     <button on:click={prevMonth}
       class="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors">
       <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 18l-6-6 6-6"/></svg>
@@ -113,7 +113,7 @@
   </div>
 
   <!-- Day-of-week headers -->
-  <div class="grid grid-cols-7 flex-shrink-0 border-b border-gray-200 dark:border-gray-700">
+  <div class="grid grid-cols-7 shrink-0 border-b border-gray-200 dark:border-gray-700">
     {#each DAYS as day}
       <div class="py-2 text-center text-xs font-medium text-gray-500 dark:text-gray-400">{day}</div>
     {/each}

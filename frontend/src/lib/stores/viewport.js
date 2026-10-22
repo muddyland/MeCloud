@@ -7,7 +7,7 @@ import { browser } from '$app/environment';
  * SSR-safe: it starts at `initial` and only subscribes to matchMedia in the
  * browser, so prerendering never touches `window`.
  */
-export function mediaQuery(query, initial = false) {
+function mediaQuery(query, initial = false) {
   return readable(initial, (set) => {
     if (!browser) return;
     const mql = window.matchMedia(query);
@@ -28,9 +28,6 @@ export function mediaQuery(query, initial = false) {
  */
 export const isCompact = mediaQuery('(max-width: 1023.98px)');
 
-/** True for touch-primary devices, used to enlarge hit targets. */
-export const isCoarsePointer = mediaQuery('(pointer: coarse)');
-
 /** Whether the off-canvas sidebar is showing. Only meaningful when compact. */
 export const sidebarOpen = writable(false);
 
@@ -49,23 +46,13 @@ export function registerSidebar() {
   return () => sidebarCount.update((n) => Math.max(0, n - 1));
 }
 
-export function openSidebar()  { sidebarOpen.set(true); }
 export function closeSidebar() { sidebarOpen.set(false); }
 export function toggleSidebar() { sidebarOpen.update((v) => !v); }
 
-/**
- * The sidebar is an overlay only while compact — at desktop widths it is part
- * of the layout and is always present regardless of the drawer flag.
- */
-// Leaving the flag set while widening means shrinking again silently reopens
+// The sidebar is an overlay only while compact. Leaving the flag set while widening means shrinking again silently reopens
 // the drawer over the content.
 if (browser) {
   isCompact.subscribe((compact) => {
     if (!compact) sidebarOpen.set(false);
   });
 }
-
-export const sidebarIsOverlay = derived(
-  [isCompact, sidebarOpen],
-  ([$compact, $open]) => $compact && $open,
-);

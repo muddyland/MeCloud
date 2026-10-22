@@ -1,4 +1,5 @@
 <script>
+  import { isTyping } from '$lib/dom.js';
   import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/stores';
   import Navbar from '$lib/components/Navbar.svelte';
@@ -21,7 +22,8 @@
     composeOpen, composeContext, anyModalOpen, visibleEmails, messageActions,
     shortcutsOpen, selectedEmailIds, mailRefresher
   } from '$lib/stores/mail.js';
-  import { getJMAPSession, getMailboxes, getMailboxCounts, getEmails, getAppConfig } from '$lib/api.js';
+  import { getMailboxes, getMailboxCounts, getEmails } from '$lib/api.js';
+  import { ensureSession } from '$lib/session.js';
   import { toast } from '$lib/stores/toast.js';
   // A mailto: body is plain text from whatever handed us the link, so it is
   // escaped before it becomes the editor's HTML.
@@ -244,11 +246,6 @@
   }
 
   // ── Keyboard shortcuts ──────────────────────────────────────────────────────
-  function isTyping(target) {
-    if (!target) return false;
-    const tag = target.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
-  }
 
   function step(delta) {
     const list = $visibleEmails;
@@ -302,20 +299,15 @@
   onMount(async () => {
     mailRefresher.set(silentRefresh);
 
-    // Grab stalwartUrl from config for the navbar link
-    const config = await getAppConfig();
-    stalwartUrl = config.stalwartUrl ?? '';
+    const result = await ensureSession();
+    stalwartUrl = result.stalwartUrl;
+    if (!result.ready) {
+      initError = result.error;
+      return;
+    }
 
     try {
-      const session = await getJMAPSession();
-      if (!session) return;                 // apiFetch already redirected to login
-      jmapSession.set(session);
-      accountId = Object.keys(session.accounts ?? {})[0];
-      if (!accountId) throw new Error('This account has no mail access.');
-      jmapAccountId.set(accountId);
-
-      // Populate the username shown in the navbar
-      currentUser.set(session.username || session.accounts[accountId]?.name || '');
+      accountId = $jmapAccountId;
 
       const mboxList = await getMailboxes(accountId);
       const roleOrder = ['inbox', 'sent', 'drafts', 'junk', 'trash', 'archive'];
@@ -389,9 +381,9 @@
   <Navbar {stalwartUrl} />
 
   {#if initError}
-    <div class="flex items-center gap-3 px-4 py-2 flex-shrink-0
+    <div class="flex items-center gap-3 px-4 py-2 shrink-0
                 bg-red-50 dark:bg-red-900/25 border-b border-red-200 dark:border-red-800/60">
-      <svg class="w-4 h-4 flex-shrink-0 text-red-500" viewBox="0 0 24 24" fill="none"
+      <svg class="w-4 h-4 shrink-0 text-red-500" viewBox="0 0 24 24" fill="none"
            stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
         <circle cx="12" cy="12" r="9" /><path d="M12 8v5M12 16.5h.01" />
       </svg>
@@ -416,7 +408,7 @@
     <!-- Drag handle: sidebar ↔ message list -->
     <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
     <div
-      class="flex-shrink-0 h-full cursor-col-resize relative z-10 group hidden lg:block"
+      class="shrink-0 h-full cursor-col-resize relative z-10 group hidden lg:block"
       style="width: 5px"
       on:mousedown={(e) => startDrag(e, 'sidebar')}
       role="separator" aria-orientation="vertical" tabindex="0"
@@ -440,7 +432,7 @@
     <!-- Drag handle: message list ↔ reading pane -->
     <!-- svelte-ignore a11y-no-noninteractive-element-interactions -->
     <div
-      class="flex-shrink-0 h-full cursor-col-resize relative z-10 group hidden lg:block"
+      class="shrink-0 h-full cursor-col-resize relative z-10 group hidden lg:block"
       style="width: 5px"
       on:mousedown={(e) => startDrag(e, 'msglist')}
       role="separator" aria-orientation="vertical" tabindex="0"

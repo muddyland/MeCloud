@@ -17,7 +17,7 @@
 </script>
 
 <span
-  class="inline-block flex-shrink-0 rounded-full animate-spin
+  class="inline-block shrink-0 rounded-full animate-spin
          border-gray-300/70 dark:border-gray-600/70 {accent} {sizes[size] ?? sizes.sm} {cls}"
   role="status"
   aria-label={label || undefined}

@@ -33,7 +33,7 @@
 </script>
 
 <div
-  class="rounded-full flex items-center justify-center font-semibold text-white select-none flex-shrink-0 {sizes[size]}"
+  class="rounded-full flex items-center justify-center font-semibold text-white select-none shrink-0 {sizes[size]}"
   style="background-color: {bgColor}"
   aria-hidden="true"
 >

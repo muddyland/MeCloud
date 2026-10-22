@@ -1,22 +1,6 @@
 import { writable, derived } from 'svelte/store';
-import { browser } from '$app/environment';
+import { persisted } from './persisted.js';
 import { compareNodes } from '$lib/fileTypes.js';
-
-function persisted(key, defaultValue, allowed = null) {
-  const stored = browser ? localStorage.getItem(key) : null;
-  let initial = defaultValue;
-  if (stored !== null) {
-    try {
-      const parsed = JSON.parse(stored);
-      if (!allowed || allowed.includes(parsed)) initial = parsed;
-    } catch {
-      // Corrupt entry — fall back to the default rather than throwing at boot.
-    }
-  }
-  const store = writable(initial);
-  if (browser) store.subscribe((v) => localStorage.setItem(key, JSON.stringify(v)));
-  return store;
-}
 
 /** Every FileNode in the account, flat. The tree is derived from parentId. */
 export const fileNodes     = writable([]);
@@ -35,9 +19,9 @@ export const fileContextMenu = writable(null);
 /** Folders the sidebar tree has expanded. */
 export const expandedFolders = writable(new Set());
 
-export const viewMode = persisted('filesViewMode', 'grid', ['grid', 'list']);
-export const sortKey  = persisted('filesSortKey', 'name', ['name', 'size', 'modified']);
-export const sortAsc  = persisted('filesSortAsc', true, [true, false]);
+export const viewMode = persisted('filesViewMode', 'grid', { allowed: ['grid', 'list'] });
+export const sortKey  = persisted('filesSortKey', 'name', { allowed: ['name', 'size', 'modified'] });
+export const sortAsc  = persisted('filesSortAsc', true, { allowed: [true, false] });
 
 /** In-flight uploads: { id, name, progress, error, done }. */
 export const uploads = writable([]);
@@ -74,18 +58,5 @@ export const visibleNodes = derived(
   },
 );
 
-export const folderCount = derived(fileNodes, ($nodes) =>
-  $nodes.filter((n) => n.blobId === null || n.blobId === undefined).length);
-
 export const totalUsage = derived(fileNodes, ($nodes) =>
   $nodes.reduce((sum, n) => sum + (Number(n.size) || 0), 0));
-
-export function resetFilesState() {
-  fileNodes.set([]);
-  currentFolderId.set(null);
-  selectedFileIds.set(new Set());
-  previewNode.set(null);
-  fileContextMenu.set(null);
-  fileSearch.set('');
-  filesError.set('');
-}

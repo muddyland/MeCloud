@@ -3,6 +3,7 @@
   import { sieveOpen, mailboxes } from '$lib/stores/mail.js';
   import { getSieveScript, saveSieveScript } from '$lib/api.js';
   import Spinner from './Spinner.svelte';
+  import { generateSieve, extractRules } from '$lib/sieve.js';
 
   const FIELDS = [
     { value: 'from',    label: 'From' },
@@ -51,7 +52,9 @@
       const result = await getSieveScript();
       if (result === null) { supported = false; return; }
       scriptMeta = result;
-      rules = extractRules(result.content ?? '');
+      const parsed = extractRules(result.content ?? '');
+      rules = parsed.rules;
+      hadCustomScript = parsed.custom;
     } catch {
       supported = false;
     } finally {
@@ -60,19 +63,6 @@
   }
 
   $: if ($sieveOpen) loadScript();
-
-  function extractRules(content) {
-    const m = content.match(/^# @rules ([A-Za-z0-9+/=%-]+)/m);
-    if (!m) {
-      if (content.trim()) hadCustomScript = true;
-      return [];
-    }
-    try {
-      return JSON.parse(decodeURIComponent(atob(m[1])));
-    } catch {
-      return [];
-    }
-  }
 
   // ── Rule helpers ──────────────────────────────────────────────────────────
 
@@ -115,61 +105,6 @@
     rules = rules;
   }
 
-  // ── Sieve generation ──────────────────────────────────────────────────────
-
-  function esc(s) { return s.replace(/\\/g, '\\\\').replace(/"/g, '\\"'); }
-
-  function buildCondition(c) {
-    const h = { from: 'From', to: 'To', cc: 'Cc', subject: 'Subject' }[c.field] ?? c.field;
-    switch (c.op) {
-      case 'contains':     return `header :contains "${h}" "${esc(c.value)}"`;
-      case 'not_contains': return `not header :contains "${h}" "${esc(c.value)}"`;
-      case 'is':           return `header :is "${h}" "${esc(c.value)}"`;
-      case 'starts_with':  return `header :matches "${h}" "${esc(c.value)}*"`;
-      case 'ends_with':    return `header :matches "${h}" "*${esc(c.value)}"`;
-      default:             return `header :contains "${h}" "${esc(c.value)}"`;
-    }
-  }
-
-  function generateSieve(ruleList) {
-    const active = ruleList.filter(r =>
-      r.enabled && r.conditions.length && r.conditions.every(c => c.value.trim()) &&
-      r.actions.length && r.actions.every(a => a.type !== 'fileinto' || a.mailboxName)
-    );
-
-    const needsFlags = active.some(r =>
-      r.actions.some(a => a.type === 'mark_read' || a.type === 'mark_unread')
-    );
-
-    const reqs = ['fileinto'];
-    if (needsFlags) reqs.push('imap4flags');
-
-    const lines = [];
-    lines.push(`# @rules ${btoa(encodeURIComponent(JSON.stringify(ruleList)))}`);
-    lines.push(`require [${reqs.map(r => `"${r}"`).join(', ')}];`);
-    lines.push('');
-
-    for (const rule of active) {
-      lines.push(`# Rule: "${esc(rule.name)}"`);
-      const parts = rule.conditions.map(buildCondition);
-      const ifExpr = parts.length === 1
-        ? parts[0]
-        : `${rule.match === 'any' ? 'anyof' : 'allof'} (\n    ${parts.join(',\n    ')}\n  )`;
-      lines.push(`if ${ifExpr} {`);
-      for (const a of rule.actions) {
-        if      (a.type === 'fileinto'    && a.mailboxName) lines.push(`  fileinto "${esc(a.mailboxName)}";`);
-        else if (a.type === 'mark_read')                    lines.push(`  addflag "\\\\Seen";`);
-        else if (a.type === 'mark_unread')                  lines.push(`  removeflag "\\\\Seen";`);
-        else if (a.type === 'discard')                      lines.push(`  discard;`);
-        else if (a.type === 'stop')                         lines.push(`  stop;`);
-      }
-      lines.push('}');
-      lines.push('');
-    }
-
-    return lines.join('\n');
-  }
-
   // ── Save ──────────────────────────────────────────────────────────────────
 
   async function save() {
@@ -198,7 +133,7 @@
 
   const selectCls = `text-xs rounded-md border border-gray-200 dark:border-gray-600
     bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300
-    px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500`;
+    px-2 py-1 focus:outline-hidden focus:ring-1 focus:ring-blue-500`;
 </script>
 
 {#if $sieveOpen}
@@ -210,7 +145,7 @@
     >
 
       <!-- Header -->
-      <div class="px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between flex-shrink-0">
+      <div class="px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex items-center justify-between shrink-0">
         <div>
           <p class="text-sm font-semibold text-gray-800 dark:text-gray-100">Filters / Rules</p>
           <p class="text-xs text-gray-500 dark:text-gray-400 mt-0.5">Automatically sort, label, or discard incoming messages</p>
@@ -266,7 +201,7 @@
             <div
               class="rounded-lg border overflow-hidden transition-colors duration-150
                      {expanded
-                       ? 'border-blue-200 dark:border-blue-700/60 shadow-sm'
+                       ? 'border-blue-200 dark:border-blue-700/60 shadow-xs'
                        : 'border-gray-200 dark:border-gray-700'}"
               in:fly={{ y: 4, duration: 150 }}
             >
@@ -276,7 +211,7 @@
                 <button
                   on:click={() => toggleExpand(rule.id)}
                   class="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
-                         flex-shrink-0 text-xs w-4 text-center leading-none"
+                         shrink-0 text-xs w-4 text-center leading-none"
                 >{expanded ? '▼' : '▶'}</button>
 
                 {#if expanded}
@@ -284,7 +219,7 @@
                     bind:value={rule.name}
                     class="flex-1 text-sm font-medium text-gray-800 dark:text-gray-100 bg-transparent
                            border-b border-gray-300 dark:border-gray-600 py-0.5
-                           focus:outline-none focus:border-blue-500 min-w-0"
+                           focus:outline-hidden focus:border-blue-500 min-w-0"
                   />
                 {:else}
                   <button
@@ -296,11 +231,11 @@
                 <!-- Enable toggle -->
                 <button
                   on:click={() => { rule.enabled = !rule.enabled; rules = rules; }}
-                  class="relative overflow-hidden flex-shrink-0 w-8 h-4 rounded-full transition-colors duration-200
+                  class="relative overflow-hidden shrink-0 w-8 h-4 rounded-full transition-colors duration-200
                          {rule.enabled ? 'bg-blue-500' : 'bg-gray-300 dark:bg-gray-600'}"
                   title={rule.enabled ? 'Enabled — click to disable' : 'Disabled — click to enable'}
                 >
-                  <span class="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-all duration-200"
+                  <span class="absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-xs transition-all duration-200"
                                style="left: {rule.enabled ? '18px' : '2px'}"></span>
                 </button>
               </div>
@@ -324,13 +259,13 @@
                     <div class="space-y-1.5">
                       {#each rule.conditions as cond, ci}
                         <div class="flex items-center gap-1.5">
-                          <select bind:value={cond.field} class="{selectCls} w-24 flex-shrink-0">
+                          <select bind:value={cond.field} class="{selectCls} w-24 shrink-0">
                             {#each FIELDS as f}
                               <option value={f.value}>{f.label}</option>
                             {/each}
                           </select>
 
-                          <select bind:value={cond.op} class="{selectCls} flex-shrink-0">
+                          <select bind:value={cond.op} class="{selectCls} shrink-0">
                             {#each OPS as o}
                               <option value={o.value}>{o.label}</option>
                             {/each}
@@ -341,13 +276,13 @@
                             placeholder="value…"
                             class="flex-1 min-w-0 text-xs rounded-md border border-gray-200 dark:border-gray-600
                                    bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100
-                                   px-2 py-1 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                   px-2 py-1 focus:outline-hidden focus:ring-1 focus:ring-blue-500"
                           />
 
                           <button
                             on:click={() => removeCondition(rule, ci)}
                             disabled={rule.conditions.length === 1}
-                            class="flex-shrink-0 text-xs text-gray-300 dark:text-gray-600
+                            class="shrink-0 text-xs text-gray-300 dark:text-gray-600
                                    hover:text-red-400 dark:hover:text-red-400
                                    disabled:opacity-30 disabled:cursor-not-allowed
                                    transition-colors duration-100"
@@ -376,7 +311,7 @@
                           <select
                             bind:value={action.type}
                             on:change={() => onActionTypeChange(action)}
-                            class="{selectCls} flex-shrink-0"
+                            class="{selectCls} shrink-0"
                           >
                             {#each ACTION_TYPES as t}
                               <option value={t.value}>{t.label}</option>
@@ -401,7 +336,7 @@
                           <button
                             on:click={() => removeAction(rule, ai)}
                             disabled={rule.actions.length === 1}
-                            class="flex-shrink-0 text-xs text-gray-300 dark:text-gray-600
+                            class="shrink-0 text-xs text-gray-300 dark:text-gray-600
                                    hover:text-red-400 dark:hover:text-red-400
                                    disabled:opacity-30 disabled:cursor-not-allowed
                                    transition-colors duration-100"
@@ -445,7 +380,7 @@
 
       <!-- Footer -->
       {#if supported && !loading}
-        <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between flex-shrink-0">
+        <div class="px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between shrink-0">
           <div>
             {#if saveError}
               <p class="text-xs text-red-500">{saveError}</p>

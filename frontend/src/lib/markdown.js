@@ -106,9 +106,12 @@ export function firstHeading(body) {
   return setext ? setext[1].trim() : '';
 }
 
+/** The extensions a Markdown file goes by. One definition, used everywhere. */
+export const MARKDOWN_EXTENSION = /\.(md|markdown|mdown|mkd)$/i;
+
 /** Strip the `.md` extension for display. */
 export function noteName(filename) {
-  return String(filename ?? '').replace(/\.(md|markdown|mdown|mkd)$/i, '');
+  return String(filename ?? '').replace(MARKDOWN_EXTENSION, '');
 }
 
 /**
@@ -152,7 +155,7 @@ export function renderMarkdown(text, { resolveImage = null } = {}) {
   currentResolver = resolveImage;
   try {
     const raw = marked.parse(body ?? '');
-    return sanitizeEmailHtml(raw, { allowRemote: true }).html;
+    return sanitizeEmailHtml(raw, { allowRemote: true, inParent: true }).html;
   } finally {
     currentResolver = null;
   }
@@ -180,5 +183,5 @@ export function imageResolver(lookup) {
 /** True when a FileNode looks like a Markdown document. */
 export function isMarkdown(node) {
   if (!node?.name) return false;
-  return /\.(md|markdown|mdown|mkd)$/i.test(node.name);
+  return MARKDOWN_EXTENSION.test(node.name);
 }

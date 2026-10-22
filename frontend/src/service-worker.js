@@ -2,7 +2,11 @@
 import { build, files, version } from '$service-worker';
 
 const CACHE = `mecloud-${version}`;
-const PRECACHE = [...new Set([...build, ...files])];
+// '/' is the app shell. The static adapter writes it as a fallback page, which
+// is in neither `build` nor `files`, so it is named here — without it there is
+// nothing to serve a navigation when the network is down.
+const SHELL = '/';
+const PRECACHE = [...new Set([...build, ...files, SHELL])];
 
 self.addEventListener('install', e => {
   e.waitUntil(
@@ -39,11 +43,12 @@ self.addEventListener('fetch', e => {
   // Never intercept API, auth, or SSE requests — always go to network
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/auth/')) return;
 
-  // Navigation: network-first, fall back to cached shell
+  // Navigation: network-first, fall back to the cached shell. Every route is
+  // the same single page, so one cached copy answers for all of them.
   if (e.request.mode === 'navigate') {
     e.respondWith(
-      fetch(e.request).catch(() =>
-        caches.match('/index.html') ?? caches.match('/')
+      fetch(e.request).catch(async () =>
+        (await caches.match(SHELL)) ?? Response.error()
       )
     );
     return;

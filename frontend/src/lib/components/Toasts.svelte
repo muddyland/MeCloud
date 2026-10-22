@@ -1,6 +1,6 @@
 <script>
   import { fly } from 'svelte/transition';
-  import { toasts, dismiss } from '$lib/stores/toast.js';
+  import { toasts, dismiss, runToastAction } from '$lib/stores/toast.js';
 
   const config = {
     success: {
@@ -24,7 +24,7 @@
   };
 </script>
 
-<div class="fixed bottom-4 right-4 z-[60] flex flex-col gap-2 pointer-events-none">
+<div class="fixed bottom-4 right-4 z-60 flex flex-col gap-2 pointer-events-none">
   {#each $toasts as t (t.id)}
     {@const c = config[t.type] ?? config.info}
     <div
@@ -34,11 +34,17 @@
       in:fly={{ x: 72, duration: 220 }}
       out:fly={{ x: 72, duration: 160 }}
     >
-      <span class="font-bold text-base leading-none flex-shrink-0 {c.icon_cls}">{c.icon}</span>
+      <span class="font-bold text-base leading-none shrink-0 {c.icon_cls}">{c.icon}</span>
       <span class="flex-1">{t.message}</span>
+      {#if t.action}
+        <button
+          on:click={() => runToastAction(t)}
+          class="font-semibold underline-offset-2 hover:underline shrink-0"
+        >{t.action.label}</button>
+      {/if}
       <button
         on:click={() => dismiss(t.id)}
-        class="opacity-40 hover:opacity-80 transition-opacity text-lg leading-none flex-shrink-0"
+        class="opacity-40 hover:opacity-80 transition-opacity text-lg leading-none shrink-0"
         aria-label="Dismiss"
       >×</button>
     </div>

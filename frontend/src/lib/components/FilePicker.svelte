@@ -107,7 +107,7 @@
   <div class="flex flex-col">
     <!-- Breadcrumbs + search -->
     <div class="flex items-center gap-2 px-4 py-2 border-b border-gray-200 dark:border-gray-700
-                flex-shrink-0 sticky top-0 bg-white dark:bg-gray-800 z-10">
+                shrink-0 sticky top-0 bg-white dark:bg-gray-800 z-10">
       <nav class="flex items-center gap-1 min-w-0 flex-1 text-sm" aria-label="Breadcrumb">
         <button on:click={() => { folderId = null; search = ''; }}
           class="px-1.5 py-0.5 rounded text-gray-600 dark:text-gray-300
@@ -117,14 +117,14 @@
         {#each trail as crumb (crumb.id)}
           <span class="text-gray-300 dark:text-gray-600 select-none">/</span>
           <button on:click={() => { folderId = crumb.id; search = ''; }}
-            class="px-1.5 py-0.5 rounded truncate max-w-[10rem] text-gray-600 dark:text-gray-300
+            class="px-1.5 py-0.5 rounded truncate max-w-40 text-gray-600 dark:text-gray-300
                    hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors duration-100">
             {crumb.name}
           </button>
         {/each}
       </nav>
 
-      <div class="relative flex items-center flex-shrink-0">
+      <div class="relative flex items-center shrink-0">
         <svg class="absolute left-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none"
              viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
              stroke-linecap="round" stroke-linejoin="round">
@@ -137,13 +137,13 @@
                  bg-gray-100 dark:bg-gray-700/60 text-gray-800 dark:text-gray-200
                  placeholder-gray-400 dark:placeholder-gray-500
                  border border-transparent focus:border-blue-400 dark:focus:border-blue-500
-                 focus:outline-none transition-colors duration-150"
+                 focus:outline-hidden transition-colors duration-150"
         />
       </div>
     </div>
 
     <!-- Listing -->
-    <div class="min-h-[18rem]">
+    <div class="min-h-72">
       {#if !supported}
         <p class="text-sm text-gray-500 dark:text-gray-400 text-center py-16 px-6">
           This server does not advertise JMAP file storage, so there is nothing to attach from.
@@ -181,10 +181,10 @@
                                : 'hover:bg-gray-50 dark:hover:bg-gray-700/40'}"
               >
                 {#if folder}
-                  <span class="w-4 h-4 flex-shrink-0"></span>
+                  <span class="w-4 h-4 shrink-0"></span>
                 {:else}
                   <span
-                    class="w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0
+                    class="w-4 h-4 rounded border-2 flex items-center justify-center shrink-0
                            {picked ? 'bg-blue-500 border-blue-500'
                                    : 'border-gray-300 dark:border-gray-500'}
                            {attached ? 'opacity-40' : ''}"
@@ -206,13 +206,13 @@
                 </span>
 
                 {#if attached}
-                  <span class="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">Attached</span>
+                  <span class="text-xs text-gray-400 dark:text-gray-500 shrink-0">Attached</span>
                 {:else if folder}
-                  <svg class="w-4 h-4 text-gray-300 dark:text-gray-600 flex-shrink-0"
+                  <svg class="w-4 h-4 text-gray-300 dark:text-gray-600 shrink-0"
                        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                        stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6" /></svg>
                 {:else}
-                  <span class="text-xs text-gray-400 dark:text-gray-500 tabular-nums flex-shrink-0">
+                  <span class="text-xs text-gray-400 dark:text-gray-500 tabular-nums shrink-0">
                     {formatBytes(node.size)}
                   </span>
                 {/if}
@@ -236,7 +236,7 @@
         ? `${chosen.length} selected · ${formatBytes(chosenBytes)}`
         : 'Select files to attach'}
     </span>
-    <div class="flex items-center gap-2 flex-shrink-0">
+    <div class="flex items-center gap-2 shrink-0">
       <button on:click={() => dispatch('close')}
         class="px-3 py-1.5 text-sm text-gray-500 dark:text-gray-400
                hover:text-gray-700 dark:hover:text-gray-200 transition-colors duration-150">

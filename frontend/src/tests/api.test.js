@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { parseAddresses, threadingHeaders, attachmentParts } from '$lib/api.js';
+import { parseAddresses, threadingHeaders, attachmentParts, buildEmailCreate } from '$lib/api.js';
 
 // ---------------------------------------------------------------------------
 // parseAddresses
@@ -258,5 +258,29 @@ describe('attachmentParts', () => {
     expect(part).not.toHaveProperty('size');
     const [nan] = attachmentParts([{ blobId: 'b5', name: 'y', size: 'huge' }]);
     expect(nan).not.toHaveProperty('size');
+  });
+});
+
+describe('buildEmailCreate', () => {
+  const base = { fromEmail: 'me@x', fromName: '', to: 'a@x', cc: '', bcc: '', subject: '', html: '<p>hi</p>' };
+
+  it('marks a draft as a draft and keeps an empty subject empty', () => {
+    const draft = buildEmailCreate({ ...base, mailboxId: 'drafts', draft: true });
+    expect(draft.keywords).toEqual({ '$seen': true, '$draft': true });
+    expect(draft.subject).toBe('');
+    expect(draft.mailboxIds).toEqual({ drafts: true });
+  });
+
+  it('gives a sent message the placeholder subject and no draft keyword', () => {
+    const sent = buildEmailCreate({ ...base, mailboxId: 'sent' });
+    expect(sent.keywords).toEqual({ '$seen': true });
+    expect(sent.subject).toBe('(no subject)');
+  });
+
+  it('carries attachments and bcc into both', () => {
+    const msg = buildEmailCreate({ ...base, bcc: 'b@x', draft: true,
+      attachments: [{ blobId: 'B1', name: 'a.pdf', type: 'application/pdf', size: 3 }] });
+    expect(msg.bcc).toEqual([{ email: 'b@x' }]);
+    expect(msg.attachments[0].blobId).toBe('B1');
   });
 });

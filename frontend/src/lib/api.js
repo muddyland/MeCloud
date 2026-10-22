@@ -1,5 +1,6 @@
 import { begin, end } from '$lib/stores/activity.js';
 import { JmapSetError, findMethodError } from './jmapErrors.js';
+import { withThreadSizes } from './mailList.js';
 
 // A request that never settles leaves a spinner turning forever. Everything
 // except the event stream is bounded.
@@ -9,6 +10,17 @@ const REQUEST_TIMEOUT_MS = 30_000;
 // that answers 401 to everything turns concurrent requests into a redirect
 // storm, and the user sees the login page flicker instead of load.
 let redirectingToLogin = false;
+
+/**
+ * Send the user to sign in again — once per page load, however many requests
+ * notice the expired session at the same time. Exported so every transport
+ * (fetch here, XHR uploads in files.js) shares the one guard.
+ */
+export function sessionExpired() {
+  if (typeof window === 'undefined' || redirectingToLogin) return;
+  redirectingToLogin = true;
+  window.location.href = '/auth/login';
+}
 
 async function apiFetch(url, options = {}) {
   const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -30,11 +42,7 @@ async function apiFetch(url, options = {}) {
   }
 
   if (res.status === 401 && typeof window !== 'undefined') {
-    // Session expired — send the user back to the login flow
-    if (!redirectingToLogin) {
-      redirectingToLogin = true;
-      window.location.href = '/auth/login';
-    }
+    sessionExpired();
     return null;
   }
   return res;
@@ -165,9 +173,13 @@ export function attachmentParts(attachments) {
     }));
 }
 
-export async function sendEmail(accountId, identityId, {
-  fromEmail, fromName, to, cc, bcc, subject, html, sentMailboxId,
-  inReplyTo = null, references = null, attachments = null,
+/**
+ * The Email/set `create` object for a message, shared by send and draft-save
+ * so a saved draft is exactly the message that would go out.
+ */
+export function buildEmailCreate({
+  fromEmail, fromName, to, cc, bcc, subject, html, mailboxId,
+  inReplyTo = null, references = null, attachments = null, draft = false,
 }) {
   const from = [fromName ? { name: fromName, email: fromEmail } : { email: fromEmail }];
   const toAddrs = parseAddresses(to);
@@ -177,13 +189,15 @@ export async function sendEmail(accountId, identityId, {
   const emailCreate = {
     from,
     to: toAddrs,
-    subject: subject || '(no subject)',
-    keywords: { '$seen': true },
+    // A draft keeps an empty subject empty; only a sent message gets the
+    // placeholder, which every recipient would otherwise see.
+    subject: draft ? (subject || '') : (subject || '(no subject)'),
+    keywords: draft ? { '$seen': true, '$draft': true } : { '$seen': true },
     bodyValues: { body: { value: html || '' } },
     htmlBody: [{ partId: 'body', type: 'text/html' }],
     ...threadingHeaders(inReplyTo, references),
   };
-  if (sentMailboxId) emailCreate.mailboxIds = { [sentMailboxId]: true };
+  if (mailboxId) emailCreate.mailboxIds = { [mailboxId]: true };
   if (ccAddrs.length) emailCreate.cc = ccAddrs;
   if (bccAddrs.length) emailCreate.bcc = bccAddrs;
 
@@ -192,6 +206,46 @@ export async function sendEmail(accountId, identityId, {
   // lets a file already in the drive be attached without re-uploading it.
   const parts = attachmentParts(attachments);
   if (parts.length) emailCreate.attachments = parts;
+  return emailCreate;
+}
+
+/**
+ * Save the compose window's contents as a draft in the Drafts mailbox.
+ *
+ * JMAP messages are immutable, so a newer draft is a new message: it is
+ * created and the previous one destroyed in the same Email/set, which the
+ * server applies together — there is never a moment with two drafts or none.
+ *
+ * @returns {Promise<string>} the new draft's id
+ */
+export async function saveDraft(accountId, fields, { draftsMailboxId, replaceId = null }) {
+  const args = {
+    accountId,
+    create: { d: buildEmailCreate({ ...fields, mailboxId: draftsMailboxId, draft: true }) },
+  };
+  if (replaceId) args.destroy = [replaceId];
+  const data = await post([['Email/set', args, 'd']]);
+  const resp = data?.methodResponses?.[0]?.[1];
+  if (resp?.notCreated?.d) throw new JmapSetError(resp.notCreated.d, 'Could not save the draft');
+  const id = resp?.created?.d?.id;
+  if (!id) throw new Error('The draft was saved but the server returned no id');
+  return id;
+}
+
+/** Remove a saved draft. Already-gone counts as done. */
+export async function discardDraft(accountId, draftId) {
+  if (!draftId) return;
+  await post([['Email/set', { accountId, destroy: [draftId] }, 'x']]);
+}
+
+export async function sendEmail(accountId, identityId, {
+  fromEmail, fromName, to, cc, bcc, subject, html, sentMailboxId,
+  inReplyTo = null, references = null, attachments = null,
+}) {
+  const emailCreate = buildEmailCreate({
+    fromEmail, fromName, to, cc, bcc, subject, html, mailboxId: sentMailboxId,
+    inReplyTo, references, attachments,
+  });
 
   // Step 1: create the email
   const createData = await post(
@@ -281,80 +335,61 @@ const LIST_PROPERTIES = [
   'id', 'threadId', 'subject', 'from', 'receivedAt', 'preview', 'keywords', 'hasAttachment',
 ];
 
-export async function getEmails(accountId, mailboxId, position = 0, limit = 50) {
+/**
+ * One page of a message list, each message carrying the size of its thread.
+ *
+ * The Thread/get rides in the same request, back-referenced from the page's
+ * threadIds, so the conversation badge costs no extra round trip.
+ */
+async function listPage(accountId, filter, position, limit) {
   const data = await post([
-    [
-      'Email/query',
-      {
-        accountId,
-        filter: { inMailbox: mailboxId },
-        sort: [{ property: 'receivedAt', isAscending: false }],
-        position,
-        limit,
-        calculateTotal: false,
-      },
-      'q'
-    ],
-    [
-      'Email/get',
-      {
-        accountId,
-        '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
-        properties: LIST_PROPERTIES,
-      },
-      'e'
-    ]
+    ['Email/query', {
+      accountId,
+      filter,
+      sort: [{ property: 'receivedAt', isAscending: false }],
+      position,
+      limit,
+      calculateTotal: false,
+    }, 'q'],
+    ['Email/get', {
+      accountId,
+      '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
+      properties: LIST_PROPERTIES,
+    }, 'e'],
+    ['Thread/get', {
+      accountId,
+      '#ids': { resultOf: 'e', name: 'Email/get', path: '/list/*/threadId' },
+    }, 't'],
   ]);
-  return data?.methodResponses?.[1]?.[1]?.list ?? [];
+  const emails = data?.methodResponses?.[1]?.[1]?.list ?? [];
+  const threads = data?.methodResponses?.[2]?.[1]?.list ?? [];
+  return withThreadSizes(emails, threads);
+}
+
+export async function getEmails(accountId, mailboxId, position = 0, limit = 50) {
+  return listPage(accountId, { inMailbox: mailboxId }, position, limit);
 }
 
 export async function searchEmails(accountId, query, position = 0, limit = 50) {
-  const data = await post([
-    [
-      'Email/query',
-      {
-        accountId,
-        filter: { text: query },
-        sort: [{ property: 'receivedAt', isAscending: false }],
-        position,
-        limit,
-        calculateTotal: false,
-      },
-      'q'
-    ],
-    [
-      'Email/get',
-      {
-        accountId,
-        '#ids': { resultOf: 'q', name: 'Email/query', path: '/ids' },
-        properties: LIST_PROPERTIES,
-      },
-      'e'
-    ]
-  ]);
-  return data?.methodResponses?.[1]?.[1]?.list ?? [];
+  return listPage(accountId, { text: query }, position, limit);
 }
 
-export async function destroyEmail(accountId, emailId) {
+/**
+ * Every message in a thread, oldest first, with the mailboxes each is in —
+ * the conversation view in the reading pane, which includes your own replies
+ * from Sent alongside what arrived in the Inbox.
+ */
+export async function getThreadEmails(accountId, threadId) {
   const data = await post([
-    ['Email/set', { accountId, destroy: [emailId] }, 'del']
+    ['Thread/get', { accountId, ids: [threadId] }, 't'],
+    ['Email/get', {
+      accountId,
+      '#ids': { resultOf: 't', name: 'Thread/get', path: '/list/*/emailIds' },
+      properties: [...LIST_PROPERTIES, 'mailboxIds'],
+    }, 'e'],
   ]);
-  const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notDestroyed?.[emailId]) {
-    throw new JmapSetError(resp.notDestroyed[emailId], 'Delete failed');
-  }
-}
-
-export async function moveEmail(accountId, emailId, toMailboxId, fromMailboxId) {
-  const patch = { [`mailboxIds/${toMailboxId}`]: true };
-  if (fromMailboxId) patch[`mailboxIds/${fromMailboxId}`] = null;
-  const data = await post([
-    ['Email/set', { accountId, update: { [emailId]: patch } }, 'mv']
-  ]);
-  const resp = data?.methodResponses?.[0]?.[1];
-  if (resp?.notUpdated?.[emailId]) {
-    throw new JmapSetError(resp.notUpdated[emailId], 'Move failed');
-  }
+  const list = data?.methodResponses?.[1]?.[1]?.list ?? [];
+  return [...list].sort((a, b) => String(a.receivedAt).localeCompare(String(b.receivedAt)));
 }
 
 export async function renameMailbox(accountId, mailboxId, newName) {
@@ -668,7 +703,7 @@ export async function getEmailBody(accountId, emailId) {
         accountId,
         ids: [emailId],
         properties: [
-          'id', 'threadId', 'subject', 'from', 'to', 'cc', 'replyTo',
+          'id', 'threadId', 'mailboxIds', 'subject', 'from', 'to', 'cc', 'bcc', 'replyTo',
           'receivedAt', 'keywords', 'hasAttachment', 'attachments',
           // messageId/references are what make a reply thread correctly.
           'messageId', 'references', 'inReplyTo',

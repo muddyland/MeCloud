@@ -2,11 +2,35 @@ function unfold(text) {
   return text.replace(/\r\n[ \t]/g, '').replace(/\n[ \t]/g, '');
 }
 
-function decodeQuotedPrintable(str) {
-  // Decode soft line breaks first, then hex sequences
-  return str
-    .replace(/=\r?\n/g, '')
-    .replace(/=([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+/**
+ * Decode a quoted-printable value into text.
+ *
+ * `=XX` escapes are *bytes*, not characters: "Müller" in UTF-8 is `M=C3=BCller`.
+ * Turning each byte into a character on its own produced "MÃ¼ller", so the
+ * bytes are collected first and decoded with the property's CHARSET (UTF-8
+ * when none is given, which is what every current exporter writes).
+ */
+export function decodeQuotedPrintable(str, charset = '') {
+  const text = str.replace(/=\r?\n/g, '');
+  const bytes = [];
+  for (let i = 0; i < text.length; i += 1) {
+    const hex = text[i] === '=' ? /^[0-9A-Fa-f]{2}/.exec(text.slice(i + 1, i + 3)) : null;
+    if (hex) {
+      bytes.push(parseInt(hex[0], 16));
+      i += 2;
+    } else {
+      // Literal characters in a QP value are ASCII by definition; anything
+      // else is passed through as UTF-8 so nothing is silently dropped.
+      for (const b of new TextEncoder().encode(text[i])) bytes.push(b);
+    }
+  }
+  let decoder;
+  try {
+    decoder = new TextDecoder(charset || 'utf-8');
+  } catch {
+    decoder = new TextDecoder('utf-8');        // an unknown charset label
+  }
+  return decoder.decode(new Uint8Array(bytes));
 }
 
 function parseLine(raw) {
@@ -95,7 +119,9 @@ function buildContact(props) {
 
   for (const { name, params, value } of props) {
     const encoding = params.ENCODING ?? '';
-    const actual = encoding === 'QUOTED-PRINTABLE' ? decodeQuotedPrintable(value) : value;
+    const actual = encoding === 'QUOTED-PRINTABLE'
+      ? decodeQuotedPrintable(value, params.CHARSET ?? '')
+      : value;
 
     // Skip binary blobs
     if (encoding === 'BASE64' || encoding === 'B') continue;
@@ -219,9 +245,17 @@ export function parseVCard(text) {
   const contacts = [];
   let currentProps = null;
 
-  for (const raw of lines) {
-    const line = raw.trim();
+  for (let i = 0; i < lines.length; i += 1) {
+    let line = lines[i].trim();
     if (!line) continue;
+
+    // vCard 2.1 quoted-printable wraps long values with a trailing "=" and no
+    // leading whitespace, so the line-folding rule above does not join them.
+    if (/ENCODING=QUOTED-PRINTABLE/i.test(line.split(':', 1)[0])) {
+      while (line.endsWith('=') && i + 1 < lines.length) {
+        line = `${line.slice(0, -1)}${lines[++i].trim()}`;
+      }
+    }
 
     const upper = line.toUpperCase();
     if (upper === 'BEGIN:VCARD') {

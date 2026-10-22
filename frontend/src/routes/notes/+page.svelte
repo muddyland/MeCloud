@@ -7,11 +7,11 @@
   import Spinner from '$lib/components/Spinner.svelte';
   import MarkdownToolbar from '$lib/components/MarkdownToolbar.svelte';
   import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
-  import { getJMAPSession, getAppConfig } from '$lib/api.js';
+  import { ensureSession } from '$lib/session.js';
   import { supportsFiles } from '$lib/files.js';
   import {
     loadNotes, ensureNotesFolder, readNote, writeNote, createNote,
-    renameNote, deleteNote, resolvePath, NOTES_FOLDER,
+    renameNote, deleteNote, resolvePath, NOTES_FOLDER, saveDecision,
   } from '$lib/notes.js';
   import { renderMarkdown, imageResolver, noteTitle, noteName } from '$lib/markdown.js';
   import { blobUrl } from '$lib/files.js';
@@ -29,6 +29,7 @@
   let draft       = '';        // the editor's working copy
   let loadedId    = null;      // which note `draft` belongs to
   let loadingBody = false;
+  let loadFailed  = false;     // the selected note's body would not load
   let creating    = false;
   let deleting    = false;
   let confirmingDelete = false;
@@ -39,6 +40,7 @@
 
   const AUTOSAVE_MS = 1200;
   let saveTimer;
+  let inFlight = null;         // the running save, so a flush can wait for it
 
   /*
    * Relative image links are resolved against the folder the note lives in, so
@@ -51,7 +53,9 @@
     return node ? blobUrl(node, { inline: true }) : null;
   });
 
-  $: rendered = renderMarkdown(draft, { resolveImage });
+  // Rendering runs marked and DOMPurify over the whole note; in Write view
+  // nothing shows the result, so there is no reason to do it per keystroke.
+  $: rendered = $noteView === 'edit' ? '' : renderMarkdown(draft, { resolveImage });
   $: currentTitle = $selectedNote ? noteTitle($selectedNote.name, draft) : '';
 
   // ── Loading ───────────────────────────────────────────────────────────────
@@ -101,6 +105,13 @@
     await flushSave();                       // never lose the outgoing note
     selectedNoteId.set(node.id);
 
+    // Detach the editor from the outgoing note before anything can fail.
+    // Leaving `draft` holding the previous note's text while a different note
+    // is selected is what let a failed load save one note over another.
+    draft = '';
+    loadedId = null;
+    loadFailed = false;
+
     const cached = $noteCache.get(node.id);
     if (cached !== undefined) {
       draft = cached;
@@ -118,10 +129,18 @@
       loadedId = node.id;
       saveState.set('idle');
     } catch (e) {
+      if ($selectedNoteId !== node.id) return;
+      loadFailed = true;
       notesError.set(e?.message ?? 'Could not open this note.');
     } finally {
       loadingBody = false;
     }
+  }
+
+  function retryOpen() {
+    const node = $selectedNote;
+    loadedId = null;
+    if (node) { selectedNoteId.set(null); openNote(node); }
   }
 
   // ── Saving ────────────────────────────────────────────────────────────────
@@ -135,28 +154,49 @@
   async function save() {
     clearTimeout(saveTimer);
     const node = $selectedNote;
-    if (!node || $saveState === 'saving') return;
-    if (($noteCache.get(node.id) ?? '') === draft) { saveState.set('idle'); return; }
+    const decision = saveDecision({
+      nodeId: node?.id, loadedId, draft,
+      saved: node ? $noteCache.get(node.id) : undefined,
+      inFlight: !!inFlight,
+    });
+    if (decision === 'mismatch' || decision === 'queue') return;
+    if (decision === 'unchanged') { saveState.set('idle'); return; }
 
     const text = draft;
     saveState.set('saving');
     saveError.set('');
-    try {
-      const updated = await writeNote($jmapAccountId, $jmapSession, node, text);
-      cacheNote(node.id, text);
-      noteNodes.update((list) => list.map((n) => (n.id === node.id ? { ...n, ...updated } : n)));
-      saveState.set('saved');
-      setTimeout(() => saveState.update((s) => (s === 'saved' ? 'idle' : s)), 1500);
-    } catch (e) {
-      saveState.set('error');
-      saveError.set(e?.message ?? 'Could not save this note.');
+    inFlight = (async () => {
+      try {
+        const updated = await writeNote($jmapAccountId, $jmapSession, node, text);
+        cacheNote(node.id, text);
+        noteNodes.update((list) => list.map((n) => (n.id === node.id ? { ...n, ...updated } : n)));
+        return true;
+      } catch (e) {
+        saveState.set('error');
+        saveError.set(e?.message ?? 'Could not save this note.');
+        return false;
+      }
+    })();
+    const ok = await inFlight;
+    inFlight = null;
+    if (!ok) return;
+
+    // Typing carried on while that save was in flight: those edits are not on
+    // the server yet, so go round again rather than reporting "Saved".
+    if (loadedId === node.id && draft !== text) {
+      saveState.set('dirty');
+      await save();
+      return;
     }
+    saveState.set('saved');
+    setTimeout(() => saveState.update((s) => (s === 'saved' ? 'idle' : s)), 1500);
   }
 
   /** Save immediately if there are unsaved edits — used before navigating away. */
   async function flushSave() {
     clearTimeout(saveTimer);
-    if ($saveState === 'dirty') await save();
+    while (inFlight) await inFlight;      // a save may chain another for late edits
+    if ($saveState === 'dirty' || draft !== ($noteCache.get(loadedId) ?? draft)) await save();
   }
 
   // Leaving the page or closing the tab must not silently drop an edit.
@@ -212,8 +252,7 @@
     renaming = false;
     if (!node || !value || value === noteName(node.name)) return;
     try {
-      await renameNote($jmapAccountId, $jmapSession, node.id, value);
-      const name = /\.(md|markdown|mdown|mkd)$/i.test(value) ? value : `${value}.md`;
+      const name = await renameNote($jmapAccountId, $jmapSession, node.id, value);
       noteNodes.update((list) => list.map((n) => (n.id === node.id ? { ...n, name } : n)));
       toast('Note renamed', 'success');
     } catch (e) {
@@ -255,21 +294,11 @@
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   onMount(async () => {
-    const config = await getAppConfig();
-    stalwartUrl = config.stalwartUrl ?? '';
-
-    if (!$jmapAccountId) {
-      try {
-        const session = await getJMAPSession();
-        if (!session) return;
-        jmapSession.set(session);
-        const accountId = Object.keys(session.accounts ?? {})[0];
-        jmapAccountId.set(accountId);
-        currentUser.set(session.username || session.accounts?.[accountId]?.name || '');
-      } catch (e) {
-        notesError.set(e?.message ?? 'Could not reach the server.');
-        return;
-      }
+    const result = await ensureSession();
+    stalwartUrl = result.stalwartUrl;
+    if (!result.ready) {
+      if (result.error) notesError.set(result.error);
+      return;
     }
 
     supported = supportsFiles($jmapSession);
@@ -320,7 +349,7 @@
              {listPaneClass($isCompact, !!$selectedNoteId)}"
       style={$isCompact ? '' : `width: ${$sidebarWidth}px`}
     >
-      <div class="px-3 py-2.5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0
+      <div class="px-3 py-2.5 border-b border-gray-200 dark:border-gray-700 shrink-0
                   flex items-center justify-between gap-2">
         <h2 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
           Notes
@@ -341,7 +370,7 @@
         </button>
       </div>
 
-      <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+      <div class="px-3 py-2 border-b border-gray-200 dark:border-gray-700 shrink-0">
         <div class="relative flex items-center">
           <svg class="absolute left-2.5 w-3.5 h-3.5 text-gray-400 pointer-events-none"
                viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -356,7 +385,7 @@
                    bg-gray-100 dark:bg-gray-700/60 text-gray-800 dark:text-gray-200
                    placeholder-gray-400 dark:placeholder-gray-500
                    border border-transparent focus:border-blue-400 dark:focus:border-blue-500
-                   focus:outline-none transition-colors duration-150"
+                   focus:outline-hidden transition-colors duration-150"
           />
         </div>
       </div>
@@ -365,8 +394,8 @@
         {#if $notesLoading && $noteNodes.length === 0}
           {#each Array(6) as _}
             <div class="px-4 py-3 border-b border-gray-100 dark:border-gray-800 space-y-2">
-              <div class="h-3 w-2/3 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
-              <div class="h-2.5 w-full rounded bg-gray-100 dark:bg-gray-700/60 animate-pulse"></div>
+              <div class="h-3 w-2/3 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+              <div class="h-2.5 w-full rounded-sm bg-gray-100 dark:bg-gray-700/60 animate-pulse"></div>
             </div>
           {/each}
         {:else if $visibleNotes.length === 0}
@@ -400,7 +429,7 @@
                                      : 'text-gray-800 dark:text-gray-100'}">
                   {item.title}
                 </span>
-                <span class="text-[11px] text-gray-400 dark:text-gray-500 flex-shrink-0">
+                <span class="text-[11px] text-gray-400 dark:text-gray-500 shrink-0">
                   {item.node.modified ? new Date(item.node.modified).toLocaleDateString() : ''}
                 </span>
               </div>
@@ -447,12 +476,12 @@
 
       {:else}
         <!-- Header -->
-        <div class="px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 flex-shrink-0
+        <div class="px-4 py-2.5 border-b border-gray-200 dark:border-gray-700 shrink-0
                     flex items-center gap-2">
           {#if $isCompact}
             <button on:click={() => { flushSave(); selectedNoteId.set(null); loadedId = null; }}
               aria-label="Back to notes"
-              class="w-8 h-8 -ml-1 flex items-center justify-center rounded-lg flex-shrink-0
+              class="w-8 h-8 -ml-1 flex items-center justify-center rounded-lg shrink-0
                      text-blue-600 dark:text-blue-400
                      hover:bg-blue-50 dark:hover:bg-blue-900/30 transition-colors duration-150">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -474,7 +503,7 @@
               }}
               class="flex-1 min-w-0 text-sm font-semibold bg-transparent
                      border-b border-blue-400 text-gray-900 dark:text-gray-100
-                     focus:outline-none py-0.5"
+                     focus:outline-hidden py-0.5"
             />
           {:else}
             <button on:click={startRename} title="Rename note"
@@ -486,7 +515,7 @@
           {/if}
 
           <!-- Save state -->
-          <span class="text-[11px] flex-shrink-0 flex items-center gap-1.5
+          <span class="text-[11px] shrink-0 flex items-center gap-1.5
                        {$saveState === 'error' ? 'text-red-500' : 'text-gray-400 dark:text-gray-500'}">
             {#if $saveState === 'saving'}
               <Spinner size="xs" label="" /> Saving…
@@ -504,14 +533,14 @@
           </span>
 
           <!-- View mode -->
-          <div class="flex items-center rounded-lg bg-gray-100 dark:bg-gray-800 p-0.5 flex-shrink-0">
+          <div class="flex items-center rounded-lg bg-gray-100 dark:bg-gray-800 p-0.5 shrink-0">
             {#each [['preview', 'Read'], ['edit', 'Write'], ['split', 'Both']] as [mode, label]}
               <button
                 on:click={() => noteView.set(mode)}
                 class="px-2 py-1 text-[11px] font-medium rounded-md transition-colors duration-150
                        {mode === 'split' ? 'hidden lg:block' : ''}
                        {$noteView === mode
-                         ? 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 shadow-sm'
+                         ? 'bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 shadow-xs'
                          : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200'}"
               >{label}</button>
             {/each}
@@ -520,14 +549,14 @@
           {#if confirmingDelete}
             <button on:click={removeNote} disabled={deleting}
               class="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded-lg
-                     bg-red-500 hover:bg-red-600 text-white disabled:opacity-60 flex-shrink-0">
+                     bg-red-500 hover:bg-red-600 text-white disabled:opacity-60 shrink-0">
               {#if deleting}<Spinner size="xs" label="" accent="border-t-white" cls="border-white/40" />{/if}
               Delete
             </button>
             <button on:click={() => (confirmingDelete = false)} class={toolBtn}>Cancel</button>
           {:else}
             <button on:click={() => (confirmingDelete = true)} title="Delete note"
-              class="w-8 h-8 flex items-center justify-center rounded-lg flex-shrink-0
+              class="w-8 h-8 flex items-center justify-center rounded-lg shrink-0
                      text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20
                      transition-colors duration-150">
               <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -542,6 +571,13 @@
         {#if loadingBody}
           <div class="flex-1 flex items-center justify-center gap-2 text-sm text-gray-400">
             <Spinner size="sm" label="" /> Loading note…
+          </div>
+        {:else if loadFailed}
+          <!-- No editor: there is no text to edit, and an empty editor would
+               invite typing that then saves over the real note. -->
+          <div class="flex-1 flex flex-col items-center justify-center gap-3 text-sm text-gray-500 dark:text-gray-400">
+            <p>This note could not be loaded.</p>
+            <button on:click={retryOpen} class={toolBtn}>Try again</button>
           </div>
         {:else}
           <div class="flex-1 min-h-0 flex flex-col" in:fade={{ duration: 120 }}>
@@ -561,7 +597,7 @@
                 class="flex-1 min-w-0 h-full resize-none p-5 font-mono text-sm leading-relaxed
                        bg-transparent text-gray-800 dark:text-gray-100
                        placeholder-gray-400 dark:placeholder-gray-600
-                       focus:outline-none
+                       focus:outline-hidden
                        {$noteView === 'split' ? 'border-r border-gray-200 dark:border-gray-700' : ''}"
               ></textarea>
             {/if}

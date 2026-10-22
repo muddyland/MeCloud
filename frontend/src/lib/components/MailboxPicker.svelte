@@ -1,8 +1,7 @@
 <script>
   import { fly } from 'svelte/transition';
   import { movePickerOpen, selectedMailbox, emails, selectedEmailId, jmapAccountId, selectedEmailIds } from '$lib/stores/mail.js';
-  import { moveEmail, bulkMove } from '$lib/api.js';
-  import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
+  import { moveMessages } from '$lib/mailActions.js';
   import { toast } from '$lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
   import Spinner from './Spinner.svelte';
@@ -35,21 +34,8 @@
     const accountId     = $jmapAccountId;
     const curSelectedId = $selectedEmailId;
     try {
-      if (bulk) {
-        await bulkMove(accountId, ids, mailbox.id, sourceId);
-        emails.update(list => list.filter(e => !ids.includes(e.id)));
-        if (ids.includes(curSelectedId)) selectedEmailId.set(null);
-        selectedEmailIds.set(new Set());
-        toast(`${ids.length} message${ids.length === 1 ? '' : 's'} moved to ${mailbox.name}`, 'success');
-      } else {
-        const emailId = ids[0];
-        await moveEmail(accountId, emailId, mailbox.id, sourceId);
-        emails.update(list => list.filter(e => e.id !== emailId));
-        if (curSelectedId === emailId) selectedEmailId.set(null);
-        toast(`Moved to ${mailbox.name}`, 'success');
-      }
+      await moveMessages(ids, mailbox, sourceId);
       movePickerOpen.set(null);
-      await refreshMailboxCounts();
     } catch (e) {
       error = e.message || 'Move failed';
     } finally {
@@ -87,7 +73,7 @@
                  hover:bg-gray-50 dark:hover:bg-gray-700/60 transition-colors duration-100
                  disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <MailboxIcon role={mailbox.role} cls="w-4 h-4 opacity-60 flex-shrink-0" />
+          <MailboxIcon role={mailbox.role} cls="w-4 h-4 opacity-60 shrink-0" />
           <span class="truncate flex-1 text-left">{mailbox.name}</span>
           {#if movingId === mailbox.id}
             <Spinner size="xs" label="Moving" />

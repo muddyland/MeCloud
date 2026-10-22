@@ -1,6 +1,8 @@
 <script>
   import { onMount } from 'svelte';
   import Navbar from '$lib/components/Navbar.svelte';
+  import ErrorBanner from '$lib/components/ErrorBanner.svelte';
+  import { ensureSession } from '$lib/session.js';
   import ContactModal from '$lib/components/ContactModal.svelte';
   import ContactImportModal from '$lib/components/ContactImportModal.svelte';
   import ComposeModal from '$lib/components/ComposeModal.svelte';
@@ -22,10 +24,11 @@
     composeOpen.set(true);
   }
   import {
-    getAddressBooks, getContacts, getAppConfig, getJMAPSession,
+    getAddressBooks, getContacts,
     createAddressBook, deleteAddressBook
   } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
+  import { safeWebsiteHref } from '$lib/contactCard.js';
 
   let stalwartUrl    = '';
   let newBookInput   = false;
@@ -33,14 +36,17 @@
   let creatingBook   = false;
   let deletingBookId = null;
 
+  let loadError = '';
+
   async function loadContacts() {
     if (!$jmapAccountId) return;
     contactsLoading.set(true);
+    loadError = '';
     try {
       const list = await getContacts($jmapAccountId, $jmapSession, $selectedAddressBook);
       contacts.set(list);
     } catch (e) {
-      console.error('Failed to load contacts', e);
+      loadError = e?.message ?? 'Could not load contacts.';
     } finally {
       contactsLoading.set(false);
     }
@@ -120,32 +126,26 @@
   function openNew()  { editingContact.set(null);  contactModalOpen.set(true); }
   function openEdit(c){ editingContact.set(c);     contactModalOpen.set(true); }
 
-  onMount(async () => {
-    const config = await getAppConfig();
-    stalwartUrl = config.stalwartUrl ?? '';
-
-    if (!$jmapAccountId) {
-      try {
-        const session = await getJMAPSession();
-        jmapSession.set(session);
-        const accountId = Object.keys(session.accounts)[0];
-        jmapAccountId.set(accountId);
-        currentUser.set(session.username || session.accounts[accountId]?.name || '');
-      } catch (e) { console.error('JMAP session failed', e); }
+  async function start() {
+    const result = await ensureSession();
+    stalwartUrl = result.stalwartUrl;
+    loadError = result.error;
+    if (!result.ready) return;
+    try {
+      addressBooks.set(await getAddressBooks($jmapAccountId, $jmapSession));
+    } catch (e) {
+      loadError = e?.message ?? 'Could not load your address books.';
+      return;
     }
+    await loadContacts();
+  }
 
-    if ($jmapAccountId) {
-      try {
-        const books = await getAddressBooks($jmapAccountId, $jmapSession);
-        addressBooks.set(books);
-      } catch (e) { console.error('Failed to load address books', e); }
-      await loadContacts();
-    }
-  });
+  onMount(start);
 </script>
 
 <div class="flex flex-col app-shell bg-gray-100 dark:bg-gray-950">
   <Navbar {stalwartUrl} />
+  <ErrorBanner message={loadError} onRetry={start} />
 
   <div class="flex flex-1 min-h-0 overflow-hidden">
 
@@ -173,7 +173,7 @@
               on:keydown={(e) => { if (e.key === 'Enter') confirmNewBook(); if (e.key === 'Escape') newBookInput = false; }}
               placeholder="Book name"
               class="flex-1 text-xs px-2 py-1 rounded border border-blue-400 dark:border-blue-500
-                     bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 focus:outline-none"
+                     bg-white dark:bg-gray-700 text-gray-800 dark:text-gray-100 focus:outline-hidden"
               autofocus />
             <button on:click={confirmNewBook} disabled={creatingBook} title="Create"
               class="text-xs text-blue-600 dark:text-blue-400 disabled:opacity-50
@@ -228,7 +228,7 @@
                 border-r border-gray-200 dark:border-gray-700
                 {listPaneClass($isCompact, !!$selectedContact)} {$isCompact ? '' : 'w-72'}">
 
-      <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex-shrink-0 flex items-center justify-between">
+      <div class="px-4 py-3 border-b border-gray-200 dark:border-gray-700 shrink-0 flex items-center justify-between">
         <h2 class="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Contacts</h2>
         <div class="flex items-center gap-1">
           <button on:click={() => contactImportModalOpen.set(true)} title="Import contacts from vCard file"
@@ -263,7 +263,7 @@
             placeholder="Search contacts…"
             class="w-full pl-7 pr-3 py-1.5 text-sm rounded-lg border border-gray-200 dark:border-gray-600
                    bg-gray-50 dark:bg-gray-800 text-gray-900 dark:text-gray-100
-                   focus:outline-none focus:ring-2 focus:ring-blue-500"
+                   focus:outline-hidden focus:ring-2 focus:ring-blue-500"
           />
         </div>
       </div>
@@ -272,10 +272,10 @@
         {#if $contactsLoading}
           {#each Array(8) as _}
             <div class="flex items-center gap-3 px-4 py-3 border-b border-gray-100 dark:border-gray-800">
-              <div class="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse flex-shrink-0"></div>
+              <div class="w-7 h-7 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse shrink-0"></div>
               <div class="flex-1 min-w-0 space-y-1.5">
-                <div class="h-3 rounded bg-gray-200 dark:bg-gray-700 animate-pulse w-1/2"></div>
-                <div class="h-2.5 rounded bg-gray-100 dark:bg-gray-700/60 animate-pulse w-3/4"></div>
+                <div class="h-3 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse w-1/2"></div>
+                <div class="h-2.5 rounded-sm bg-gray-100 dark:bg-gray-700/60 animate-pulse w-3/4"></div>
               </div>
             </div>
           {/each}
@@ -348,7 +348,7 @@
                 {#each Object.values(c.emails ?? {}) as e}
                   <dd class="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200 mb-1">
                     {#if Object.keys(e.contexts ?? {})[0]}
-                      <span class="text-xs text-gray-400 dark:text-gray-500 w-14 flex-shrink-0 capitalize">
+                      <span class="text-xs text-gray-400 dark:text-gray-500 w-14 shrink-0 capitalize">
                         {Object.keys(e.contexts)[0]}
                       </span>
                     {/if}
@@ -368,7 +368,7 @@
                 {#each allPhones(c) as p}
                   <dd class="flex items-center gap-2 text-sm text-gray-800 dark:text-gray-200 mb-1">
                     {#if p.type}
-                      <span class="text-xs text-gray-400 dark:text-gray-500 w-14 flex-shrink-0 capitalize">{p.type}</span>
+                      <span class="text-xs text-gray-400 dark:text-gray-500 w-14 shrink-0 capitalize">{p.type}</span>
                     {/if}
                     <a href="tel:{p.number}" class="hover:underline">{p.number}</a>
                   </dd>
@@ -404,8 +404,13 @@
               <div>
                 <dt class="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider mb-1.5">Website</dt>
                 <dd class="text-sm">
-                  <a href={website(c)} target="_blank" rel="noopener noreferrer"
+                  {#if safeWebsiteHref(website(c))}
+                  <a href={safeWebsiteHref(website(c))} target="_blank" rel="noopener noreferrer"
                      class="text-blue-600 dark:text-blue-400 hover:underline break-all">{website(c)}</a>
+                  {:else}
+                    <!-- Not http(s): shown, never linked. -->
+                    <span class="text-gray-700 dark:text-gray-300 break-all">{website(c)}</span>
+                  {/if}
                 </dd>
               </div>
             {/if}

@@ -10,7 +10,7 @@
 import { getFileNodes, createFolder, createFile, destroyNodes, renameNode,
          fetchTextBlob, saveTextFile, uploadBlob } from './files.js';
 import { fileKind, uniqueName } from './fileTypes.js';
-import { isMarkdown } from './markdown.js';
+import { isMarkdown, MARKDOWN_EXTENSION } from './markdown.js';
 
 /** The folder notes live in, at the root of the drive. */
 export const NOTES_FOLDER = 'Notes';
@@ -190,11 +190,36 @@ export function resolvePath(nodes, startFolderId, path, { rootFolderId = null } 
   return null;
 }
 
-export function renameNote(accountId, session, id, name) {
-  const filename = /\.(md|markdown|mdown|mkd)$/i.test(name) ? name : `${name}${MD_EXTENSION}`;
-  return renameNode(accountId, session, id, filename);
+/** The filename a note title is stored under: Markdown extension added if missing. */
+export function noteFileFor(name) {
+  return MARKDOWN_EXTENSION.test(name) ? name : `${name}${MD_EXTENSION}`;
+}
+
+/** @returns {Promise<string>} the filename the note now has */
+export async function renameNote(accountId, session, id, name) {
+  const filename = noteFileFor(name);
+  await renameNode(accountId, session, id, filename);
+  return filename;
 }
 
 export function deleteNote(accountId, session, id) {
   return destroyNodes(accountId, session, [id], { recursive: false });
+}
+
+/**
+ * What an autosave should do right now. Pure, so the rules that stop a save
+ * from writing the wrong text into the wrong note can be tested directly.
+ *
+ * - `mismatch`: the editor's text does not belong to this note (its body never
+ *   loaded, or another note is now open). Writing would overwrite one note with
+ *   another's text, so nothing is written.
+ * - `queue`: a save is already running; the newer text goes up when it lands.
+ * - `unchanged`: the text is what the server already has.
+ * - `write`: send it.
+ */
+export function saveDecision({ nodeId, loadedId, draft, saved, inFlight }) {
+  if (!nodeId || nodeId !== loadedId) return 'mismatch';
+  if (inFlight) return 'queue';
+  if ((saved ?? '') === draft) return 'unchanged';
+  return 'write';
 }

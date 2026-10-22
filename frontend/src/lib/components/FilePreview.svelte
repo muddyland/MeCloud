@@ -58,17 +58,20 @@
     loadText(node);
   }
 
+  // Every piece of load state belongs to the file it was started for: a slow
+  // or failed load for the previous file must not paint over this one.
   async function loadText(target) {
+    const current = () => $previewNode?.id === target.id && loadedFor === target.id;
     loadingText = true;
     textError   = '';
     textContent = '';
     try {
       const text = await fetchTextBlob(target);
-      if ($previewNode?.id === target.id) textContent = text;
+      if (current()) textContent = text;
     } catch (e) {
-      textError = e?.message ?? 'Could not load a preview of this file.';
+      if (current()) textError = e?.message ?? 'Could not load a preview of this file.';
     } finally {
-      loadingText = false;
+      if (current()) loadingText = false;
     }
   }
 
@@ -84,13 +87,16 @@
 
   async function saveEdit() {
     if (!node || saving) return;
+    const target = node;
+    const text = draft;
     saving = true;
     try {
-      const updated = await saveTextFile($jmapAccountId, $jmapSession, node, draft);
-      textContent = draft;
+      const updated = await saveTextFile($jmapAccountId, $jmapSession, target, text);
       // Keep the Files listing's size/modified in step with what was just written.
-      fileNodes.update((list) => list.map((n) => (n.id === node.id ? { ...n, ...updated } : n)));
-      previewNode.set({ ...node, ...updated });
+      fileNodes.update((list) => list.map((n) => (n.id === target.id ? { ...n, ...updated } : n)));
+      if ($previewNode?.id !== target.id) { toast('Saved', 'success'); return; }
+      textContent = text;
+      previewNode.set({ ...target, ...updated });
       editing = false;
       toast('Saved', 'success');
     } catch (e) {
@@ -120,7 +126,7 @@
   size="xl"
   on:close={close}
 >
-  <div class="flex items-center justify-center min-h-[16rem] bg-gray-50 dark:bg-gray-900/50">
+  <div class="flex items-center justify-center min-h-64 bg-gray-50 dark:bg-gray-900/50">
     {#if !node}
       <!-- closed -->
     {:else if kind === 'image' && src}
@@ -160,7 +166,7 @@
             spellcheck={markdown}
             class="w-full h-[60vh] resize-none p-4 font-mono text-xs leading-relaxed
                    bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200
-                   focus:outline-none"
+                   focus:outline-hidden"
           ></textarea>
         </div>
       {:else if markdown}
@@ -172,7 +178,7 @@
       {:else}
         <pre class="w-full max-h-[70vh] overflow-auto p-4 text-xs leading-relaxed
                     font-mono text-gray-800 dark:text-gray-200 whitespace-pre-wrap
-                    break-words">{textContent}</pre>
+                    wrap-break-word">{textContent}</pre>
       {/if}
     {:else}
       <div class="flex flex-col items-center gap-3 py-16 text-gray-400 dark:text-gray-500">
@@ -189,7 +195,7 @@
     <span class="text-xs text-gray-400 dark:text-gray-500 truncate min-w-0">
       {node?.modified ? new Date(node.modified).toLocaleString() : ''}
     </span>
-    <div class="flex items-center gap-1 flex-shrink-0">
+    <div class="flex items-center gap-1 shrink-0">
     {#if editable && !loadingText && !textError}
       {#if editing}
         <button

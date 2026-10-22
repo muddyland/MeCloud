@@ -1,5 +1,6 @@
 import { writable, derived } from 'svelte/store';
 import { noteTitle, excerpt } from '$lib/markdown.js';
+import { persisted } from './persisted.js';
 
 /** Markdown FileNodes under the Notes folder. */
 export const noteNodes     = writable([]);
@@ -17,7 +18,7 @@ export const noteSearch     = writable('');
 export const noteCache = writable(new Map());
 
 /** 'preview' | 'edit' | 'split' — persisted per device. */
-export const noteView = writable('preview');
+export const noteView = persisted('notesView', 'preview', { allowed: ['preview', 'edit', 'split'] });
 
 /** 'idle' | 'dirty' | 'saving' | 'saved' | 'error' */
 export const saveState = writable('idle');
@@ -77,16 +78,4 @@ export function forgetNote(id) {
     next.delete(id);
     return next;
   });
-}
-
-export function resetNotesState() {
-  noteNodes.set([]);
-  allFileNodes.set([]);
-  notesFolder.set(null);
-  selectedNoteId.set(null);
-  noteSearch.set('');
-  noteCache.set(new Map());
-  saveState.set('idle');
-  saveError.set('');
-  notesError.set('');
 }

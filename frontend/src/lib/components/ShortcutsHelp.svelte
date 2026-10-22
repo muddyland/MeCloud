@@ -57,7 +57,7 @@
           {#each group.items as item}
             <div class="flex items-center justify-between gap-4">
               <dt class="text-sm text-gray-700 dark:text-gray-300">{item.label}</dt>
-              <dd class="flex items-center gap-1 flex-shrink-0">
+              <dd class="flex items-center gap-1 shrink-0">
                 {#each item.keys as key}
                   <kbd class={keyCls}>{key}</kbd>
                 {/each}

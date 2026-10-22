@@ -23,6 +23,7 @@ import { fetchFileNodes } from './files.js';
 import { fileKind } from './fileTypes.js';
 import { isMarkdown } from './markdown.js';
 import { findNotesFolder, collectNotes } from './notes.js';
+import { parseEventStart } from './calendarDates.js';
 
 /** How many rows each list on the overview shows. */
 export const UNREAD_LIMIT = 8;
@@ -57,11 +58,14 @@ export function isToday(event, now = new Date()) {
   const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
 
-  const start = event?.start ? new Date(event.start) : null;
+  const start = parseEventStart(event?.start);
   if (!start || Number.isNaN(start.getTime())) return false;
 
   const end = eventEnd(event) ?? start;
-  return start < endOfDay && end >= startOfDay;
+  // An end is exclusive: yesterday's all-day event ends at today's midnight
+  // and is not today's. A zero-length event counts on the day it happens.
+  if (end.getTime() === start.getTime()) return start >= startOfDay && start < endOfDay;
+  return start < endOfDay && end > startOfDay;
 }
 
 /** Event end, derived from `duration` when the server does not send `end`. */
@@ -70,7 +74,7 @@ export function eventEnd(event) {
     const end = new Date(event.end);
     if (!Number.isNaN(end.getTime())) return end;
   }
-  const start = event?.start ? new Date(event.start) : null;
+  const start = parseEventStart(event?.start);
   if (!start || Number.isNaN(start.getTime())) return null;
 
   // ISO-8601 duration, e.g. PT1H30M or P1D — the subset JMAP actually emits.
@@ -84,8 +88,8 @@ export function eventEnd(event) {
 
 /** Sort key for the agenda: earliest first, all-day entries before timed ones. */
 export function compareEvents(a, b) {
-  const at = new Date(a?.start ?? 0).getTime();
-  const bt = new Date(b?.start ?? 0).getTime();
+  const at = parseEventStart(a?.start)?.getTime() ?? 0;
+  const bt = parseEventStart(b?.start)?.getTime() ?? 0;
   if (a?.showWithoutTime !== b?.showWithoutTime) return a?.showWithoutTime ? -1 : 1;
   return at - bt;
 }

@@ -25,7 +25,7 @@
                ? 'text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/40'
                : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800'}"
     >
-      <AppIcon id={app.id} cls="w-4 h-4 flex-shrink-0" />
+      <AppIcon id={app.id} cls="w-4 h-4 shrink-0" />
       <span class="hidden xl:inline">{app.label}</span>
     </button>
   {/each}

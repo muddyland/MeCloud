@@ -39,7 +39,7 @@
     decoding="async"
     draggable="false"
     on:error={() => (failed = true)}
-    class="{BOX[size] ?? BOX.sm} flex-shrink-0 object-cover rounded
+    class="{BOX[size] ?? BOX.sm} shrink-0 object-cover rounded
            bg-gray-100 dark:bg-gray-700 ring-1 ring-black/5 dark:ring-white/10"
   />
 {:else}

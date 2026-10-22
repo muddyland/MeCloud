@@ -45,7 +45,7 @@
       <button
         on:click|stopPropagation={() => toggle(folder.id)}
         aria-label={expanded ? 'Collapse' : 'Expand'}
-        class="flex-shrink-0 w-5 h-8 flex items-center justify-center rounded
+        class="shrink-0 w-5 h-8 flex items-center justify-center rounded
                text-gray-400 hover:text-gray-600 dark:hover:text-gray-300
                transition-colors duration-100"
       >
@@ -57,7 +57,7 @@
         </svg>
       </button>
     {:else}
-      <div class="w-5 flex-shrink-0"></div>
+      <div class="w-5 shrink-0"></div>
     {/if}
 
     <button

@@ -42,8 +42,8 @@ describe('list/detail pane visibility', () => {
   });
 
   it('keeps the list at its fixed width on a wide screen', () => {
-    expect(listPaneClass(false, true)).toBe('flex-shrink-0');
-    expect(listPaneClass(false, false)).toBe('flex-shrink-0');
+    expect(listPaneClass(false, true)).toBe('shrink-0');
+    expect(listPaneClass(false, false)).toBe('shrink-0');
   });
 
   it('never emits a class string that is both hidden and sized', () => {

@@ -3,6 +3,9 @@
   import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
   import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent } from '$lib/api.js';
   import { toast } from '$lib/stores/toast.js';
+  import {
+    localDateString, addDays, durationDays, buildEventPatch,
+  } from '$lib/calendarDates.js';
 
   let saving   = false;
   let deleting = false;
@@ -49,7 +52,7 @@
       const dtStr = ev.start ?? '';
       if (allDay) {
         date    = dtStr.slice(0, 10);
-        endDate = addDays(date, parseDaysDuration(ev.duration ?? 'P1D') - 1);
+        endDate = addDays(date, durationDays(ev.duration ?? 'P1D') - 1);
         startTime = '09:00'; endTime = '10:00';
       } else {
         [date, startTime] = dtStr.split('T');
@@ -65,7 +68,7 @@
       status = 'confirmed'; recurrence = 'none';
       allDay = false;
       const d = $newEventDate ?? new Date();
-      date = endDate = fmtDate(d);
+      date = endDate = localDateString(d);
       startTime = '09:00'; endTime = '10:00';
       calendarId = defaultCalId();
     }
@@ -73,21 +76,6 @@
 
   function defaultCalId() {
     return $selectedCalendar ?? $calendars[0]?.id ?? '';
-  }
-
-  function fmtDate(d) {
-    return d.toISOString().slice(0, 10);
-  }
-
-  function addDays(dateStr, n) {
-    const d = new Date(dateStr + 'T00:00:00');
-    d.setDate(d.getDate() + n);
-    return fmtDate(d);
-  }
-
-  function parseDaysDuration(iso) {
-    const m = iso.match(/P(\d+)D/);
-    return m ? parseInt(m[1]) : 1;
   }
 
   function addDurationToTime(timeStr, iso) {
@@ -108,13 +96,6 @@
     return `PT${h > 0 ? h + 'H' : ''}${m > 0 ? m + 'M' : ''}` || 'PT1H';
   }
 
-  function calcAllDayDuration() {
-    const start = new Date(date + 'T00:00:00');
-    const end   = new Date((endDate || date) + 'T00:00:00');
-    const days  = Math.max(1, Math.round((end - start) / 86400000) + 1);
-    return `P${days}D`;
-  }
-
   function close() {
     eventModalOpen.set(false);
     editingEvent.set(null);
@@ -125,20 +106,11 @@
     if (!title.trim()) return;
     saving = true;
     try {
-      const start = allDay ? date : `${date}T${startTime}:00`;
-      const event = {
-        '@type': 'Event',
-        title: title.trim(),
-        start,
-        duration: allDay ? calcAllDayDuration() : calcTimedDuration(),
-        calendarIds: { [calendarId]: true },
-      };
-
-      if (!allDay) event.timeZone = timezone;
-      if (location.trim())    event.locations   = { l1: { '@type': 'Location', name: location.trim() } };
-      if (description.trim()) event.description = description.trim();
-      if (status !== 'confirmed') event.status  = status;
-      if (recurrence !== 'none')  event.recurrenceRules = [{ '@type': 'RecurrenceRule', frequency: recurrence }];
+      const event = buildEventPatch({
+        title, allDay, date, endDate, startTime, timezone, calendarId,
+        location, description, status, recurrence,
+        timedDuration: allDay ? null : calcTimedDuration(),
+      }, { isUpdate: !!$editingEvent });
 
       if ($editingEvent) {
         await updateCalendarEvent($jmapAccountId, $jmapSession, $editingEvent.id, event);
@@ -171,7 +143,7 @@
     }
   }
 
-  const inputCls = 'text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500';
+  const inputCls = 'text-sm px-3 py-2 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 focus:outline-hidden focus:ring-2 focus:ring-blue-500';
   const labelCls = 'block text-xs font-medium text-gray-500 dark:text-gray-400 mb-1';
 </script>
 
@@ -182,7 +154,7 @@
     <div class="w-full max-w-lg bg-white dark:bg-gray-800 rounded-2xl shadow-xl z-50 flex flex-col max-h-[90vh]">
 
       <!-- Header -->
-      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700 flex-shrink-0">
+      <div class="flex items-center justify-between px-5 py-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
         <h2 class="text-base font-semibold text-gray-900 dark:text-gray-100">
           {$editingEvent ? 'Edit Event' : 'New Event'}
         </h2>
@@ -199,7 +171,7 @@
 
         <!-- All-day -->
         <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300 cursor-pointer select-none">
-          <input type="checkbox" bind:checked={allDay} class="rounded" />
+          <input type="checkbox" bind:checked={allDay} class="rounded-sm" />
           All day
         </label>
 
@@ -290,7 +262,7 @@
       </div>
 
       <!-- Footer -->
-      <div class="flex items-center justify-between px-5 py-3 border-t border-gray-200 dark:border-gray-700 flex-shrink-0">
+      <div class="flex items-center justify-between px-5 py-3 border-t border-gray-200 dark:border-gray-700 shrink-0">
         <div>
           {#if $editingEvent}
             <button on:click={remove} disabled={deleting}

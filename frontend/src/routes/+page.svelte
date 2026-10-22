@@ -12,7 +12,7 @@
     jmapSession, jmapAccountId, currentUser, appName,
     composeOpen, composeContext, selectedMailbox, mailboxes,
   } from '$lib/stores/mail.js';
-  import { getJMAPSession, getAppConfig } from '$lib/api.js';
+  import { ensureSession } from '$lib/session.js';
   import { getDashboardSummary, eventEnd, senderLabel } from '$lib/dashboard.js';
   import { formatBytes } from '$lib/fileTypes.js';
   import { noteTitle } from '$lib/markdown.js';
@@ -107,22 +107,12 @@
   }
 
   onMount(async () => {
-    const config = await getAppConfig();
-    stalwartUrl = config.stalwartUrl ?? '';
-
-    if (!$jmapAccountId) {
-      try {
-        const session = await getJMAPSession();
-        if (!session) return;
-        jmapSession.set(session);
-        const accountId = Object.keys(session.accounts ?? {})[0];
-        jmapAccountId.set(accountId);
-        currentUser.set(session.username || session.accounts?.[accountId]?.name || '');
-      } catch (e) {
-        error = e?.message ?? 'Could not reach the server.';
-        loading = false;
-        return;
-      }
+    const result = await ensureSession();
+    stalwartUrl = result.stalwartUrl;
+    if (!result.ready) {
+      error = result.error;
+      loading = false;
+      return;
     }
     await load();
   });
@@ -175,9 +165,9 @@
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
           {#each Array(4) as _}
             <div class="{card} p-4 gap-3">
-              <div class="h-4 w-4 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
-              <div class="h-7 w-16 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
-              <div class="h-3 w-20 rounded bg-gray-100 dark:bg-gray-700/60 animate-pulse"></div>
+              <div class="h-4 w-4 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+              <div class="h-7 w-16 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+              <div class="h-3 w-20 rounded-sm bg-gray-100 dark:bg-gray-700/60 animate-pulse"></div>
             </div>
           {/each}
         </div>
@@ -186,8 +176,8 @@
             <div class="flex items-center gap-3 px-4 py-3">
               <div class="w-9 h-9 rounded-full bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
               <div class="flex-1 space-y-2">
-                <div class="h-3 w-32 rounded bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
-                <div class="h-3 w-56 max-w-full rounded bg-gray-100 dark:bg-gray-700/60 animate-pulse"></div>
+                <div class="h-3 w-32 rounded-sm bg-gray-200 dark:bg-gray-700 animate-pulse"></div>
+                <div class="h-3 w-56 max-w-full rounded-sm bg-gray-100 dark:bg-gray-700/60 animate-pulse"></div>
               </div>
             </div>
           {/each}
@@ -305,7 +295,7 @@
                           <span class="text-sm font-semibold text-gray-900 dark:text-gray-50 truncate">
                             {senderLabel(email)}
                           </span>
-                          <span class="ml-auto flex-shrink-0 text-[11px] tabular-nums
+                          <span class="ml-auto shrink-0 text-[11px] tabular-nums
                                        text-gray-400 dark:text-gray-500">
                             {shortDate(email.receivedAt)}
                           </span>
@@ -315,7 +305,7 @@
                         </p>
                       </div>
                       <span class="sr-only">Unread</span>
-                      <span class="w-2 h-2 rounded-full bg-blue-500 flex-shrink-0"
+                      <span class="w-2 h-2 rounded-full bg-blue-500 shrink-0"
                             aria-hidden="true"></span>
                     </button>
                   </li>
@@ -387,7 +377,7 @@
                     {#each summary.recentNotes as node (node.id)}
                       <li>
                         <button on:click={() => openNote(node)} class={row}>
-                          <AppIcon id="notes" cls="w-4 h-4 text-teal-500 flex-shrink-0" />
+                          <AppIcon id="notes" cls="w-4 h-4 text-teal-500 shrink-0" />
                           <div class="min-w-0 flex-1">
                             <p class="text-sm text-gray-800 dark:text-gray-100 truncate">
                               <!-- The body is not loaded here, so this is the filename
@@ -427,12 +417,12 @@
                   <ul class="divide-y divide-gray-100 dark:divide-gray-800">
                     {#each summary.events as event (event.id)}
                       <li class="flex items-start gap-3 px-4 py-3">
-                        <span class="w-24 flex-shrink-0 text-xs tabular-nums
+                        <span class="w-24 shrink-0 text-xs tabular-nums
                                      text-gray-500 dark:text-gray-400 pt-0.5">
                           {eventTime(event)}
                         </span>
                         <span class="w-1 self-stretch rounded-full bg-purple-400 dark:bg-purple-500
-                                     flex-shrink-0"></span>
+                                     shrink-0"></span>
                         <div class="min-w-0 flex-1">
                           <p class="text-sm text-gray-800 dark:text-gray-100 truncate">
                             {event.title || '(no title)'}
@@ -459,28 +449,28 @@
                   class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left
                          text-gray-700 dark:text-gray-200
                          hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150">
-                  <AppIcon id="mail" cls="w-4 h-4 text-blue-500 flex-shrink-0" />
+                  <AppIcon id="mail" cls="w-4 h-4 text-blue-500 shrink-0" />
                   Compose
                 </button>
                 <button on:click={() => goto('/notes')}
                   class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left
                          text-gray-700 dark:text-gray-200
                          hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150">
-                  <AppIcon id="notes" cls="w-4 h-4 text-teal-500 flex-shrink-0" />
+                  <AppIcon id="notes" cls="w-4 h-4 text-teal-500 shrink-0" />
                   Notes{summary.files ? ` (${summary.files.notes})` : ''}
                 </button>
                 <button on:click={() => goto('/files')}
                   class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left
                          text-gray-700 dark:text-gray-200
                          hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150">
-                  <AppIcon id="files" cls="w-4 h-4 text-amber-500 flex-shrink-0" />
+                  <AppIcon id="files" cls="w-4 h-4 text-amber-500 shrink-0" />
                   Upload a file
                 </button>
                 <button on:click={() => goto('/calendar')}
                   class="flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm text-left
                          text-gray-700 dark:text-gray-200
                          hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150">
-                  <AppIcon id="calendar" cls="w-4 h-4 text-purple-500 flex-shrink-0" />
+                  <AppIcon id="calendar" cls="w-4 h-4 text-purple-500 shrink-0" />
                   New event
                 </button>
               </div>

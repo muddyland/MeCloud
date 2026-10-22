@@ -37,9 +37,9 @@
          text-sm font-semibold text-gray-800 dark:text-gray-100
          hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors duration-150"
 >
-  <AppIcon id={current.id} cls="w-4 h-4 flex-shrink-0 text-blue-500 dark:text-blue-400" />
+  <AppIcon id={current.id} cls="w-4 h-4 shrink-0 text-blue-500 dark:text-blue-400" />
   <span class="truncate">{current.label}</span>
-  <svg class="w-3 h-3 flex-shrink-0 text-gray-400 transition-transform duration-150"
+  <svg class="w-3 h-3 shrink-0 text-gray-400 transition-transform duration-150"
        style="transform: rotate({open ? '180deg' : '0deg'})"
        viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
        stroke-linecap="round" stroke-linejoin="round">
@@ -49,7 +49,7 @@
 
 {#if open}
   <div
-    class="lg:hidden fixed inset-0 top-[var(--navbar-height)] z-[55]
+    class="lg:hidden fixed inset-0 top-(--navbar-height) z-55
            bg-gray-900/40 dark:bg-black/60"
     transition:fade={{ duration: 120 }}
     on:click={() => (open = false)}
@@ -59,7 +59,7 @@
   <!-- A sheet rather than a dropdown: at this width a dropdown would be nearly
        full-bleed anyway, and a sheet puts the targets within thumb reach. -->
   <div
-    class="lg:hidden fixed inset-x-0 bottom-0 z-[56] pb-safe
+    class="lg:hidden fixed inset-x-0 bottom-0 z-56 pb-safe
            rounded-t-2xl bg-white dark:bg-gray-800
            shadow-2xl ring-1 ring-gray-900/5 dark:ring-white/10"
     transition:fly={{ y: 240, duration: 200 }}

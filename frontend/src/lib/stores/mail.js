@@ -1,9 +1,11 @@
 import { writable, derived } from 'svelte/store';
 import { browser } from '$app/environment';
+import { persisted } from './persisted.js';
 
 function createDarkModeStore() {
   const prefersDark = browser ? window.matchMedia('(prefers-color-scheme: dark)').matches : false;
-  const stored = browser ? localStorage.getItem('darkMode') : null;
+  let stored = null;
+  try { stored = browser ? localStorage.getItem('darkMode') : null; } catch { /* storage blocked */ }
   const initial = stored !== null ? stored === 'true' : prefersDark;
 
   const { subscribe, set, update } = writable(initial);
@@ -13,7 +15,7 @@ function createDarkModeStore() {
       update((v) => {
         const next = !v;
         if (browser) {
-          localStorage.setItem('darkMode', String(next));
+          try { localStorage.setItem('darkMode', String(next)); } catch { /* storage blocked */ }
           document.documentElement.classList.toggle('dark', next);
         }
         return next;
@@ -24,19 +26,6 @@ function createDarkModeStore() {
       set(value);
     }
   };
-}
-
-function persisted(key, defaultValue, { min, max } = {}) {
-  const stored = browser ? localStorage.getItem(key) : null;
-  let initial = stored !== null ? JSON.parse(stored) : defaultValue;
-  if (min != null) initial = Math.max(min, initial);
-  if (max != null) initial = Math.min(max, initial);
-
-  const store = writable(initial);
-  if (browser) {
-    store.subscribe((v) => localStorage.setItem(key, JSON.stringify(v)));
-  }
-  return store;
 }
 
 export const appName          = writable('MeCloud');

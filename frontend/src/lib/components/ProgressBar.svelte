@@ -36,7 +36,7 @@
 
 <!-- Fixed rather than in flow: the mail layout is exactly 100vh tall, and a bar
      that takes up space would push it into overflow every time it appeared. -->
-<div class="fixed top-0 inset-x-0 h-0.5 z-[100] overflow-hidden pointer-events-none"
+<div class="fixed top-0 inset-x-0 h-0.5 z-100 overflow-hidden pointer-events-none"
      aria-hidden="true">
   {#if visible}
     <div class="absolute inset-y-0 w-1/3 rounded-full bg-blue-500 dark:bg-blue-400 progress-sweep"></div>
