@@ -1,6 +1,7 @@
 import { begin, end } from '$lib/stores/activity.js';
 import { JmapSetError, findMethodError } from './jmapErrors.js';
 import { withThreadSizes } from './mailList.js';
+import { isForbidden, refusedPermissions, replacePermissions } from './stalwartPermissions.js';
 
 // A request that never settles leaves a spinner turning forever. Everything
 // except the event stream is bounded.
@@ -506,15 +507,33 @@ export async function getAppPasswords(accountId, session) {
   return data?.methodResponses?.[1]?.[1]?.list ?? [];
 }
 
+// The password first asks for the account's permissions, which Stalwart 0.16
+// and tokens with full access accept. Stalwart 1.0.3 refuses that from a scoped
+// token (forbidden), so it is retried with the interoperable permissions listed
+// explicitly, and once more without any the server names as not grantable
+// (permissions the account itself lacks).
 export async function createAppPassword(accountId, description, session) {
   const using = appPasswordUsing(session);
-  const data = await post([
-    ['x:AppPassword/set', {
-      accountId,
-      create: { new: { description, expiresAt: null } },
-    }, '0'],
-  ], using);
-  const resp = data?.methodResponses?.[0]?.[1];
+  let permissions = null;
+  const exclude = new Set();
+  let resp;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const props = { description, expiresAt: null, ...(permissions ? { permissions } : {}) };
+    const data = await post([
+      ['x:AppPassword/set', { accountId, create: { new: props } }, '0'],
+    ], using);
+    resp = data?.methodResponses?.[0]?.[1];
+    const error = resp?.notCreated?.new;
+    if (!isForbidden(error)) break;
+    if (!permissions) {
+      permissions = replacePermissions();
+      continue;
+    }
+    const refused = [...refusedPermissions(error)].filter((p) => !exclude.has(p));
+    if (!refused.length) break;
+    for (const p of refused) exclude.add(p);
+    permissions = replacePermissions(exclude);
+  }
   if (resp?.notCreated?.new) {
     throw new JmapSetError(resp.notCreated.new, 'Failed to create app password');
   }
