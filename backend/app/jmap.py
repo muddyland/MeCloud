@@ -5,6 +5,7 @@ from collections import OrderedDict
 
 from .config import get_settings
 from .http import UpstreamError, client, raise_for_status, stream_client
+from .stalwart_permissions import is_forbidden, refused_permissions, replace_permissions
 
 # JMAP session documents keyed by a hash of the access token, never the token
 # itself: the raw bearer credential should not be sitting around as a dict key
@@ -137,16 +138,9 @@ async def create_app_password(access_token: str, description: str) -> dict:
     # x:AppPassword extension — the same approach the web client takes.
     using = list(session.get("capabilities", {}).keys()) or ["urn:ietf:params:jmap:core"]
 
-    data = await jmap_request(access_token, {
-        "using": using,
-        "methodCalls": [[
-            "x:AppPassword/set",
-            {"accountId": account_id,
-             "create": {"new": {"description": description[:120], "expiresAt": None}}},
-            "0",
-        ]],
-    })
-    response = (data.get("methodResponses") or [[None, {}]])[0][1]
+    response = await _create_app_password(
+        access_token, using, account_id, {"description": description[:120], "expiresAt": None},
+    )
     if response.get("notCreated", {}).get("new"):
         raise UpstreamError("The mail server would not create a password for this device")
     created = (response.get("created") or {}).get("new") or {}
@@ -161,6 +155,41 @@ async def create_app_password(access_token: str, description: str) -> dict:
     if not username:
         raise UpstreamError("The mail server did not say which account this session belongs to")
     return {**created, "username": username}
+
+
+async def _create_app_password(access_token: str, using: list, account_id: str, props: dict) -> dict:
+    """x:AppPassword/set create; returns the method response.
+
+    The password first asks for the account's permissions, which Stalwart 0.16
+    and tokens with full access accept. Stalwart 1.0.3 refuses that from a
+    scoped token (forbidden), so it is retried with the interoperable
+    permissions listed explicitly, and once more without any the server names
+    as not grantable (permissions the account itself lacks).
+    """
+    permissions = None
+    exclude: set[str] = set()
+    response: dict = {}
+    for _ in range(3):
+        new = dict(props)
+        if permissions is not None:
+            new["permissions"] = permissions
+        data = await jmap_request(access_token, {
+            "using": using,
+            "methodCalls": [["x:AppPassword/set", {"accountId": account_id, "create": {"new": new}}, "0"]],
+        })
+        response = (data.get("methodResponses") or [[None, {}]])[0][1]
+        error = (response.get("notCreated") or {}).get("new")
+        if not is_forbidden(error):
+            return response
+        if permissions is None:
+            permissions = replace_permissions()
+            continue
+        refused = refused_permissions(error) - exclude
+        if not refused:
+            return response
+        exclude |= refused
+        permissions = replace_permissions(exclude)
+    return response
 
 
 async def delete_app_password(access_token: str, password_id: str) -> None:

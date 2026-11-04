@@ -14,7 +14,16 @@ class Settings(BaseSettings):
     oauth_client_secret: str
     oauth_redirect_uri: str = "http://localhost:8000/auth/callback"
     session_secret: str
-    oauth_scope: str = "openid offline_access urn:ietf:params:jmap:core urn:ietf:params:jmap:mail"
+    # Stalwart 1.0.3+ grants only the scopes a client requests (and its OAuthClient
+    # allows): the interoperable mail/contacts/calendars/files scopes, plus
+    # Stalwart's security scope for app passwords and device pairing. Older
+    # servers ignore scopes they don't know; the JMAP URNs are kept for them.
+    oauth_scope: str = (
+        "openid offline_access urn:ietf:params:jmap:core urn:ietf:params:jmap:mail"
+        " urn:ietf:params:oauth:scope:mail urn:ietf:params:oauth:scope:contacts"
+        " urn:ietf:params:oauth:scope:calendars urn:ietf:params:oauth:scope:files"
+        " urn:stalwart:oauth:scope:security"
+    )
     frontend_static_dir: str = "static"
     host: str = "0.0.0.0"
     port: int = 8000
