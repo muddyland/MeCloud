@@ -34,7 +34,8 @@ export const RECENT_NOTES_LIMIT = 5;
  * All the overview reads off a FileNode. Asking for these rather than
  * everything keeps a multi-page enumeration to what is actually displayed.
  */
-const FILE_PROPERTIES = ['id', 'name', 'parentId', 'blobId', 'size', 'type', 'modified'];
+// `type` is the media type on Stalwart 0.16, `mediaType` on 1.0; servers ignore the one they lack.
+const FILE_PROPERTIES = ['id', 'name', 'parentId', 'blobId', 'size', 'type', 'mediaType', 'modified'];
 
 const UNREAD_PROPERTIES = ['id', 'subject', 'from', 'receivedAt', 'preview', 'hasAttachment'];
 
