@@ -74,6 +74,107 @@ export function fileLimits(session) {
   };
 }
 
+// ── FileNode dialects ───────────────────────────────────────────────────────
+//
+// Stalwart 0.16 speaks an early JMAP File Storage draft: a node carries
+// `nodeType` ('file' | 'directory') and its media type in `type`, and a create
+// that names `@type` is refused. Stalwart 1.0 speaks draft-ietf-jmap-filenode-18:
+// `@type` ('File' | 'Directory') is required on create, the media type is
+// `mediaType`, and `type` is refused. Neither advertises which draft it
+// implements, so the dialect is learnt from the nodes the server returns, or
+// from the refusal of a write that guessed wrong, and kept for the page's life.
+// The rest of the app always reads the media type from `type`.
+
+export const FILENODE_18 = 'filenode-18';
+export const FILENODE_LEGACY = 'legacy';
+
+let dialect = null;
+
+/** The dialect learnt so far, or null. */
+export function fileNodeDialect() {
+  return dialect;
+}
+
+/** Forget (or set) the learnt dialect. For tests and account switches. */
+export function resetFileNodeDialect(value = null) {
+  dialect = value;
+}
+
+function learnDialect(node) {
+  if (dialect || !node || typeof node !== 'object') return;
+  if ('@type' in node || 'mediaType' in node) dialect = FILENODE_18;
+  else if ('nodeType' in node) dialect = FILENODE_LEGACY;
+}
+
+/** A node as the app reads it: the media type in `type`, whichever draft sent it. */
+export function normalizeNode(node) {
+  if (!node || typeof node !== 'object') return node;
+  learnDialect(node);
+  if (node.type === undefined && node.mediaType !== undefined) {
+    return { ...node, type: node.mediaType };
+  }
+  return node;
+}
+
+/**
+ * Encode create or update properties for a dialect. `kind` ('file' |
+ * 'directory') is given for creates only; `type` is the app's name for the
+ * media type.
+ */
+export function encodeNodeProps(props, { kind = null, dialect: which = dialect ?? FILENODE_18 } = {}) {
+  const { type, ...rest } = props;
+  if (which === FILENODE_18) {
+    if (kind) rest['@type'] = kind === 'directory' ? 'Directory' : 'File';
+    if (type) rest.mediaType = type;
+  } else if (type) {
+    rest.type = type;
+  }
+  return rest;
+}
+
+const DIALECT_PROPERTIES = new Set(['@type', 'mediaType', 'type']);
+
+/** True when a SetError says the write used the other draft's properties. */
+export function isDialectError(error) {
+  return error?.type === 'invalidProperties'
+    && Array.isArray(error.properties)
+    && error.properties.some((p) => DIALECT_PROPERTIES.has(p));
+}
+
+/**
+ * FileNode/set for a single create or update, in the learnt dialect (or the
+ * current draft when nothing is known yet), retried once in the other dialect
+ * when the server refuses the guess. Returns the method response.
+ */
+async function setOneNode(accountId, session, { create = null, update = null, key, kind = null }) {
+  const props = create ?? update;
+  // Only a create, or a write carrying a media type, differs between drafts.
+  const sensitive = Boolean(create) || props.type !== undefined;
+  const send = async (which) => {
+    const encoded = encodeNodeProps(props, { kind: create ? kind : null, dialect: which });
+    const data = await jmapPost(
+      [['FileNode/set', { accountId, [create ? 'create' : 'update']: { [key]: encoded } }, 'f']],
+      fileUsing(session),
+    );
+    return data?.methodResponses?.[0]?.[1];
+  };
+
+  const first = dialect ?? FILENODE_18;
+  const resp = await send(first);
+  if (!sensitive) return resp;
+  if (!isDialectError(firstSetError(resp, key))) {
+    if (!firstSetError(resp, key)) dialect = first;
+    return resp;
+  }
+  const other = first === FILENODE_18 ? FILENODE_LEGACY : FILENODE_18;
+  const retry = await send(other);
+  if (!isDialectError(firstSetError(retry, key))) {
+    dialect = other;
+    return retry;
+  }
+  return resp;
+}
+
 // ── Reading ─────────────────────────────────────────────────────────────────
 
 /**
@@ -130,7 +231,7 @@ async function queryAllNodes(accountId, session, pageSize, properties) {
     for (const node of data?.methodResponses?.[1]?.[1]?.list ?? []) {
       if (seen.has(node.id)) continue;
       seen.add(node.id);
-      nodes.push(node);
+      nodes.push(normalizeNode(node));
       added += 1;
     }
     // A server that ignores `position` would otherwise return page one forever.
@@ -175,7 +276,7 @@ export async function fetchFileNodes(accountId, session, { properties = null } =
       }, 'f']],
       fileUsing(session),
     );
-    const nodes = data?.methodResponses?.[0]?.[1]?.list ?? [];
+    const nodes = (data?.methodResponses?.[0]?.[1]?.list ?? []).map(normalizeNode);
     return { nodes, incomplete: nodes.length >= pageSize };
   }
 }
@@ -201,7 +302,7 @@ export async function getFileNodesByIds(accountId, session, ids) {
     fileUsing(session),
   );
   const resp = data?.methodResponses?.[0]?.[1];
-  return { list: resp?.list ?? [], notFound: resp?.notFound ?? [] };
+  return { list: (resp?.list ?? []).map(normalizeNode), notFound: resp?.notFound ?? [] };
 }
 
 // ── Mutating ────────────────────────────────────────────────────────────────
@@ -228,39 +329,30 @@ export function interpretCreate(resp, key) {
   const error = firstSetError(resp, key);
   if (error) return { node: null, error };
   const created = resp?.created?.[key];
-  return { node: created?.id ? created : null, error: null };
+  return { node: created?.id ? normalizeNode(created) : null, error: null };
 }
 
 export async function createFolder(accountId, session, name, parentId = null) {
-  const data = await jmapPost(
-    [['FileNode/set', { accountId, create: { nf: { name, parentId } } }, 'f']],
-    fileUsing(session),
-  );
-  const { node, error } = interpretCreate(data?.methodResponses?.[0]?.[1], 'nf');
+  const resp = await setOneNode(accountId, session, {
+    create: { name, parentId }, key: 'nf', kind: 'directory',
+  });
+  const { node, error } = interpretCreate(resp, 'nf');
   if (error) throw new JmapSetError(error, 'Could not create the folder.');
   return node ? { name, parentId, blobId: null, ...node } : null;
 }
 
 /** Attach an already-uploaded blob to a new FileNode. */
 export async function createFile(accountId, session, { name, blobId, type, size, parentId = null }) {
-  const data = await jmapPost(
-    [['FileNode/set', {
-      accountId,
-      create: { nn: { name, parentId, blobId, type, size } },
-    }, 'f']],
-    fileUsing(session),
-  );
-  const { node, error } = interpretCreate(data?.methodResponses?.[0]?.[1], 'nn');
+  const resp = await setOneNode(accountId, session, {
+    create: { name, parentId, blobId, type, size }, key: 'nn', kind: 'file',
+  });
+  const { node, error } = interpretCreate(resp, 'nn');
   if (error) throw new JmapSetError(error, 'Could not save the file.');
   return node ? { name, parentId, blobId, type, size, ...node } : null;
 }
 
 export async function updateNode(accountId, session, id, patch) {
-  const data = await jmapPost(
-    [['FileNode/set', { accountId, update: { [id]: patch } }, 'f']],
-    fileUsing(session),
-  );
-  const resp = data?.methodResponses?.[0]?.[1];
+  const resp = await setOneNode(accountId, session, { update: patch, key: id });
   if (resp?.notUpdated?.[id]) {
     throw new JmapSetError(resp.notUpdated[id], 'Could not update the item.');
   }
