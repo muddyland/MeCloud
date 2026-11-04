@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -53,6 +54,88 @@ pub struct Api {
     base: String,
     token: String,
     http: reqwest::blocking::Client,
+    /// The FileNode draft the server speaks, once a write has shown it.
+    dialect: AtomicU8,
+}
+
+/// Stalwart 0.16 speaks an early JMAP File Storage draft: a create naming
+/// `@type` is refused and the media type is `type`. Stalwart 1.0 speaks
+/// draft-ietf-jmap-filenode-18: `@type` ("File" | "Directory") is required on
+/// create, the media type is `mediaType`, and `type` is refused. Neither says
+/// which it implements, so a create starts with the current draft and, if the
+/// server refuses the shape, retries once in the other and remembers it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Dialect {
+    FileNode18,
+    Legacy,
+}
+
+const DIALECT_UNKNOWN: u8 = 0;
+const DIALECT_18: u8 = 1;
+const DIALECT_LEGACY: u8 = 2;
+
+impl Dialect {
+    fn other(self) -> Self {
+        match self {
+            Dialect::FileNode18 => Dialect::Legacy,
+            Dialect::Legacy => Dialect::FileNode18,
+        }
+    }
+    fn code(self) -> u8 {
+        match self {
+            Dialect::FileNode18 => DIALECT_18,
+            Dialect::Legacy => DIALECT_LEGACY,
+        }
+    }
+}
+
+/// The properties of a FileNode create in one dialect. `media_type` is None
+/// for a folder.
+pub fn create_props(
+    dialect: Dialect, name: &str, parent: Option<&str>, file: Option<(&str, u64, &str)>,
+) -> Value {
+    let mut props = json!({ "name": name, "parentId": parent });
+    let map = props.as_object_mut().expect("object");
+    match file {
+        Some((blob_id, size, media_type)) => {
+            map.insert("blobId".into(), json!(blob_id));
+            map.insert("size".into(), json!(size));
+            match dialect {
+                Dialect::FileNode18 => {
+                    map.insert("@type".into(), json!("File"));
+                    map.insert("mediaType".into(), json!(media_type));
+                }
+                Dialect::Legacy => {
+                    map.insert("type".into(), json!(media_type));
+                }
+            }
+        }
+        None => {
+            if dialect == Dialect::FileNode18 {
+                map.insert("@type".into(), json!("Directory"));
+            }
+        }
+    }
+    props
+}
+
+/// True when a create was refused for using the other draft's properties.
+pub fn is_dialect_error(data: &Value, key: &str) -> bool {
+    let Some(error) = data
+        .get("methodResponses")
+        .and_then(Value::as_array)
+        .and_then(|r| r.first())
+        .and_then(|r| r.get(1))
+        .and_then(|r| r.get("notCreated"))
+        .and_then(|n| n.get(key))
+    else {
+        return false;
+    };
+    error.get("type").and_then(Value::as_str) == Some("invalidProperties")
+        && error
+            .get("properties")
+            .and_then(Value::as_array)
+            .is_some_and(|p| p.iter().any(|v| matches!(v.as_str(), Some("@type" | "mediaType" | "type"))))
 }
 
 /// One file or folder on the server.
@@ -78,7 +161,12 @@ impl Api {
     pub fn new(base: &str, token: &str) -> Result<Self, String> {
         // Generous: a sync can move large files over a slow link.
         let http = http_client(Duration::from_secs(600))?;
-        Ok(Self { base: base.trim_end_matches('/').to_string(), token: token.to_string(), http })
+        Ok(Self {
+            base: base.trim_end_matches('/').to_string(),
+            token: token.to_string(),
+            http,
+            dialect: AtomicU8::new(DIALECT_UNKNOWN),
+        })
     }
 
     fn url(&self, path: &str) -> String {
@@ -105,6 +193,45 @@ impl Api {
             return Err(format!("The server refused the request ({status})."));
         }
         response.json().map_err(|e| format!("Unreadable response: {e}"))
+    }
+
+    fn dialect(&self) -> Option<Dialect> {
+        match self.dialect.load(Ordering::Relaxed) {
+            DIALECT_18 => Some(Dialect::FileNode18),
+            DIALECT_LEGACY => Some(Dialect::Legacy),
+            _ => None,
+        }
+    }
+
+    /// FileNode/set create of one node, in whichever draft the server speaks.
+    fn create_node(
+        &self, account_id: &str, key: &str, name: &str, parent: Option<&str>, file: Option<(&str, u64, &str)>,
+    ) -> Result<Value, String> {
+        let send = |dialect: Dialect| {
+            self.jmap(
+                &[CORE, FILENODE],
+                json!([["FileNode/set", {
+                    "accountId": account_id,
+                    "create": { key: create_props(dialect, name, parent, file) }
+                }, "s"]]),
+            )
+        };
+        let first = self.dialect().unwrap_or(Dialect::FileNode18);
+        let data = send(first)?;
+        if !is_dialect_error(&data, key) {
+            if created_id(&data, key).is_some() {
+                self.dialect.store(first.code(), Ordering::Relaxed);
+            }
+            return Ok(data);
+        }
+        let retry = send(first.other())?;
+        if is_dialect_error(&retry, key) {
+            return Ok(data);
+        }
+        if created_id(&retry, key).is_some() {
+            self.dialect.store(first.other().code(), Ordering::Relaxed);
+        }
+        Ok(retry)
     }
 
     pub fn account_id(&self) -> Result<String, String> {
@@ -217,29 +344,15 @@ impl Remote for Api {
     }
 
     fn create_folder(&self, account_id: &str, name: &str, parent: Option<&str>) -> Result<String, String> {
-        let data = self.jmap(
-            &[CORE, FILENODE],
-            json!([["FileNode/set", {
-                "accountId": account_id,
-                "create": { "f": { "name": name, "parentId": parent } }
-            }, "s"]]),
-        )?;
+        let data = self.create_node(account_id, "f", name, parent, None)?;
         created_id(&data, "f").ok_or_else(|| format!("The server would not create the folder \"{name}\"."))
     }
 
     fn create_file(
         &self, account_id: &str, name: &str, parent: Option<&str>, blob_id: &str, size: u64,
     ) -> Result<String, String> {
-        let data = self.jmap(
-            &[CORE, FILENODE],
-            json!([["FileNode/set", {
-                "accountId": account_id,
-                "create": { "n": {
-                    "name": name, "parentId": parent, "blobId": blob_id,
-                    "type": "application/octet-stream", "size": size
-                } }
-            }, "s"]]),
-        )?;
+        let data =
+            self.create_node(account_id, "n", name, parent, Some((blob_id, size, "application/octet-stream")))?;
         created_id(&data, "n").ok_or_else(|| format!("The server would not save \"{name}\"."))
     }
 
@@ -939,5 +1052,51 @@ mod tests {
             serde_json::json!(["error", {"type": "requestTooLarge"}, "g"]),
         ];
         assert_eq!(method_error(&responses).as_deref(), Some("requestTooLarge"));
+    }
+
+    // FileNode drafts: Stalwart 0.16 (legacy) and 1.0 (filenode-18).
+
+    #[test]
+    fn filenode_18_creates_name_their_type_and_media_type() {
+        assert_eq!(
+            create_props(Dialect::FileNode18, "Docs", None, None),
+            serde_json::json!({ "name": "Docs", "parentId": null, "@type": "Directory" })
+        );
+        assert_eq!(
+            create_props(Dialect::FileNode18, "a.txt", Some("p"), Some(("B", 3, "text/plain"))),
+            serde_json::json!({
+                "name": "a.txt", "parentId": "p", "blobId": "B", "size": 3,
+                "@type": "File", "mediaType": "text/plain"
+            })
+        );
+    }
+
+    #[test]
+    fn legacy_creates_use_type_and_no_at_type() {
+        assert_eq!(
+            create_props(Dialect::Legacy, "Docs", None, None),
+            serde_json::json!({ "name": "Docs", "parentId": null })
+        );
+        assert_eq!(
+            create_props(Dialect::Legacy, "a.txt", None, Some(("B", 3, "text/plain"))),
+            serde_json::json!({ "name": "a.txt", "parentId": null, "blobId": "B", "size": 3, "type": "text/plain" })
+        );
+    }
+
+    fn refused(key: &str, error: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "methodResponses": [["FileNode/set", { "notCreated": { key: error } }, "s"]] })
+    }
+
+    #[test]
+    fn only_a_refusal_of_the_draft_properties_switches_dialect() {
+        let wrong_draft = |p: &str| refused("n", serde_json::json!({ "type": "invalidProperties", "properties": [p] }));
+        assert!(is_dialect_error(&wrong_draft("@type"), "n"));
+        assert!(is_dialect_error(&wrong_draft("mediaType"), "n"));
+        assert!(is_dialect_error(&wrong_draft("type"), "n"));
+        assert!(!is_dialect_error(&wrong_draft("name"), "n"));
+        assert!(!is_dialect_error(&wrong_draft("@type"), "f"));
+        assert!(!is_dialect_error(&refused("n", serde_json::json!({ "type": "alreadyExists" })), "n"));
+        let created = serde_json::json!({ "methodResponses": [["FileNode/set", { "created": { "n": { "id": "x" } } }, "s"]] });
+        assert!(!is_dialect_error(&created, "n"));
     }
 }
