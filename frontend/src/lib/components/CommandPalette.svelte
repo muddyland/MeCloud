@@ -8,7 +8,7 @@
   } from '$lib/stores/mail.js';
   import { contacts, selectedContact } from '$lib/stores/contacts.js';
   import { calendars, selectedCalendar } from '$lib/stores/calendar.js';
-  import { fileNodes, currentFolderId, fileSearch } from '$lib/stores/files.js';
+  import { visibleFileNodes, currentFolderId, fileSearch } from '$lib/stores/files.js';
   import { noteNodes, selectedNoteId } from '$lib/stores/notes.js';
   import { noteName } from '$lib/markdown.js';
   import { fileKind } from '$lib/fileTypes.js';
@@ -106,7 +106,9 @@
     run: () => { selectedCalendar.set(cal.id); goto('/calendar'); },
   }));
 
-  $: folderItems = $fileNodes
+  // visibleFileNodes rather than fileNodes: MeCloud's own `.mecloud` folder is
+  // not something to jump to.
+  $: folderItems = $visibleFileNodes
     .filter((n) => fileKind(n) === 'folder')
     .map((n) => ({
       id: `fn:${n.id}`,
@@ -117,7 +119,7 @@
       run: () => { fileSearch.set(''); currentFolderId.set(n.id); goto('/files'); },
     }));
 
-  $: fileItems = $fileNodes
+  $: fileItems = $visibleFileNodes
     .filter((n) => fileKind(n) !== 'folder')
     .map((n) => ({
       id: `f:${n.id}`,

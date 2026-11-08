@@ -53,7 +53,7 @@ export function retryDelayMs(attempt, retryAfter, { random = Math.random, now = 
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function fileUsing(session) {
+export function fileUsing(session) {
   const caps = Object.keys(session?.capabilities ?? {});
   return caps.length ? caps : ['urn:ietf:params:jmap:core', FILENODE_CAPABILITY];
 }
@@ -145,15 +145,23 @@ export function isDialectError(error) {
  * FileNode/set for a single create or update, in the learnt dialect (or the
  * current draft when nothing is known yet), retried once in the other dialect
  * when the server refuses the guess. Returns the method response.
+ *
+ * `ifInState` makes the write conditional (RFC 8620 section 5.3): the server
+ * refuses the whole call with `stateMismatch` if anything changed since that
+ * state was read. A dialect refusal changes nothing, so the retry may reuse it.
  */
-async function setOneNode(accountId, session, { create = null, update = null, key, kind = null }) {
+async function setOneNode(accountId, session, { create = null, update = null, key, kind = null, ifInState = null }) {
   const props = create ?? update;
   // Only a create, or a write carrying a media type, differs between drafts.
   const sensitive = Boolean(create) || props.type !== undefined;
   const send = async (which) => {
     const encoded = encodeNodeProps(props, { kind: create ? kind : null, dialect: which });
     const data = await jmapPost(
-      [['FileNode/set', { accountId, [create ? 'create' : 'update']: { [key]: encoded } }, 'f']],
+      [['FileNode/set', {
+        accountId,
+        ...(ifInState ? { ifInState } : {}),
+        [create ? 'create' : 'update']: { [key]: encoded },
+      }, 'f']],
       fileUsing(session),
     );
     return data?.methodResponses?.[0]?.[1];
@@ -332,9 +340,9 @@ export function interpretCreate(resp, key) {
   return { node: created?.id ? normalizeNode(created) : null, error: null };
 }
 
-export async function createFolder(accountId, session, name, parentId = null) {
+export async function createFolder(accountId, session, name, parentId = null, { ifInState = null } = {}) {
   const resp = await setOneNode(accountId, session, {
-    create: { name, parentId }, key: 'nf', kind: 'directory',
+    create: { name, parentId }, key: 'nf', kind: 'directory', ifInState,
   });
   const { node, error } = interpretCreate(resp, 'nf');
   if (error) throw new JmapSetError(error, 'Could not create the folder.');
@@ -342,17 +350,17 @@ export async function createFolder(accountId, session, name, parentId = null) {
 }
 
 /** Attach an already-uploaded blob to a new FileNode. */
-export async function createFile(accountId, session, { name, blobId, type, size, parentId = null }) {
+export async function createFile(accountId, session, { name, blobId, type, size, parentId = null }, { ifInState = null } = {}) {
   const resp = await setOneNode(accountId, session, {
-    create: { name, parentId, blobId, type, size }, key: 'nn', kind: 'file',
+    create: { name, parentId, blobId, type, size }, key: 'nn', kind: 'file', ifInState,
   });
   const { node, error } = interpretCreate(resp, 'nn');
   if (error) throw new JmapSetError(error, 'Could not save the file.');
   return node ? { name, parentId, blobId, type, size, ...node } : null;
 }
 
-export async function updateNode(accountId, session, id, patch) {
-  const resp = await setOneNode(accountId, session, { update: patch, key: id });
+export async function updateNode(accountId, session, id, patch, { ifInState = null } = {}) {
+  const resp = await setOneNode(accountId, session, { update: patch, key: id, ifInState });
   if (resp?.notUpdated?.[id]) {
     throw new JmapSetError(resp.notUpdated[id], 'Could not update the item.');
   }

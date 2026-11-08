@@ -1,7 +1,7 @@
 <script>
   import FileIcon from './FileIcon.svelte';
   import Spinner from './Spinner.svelte';
-  import { childrenByParent, currentFolderId, expandedFolders } from '$lib/stores/files.js';
+  import { childrenByParent, currentFolderId, expandedFolders, fileSearch } from '$lib/stores/files.js';
   import { fileKind } from '$lib/fileTypes.js';
 
   /** null renders the top level; a folder id renders that folder's children. */
@@ -26,6 +26,13 @@
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
+  }
+
+  // Opening a folder leaves any search, as the root and the breadcrumbs do:
+  // otherwise a tag filter stays on screen under a folder's name.
+  function open(id) {
+    fileSearch.set('');
+    currentFolderId.set(id);
   }
 
   function handleDrop(event, folder) {
@@ -61,7 +68,7 @@
     {/if}
 
     <button
-      on:click={() => currentFolderId.set(folder.id)}
+      on:click={() => open(folder.id)}
       on:dragover|preventDefault={() => (dragOverId = folder.id)}
       on:dragleave={() => (dragOverId = null)}
       on:drop|preventDefault={(e) => handleDrop(e, folder)}

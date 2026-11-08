@@ -12,6 +12,8 @@
   import FilePreview from '$lib/components/FilePreview.svelte';
   import FileContextMenu from '$lib/components/FileContextMenu.svelte';
   import ComposeModal from '$lib/components/ComposeModal.svelte';
+  import TagChips from '$lib/components/TagChips.svelte';
+  import TagsModal from '$lib/components/TagsModal.svelte';
   import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
   import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
   import {
@@ -22,8 +24,13 @@
   import {
     fileNodes, filesLoading, filesError, currentFolderId, selectedFileIds,
     previewNode, fileSearch, viewMode, sortKey, sortAsc, fileContextMenu,
-    uploads, nodesById, childrenByParent, visibleNodes, totalUsage,
+    uploads, nodesById, childrenByParent, allChildrenByParent, visibleNodes, totalUsage,
+    visibleFileNodes, tagIndex, fileTags, tagCounts,
   } from '$lib/stores/files.js';
+  import {
+    loadTagIndex, setTags, findTagIndexNodes, isReservedNode, isReservedFolder,
+    parseTagQuery, tagQuery, tagsFor, tagKey,
+  } from '$lib/tags.js';
   import {
     fetchFileNodes, getFileNodesByIds, createFolder, renameNode, moveNode, destroyNodes,
     uploadFile, downloadNode, supportsFiles, fileLimits,
@@ -53,11 +60,15 @@
   let confirmingDelete = false;
   let deleting = false;
   let uploadError = '';
+  // Whether the last listing was the whole drive. Tags for deleted files are
+  // only cleaned up from a complete one.
+  let listingIncomplete = false;
 
   $: limits = fileLimits($jmapSession);
   $: trail  = breadcrumbTrail($nodesById, $currentFolderId);
   $: searching = $fileSearch.trim().length > 0;
   $: selectionCount = $selectedFileIds.size;
+  $: activeTags = parseTagQuery($fileSearch).tags;
 
   // ── Loading ───────────────────────────────────────────────────────────────
 
@@ -68,7 +79,10 @@
     try {
       const first = await fetchFileNodes($jmapAccountId, $jmapSession);
       fileNodes.set(first.nodes);
+      listingIncomplete = first.incomplete;
       if (first.incomplete) uploadError = INCOMPLETE_LISTING;
+      // Not awaited: the listing is usable before its tags arrive.
+      loadTags(first.nodes);
     } catch (e) {
       filesError.set(e?.message ?? 'Could not load your files.');
     } finally {
@@ -92,7 +106,8 @@
     if ($filesError) return;
 
     const node = $nodesById.get(id);
-    if (!node) {
+    // MeCloud's own folder is hidden, so a link into it is as good as gone.
+    if (!node || isReservedNode(node, $nodesById)) {
       toast('That item is no longer in your files.', 'error');
       return;
     }
@@ -195,10 +210,15 @@
     // The server is the authority on what it accepts, so there is no
     // capability pre-flight here. This check is different: it is about the
     // name, which we can see, and it turns a round trip into an instant answer.
-    const siblings = $childrenByParent.get($currentFolderId ?? null) ?? [];
+    // All children, hidden ones included: the hidden `.mecloud` still holds its name.
+    const siblings = $allChildrenByParent.get($currentFolderId ?? null) ?? [];
     const clash = siblings.find(
       (n) => String(n.name ?? '').toLowerCase() === name.toLowerCase(),
     );
+    if (clash && isReservedFolder(clash)) {
+      toast(`"${clash.name}" is reserved for MeCloud's own data.`, 'error');
+      return;
+    }
     if (clash) {
       // Worded differently from the server's alreadyExists on purpose: when a
       // clash is reported, the first thing worth knowing is whether the app or
@@ -378,7 +398,7 @@
   const uploader = createUploader({
     uploadFile: (file, opts) => uploadFile($jmapAccountId, $jmapSession, file, opts),
     createFolder: (name, parentId) => createFolder($jmapAccountId, $jmapSession, name, parentId),
-    siblingNames: (parentId) => ($childrenByParent.get(parentId) ?? []).map((n) => n.name),
+    siblingNames: (parentId) => ($allChildrenByParent.get(parentId) ?? []).map((n) => n.name),
     onCreated: (node) => fileNodes.update((list) => [...list, node]),
     rows: {
       add: (row) => {
@@ -416,7 +436,9 @@
       const { nodes: fresh, incomplete } = await fetchFileNodes($jmapAccountId, $jmapSession);
       const before = $fileNodes.length;
       fileNodes.set(fresh);
+      listingIncomplete = incomplete;
       if (incomplete) uploadError = INCOMPLETE_LISTING;
+      loadTags(fresh);
       if (failures === 0 && fresh.length < before) {
         toast('Some items were not saved by the server.', 'error');
       }
@@ -482,12 +504,101 @@
     }
   }
 
+  // ── Tags ──────────────────────────────────────────────────────────────────
+  //
+  // The index is a file in the drive (lib/tags.js). It is re-read whenever the
+  // listing is, but only downloaded when its blob actually changed.
+
+  let tagTargetIds = null;      // ids the Tags dialog is open for
+  let tagsBusy = false;
+  let tagsSaveError = '';
+  // Bumped by every save, so a slower read that started before it cannot
+  // replace the saved index with the older one.
+  let tagSeq = 0;
+
+  $: tagTargets = (tagTargetIds ?? []).map((id) => $nodesById.get(id)).filter(Boolean);
+  // Suggestions: most-used first, so the likely tag is the first one offered.
+  $: knownTagNames = [...$tagCounts].sort((a, b) => b.count - a.count).map((t) => t.tag);
+
+  async function loadTags(nodes) {
+    const { file } = findTagIndexNodes(nodes);
+    if ($tagIndex.loaded && ($tagIndex.node?.blobId ?? null) === (file?.blobId ?? null)) return;
+    const seq = tagSeq;
+    try {
+      const result = await loadTagIndex($jmapAccountId, $jmapSession, { nodes });
+      if (seq !== tagSeq) return;
+      tagIndex.set({ index: result.index, node: result.node, loaded: true, error: result.index.error ?? '' });
+    } catch (e) {
+      if (seq !== tagSeq) return;
+      tagIndex.update((t) => ({ ...t, error: e?.message ?? 'Could not load your tags.' }));
+    }
+  }
+
+  function openTags(ids) {
+    if (!ids?.length) return;
+    tagTargetIds = ids;
+    tagsSaveError = '';
+  }
+
+  function closeTags() {
+    if (tagsBusy) return;
+    tagTargetIds = null;
+  }
+
+  /** Put nodes the tag write created or changed into the listing (hidden, but known). */
+  function upsertNodes(list, changed) {
+    let out = list;
+    for (const node of changed) {
+      if (!node?.id) continue;
+      const at = out.findIndex((n) => n.id === node.id);
+      out = at === -1
+        ? [...out, node]
+        : out.map((n, i) => (i === at ? { ...n, ...node } : n));
+    }
+    return out;
+  }
+
+  async function saveTags(event) {
+    const ids = tagTargetIds ?? [];
+    if (!ids.length) return;
+    tagsBusy = true;
+    tagsSaveError = '';
+    tagSeq += 1;
+    try {
+      const result = await setTags($jmapAccountId, $jmapSession, ids, event.detail, {
+        nodes: $fileNodes, incomplete: listingIncomplete,
+      });
+      tagSeq += 1;
+      tagIndex.set({ index: result.index, node: result.node, loaded: true, error: '' });
+      fileNodes.update((list) => upsertNodes(list, [result.folder, result.node]));
+      tagTargetIds = null;
+    } catch (e) {
+      tagsSaveError = e?.message ?? 'Could not save the tags.';
+      if (e?.readOnly) {
+        tagIndex.update((t) => ({
+          ...t, error: e.message, index: { ...t.index, writable: false, error: e.message },
+        }));
+      }
+    } finally {
+      tagsBusy = false;
+    }
+  }
+
+  /** A tag chip or the sidebar: show everything with that tag, drive-wide. */
+  function filterByTag(tag) {
+    const already = activeTags?.length === 1 && activeTags[0] === tagKey(tag);
+    fileSearch.set(already ? '' : tagQuery(tag));
+    selectedFileIds.set(new Set());
+    previewNode.set(null);
+    closeSidebar();
+  }
+
   // ── Keyboard ──────────────────────────────────────────────────────────────
 
   function onKeydown(e) {
     // The preview and the context menu both handle their own keys; letting the
     // listing act as well would clear the selection out from under them.
-    if ($previewNode || $fileContextMenu || $composeOpen) return;
+    if ($previewNode || $fileContextMenu || $composeOpen || tagTargetIds) return;
     if (isTyping(e.target)) return;
     if (e.metaKey || e.ctrlKey) {
       if (e.key === 'a') { e.preventDefault(); selectAll(); }
@@ -562,6 +673,43 @@
              <svelte:self> in a route would refer to the page, not the subtree. -->
         <FolderTree parentId={null} onMove={moveInto} {busyId} />
 
+        <!-- Tags, drive-wide. Clicking one filters by it; clicking it again clears. -->
+        {#if $tagCounts.length || $tagIndex.error}
+          <div class="px-1 pt-4 pb-1">
+            <span id="files-tags-heading"
+                  class="text-xs font-semibold text-gray-400 dark:text-gray-500 uppercase tracking-wider select-none">
+              Tags
+            </span>
+          </div>
+          {#if $tagIndex.error}
+            <p class="px-3 py-1 text-xs text-amber-700 dark:text-amber-400">{$tagIndex.error}</p>
+          {/if}
+          <ul aria-labelledby="files-tags-heading">
+            {#each $tagCounts as entry (entry.tag)}
+              {@const active = activeTags?.length === 1 && activeTags[0] === tagKey(entry.tag)}
+              <li>
+                <button
+                  on:click={() => filterByTag(entry.tag)}
+                  aria-pressed={active}
+                  class="w-full flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm transition-colors duration-150
+                         {active
+                           ? 'bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 font-medium'
+                           : 'text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-800'}"
+                >
+                  <svg class="w-4 h-4 shrink-0 text-gray-400 dark:text-gray-500" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"
+                       aria-hidden="true">
+                    <path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z" /><circle cx="7.5" cy="7.5" r="1.25" />
+                  </svg>
+                  <span class="truncate flex-1 text-left">{entry.tag}</span>
+                  <span class="text-xs text-gray-400 dark:text-gray-500 tabular-nums"
+                        aria-label="{entry.count} item{entry.count === 1 ? '' : 's'}">{entry.count}</span>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
         {#if $filesLoading && $fileNodes.length === 0}
           {#each Array(4) as _}
             <div class="flex items-center gap-2 px-3 py-2">
@@ -575,7 +723,7 @@
       <!-- Storage summary -->
       <div class="px-4 py-3 border-t border-gray-200 dark:border-gray-700 shrink-0">
         <p class="text-xs text-gray-500 dark:text-gray-400">
-          {$fileNodes.length} item{$fileNodes.length === 1 ? '' : 's'} · {formatBytes($totalUsage)}
+          {$visibleFileNodes.length} item{$visibleFileNodes.length === 1 ? '' : 's'} · {formatBytes($totalUsage)}
         </p>
       </div>
 
@@ -609,8 +757,8 @@
           {/each}
           {#if searching}
             <span class="text-gray-300 dark:text-gray-600 select-none">/</span>
-            <span class="px-1.5 py-0.5 text-gray-500 dark:text-gray-400 italic">
-              Search results
+            <span class="px-1.5 py-0.5 text-gray-500 dark:text-gray-400 italic truncate">
+              {activeTags ? `Tagged ${$fileSearch.trim()}` : 'Search results'}
             </span>
           {/if}
         </nav>
@@ -625,7 +773,8 @@
           <input
             value={$fileSearch}
             on:input={(e) => fileSearch.set(e.currentTarget.value)}
-            placeholder="Search files…"
+            placeholder="Search or #tag…"
+            aria-label="Search files by name or tag"
             class="w-44 text-xs pl-8 pr-2 py-1.5 rounded-lg
                    bg-gray-100 dark:bg-gray-700/60 text-gray-800 dark:text-gray-200
                    placeholder-gray-400 dark:placeholder-gray-500
@@ -642,6 +791,13 @@
             {selectionCount} selected
           </span>
           <button class={toolbarBtn} on:click={clearSelection}>Clear</button>
+          <button class={toolbarBtn} on:click={() => openTags([...$selectedFileIds])}>
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z" /><circle cx="7.5" cy="7.5" r="1.25" />
+            </svg>
+            Tags
+          </button>
           <div class="w-px h-4 bg-gray-200 dark:bg-gray-600 mx-1"></div>
           {#if confirmingDelete}
             <span class="text-xs text-gray-600 dark:text-gray-300 px-1">Delete permanently?</span>
@@ -855,7 +1011,9 @@
                  stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round">
               <path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
             </svg>
-            <p class="text-sm">{searching ? 'No files match that search' : 'This folder is empty'}</p>
+            <p class="text-sm">
+              {activeTags ? 'Nothing is tagged that way' : searching ? 'No files match that search' : 'This folder is empty'}
+            </p>
             {#if !searching}
               <p class="text-xs">Drag files here, or use Upload</p>
             {/if}
@@ -928,6 +1086,7 @@
                   <span class="text-[11px] text-gray-400 dark:text-gray-500">
                     {isFolder ? '' : formatBytes(node.size)}
                   </span>
+                  <TagChips tags={tagsFor($fileTags, node.id)} max={2} onSelect={filterByTag} cls="justify-center" />
                 {/if}
 
                 <button
@@ -952,6 +1111,7 @@
               <tr class="border-b border-gray-200 dark:border-gray-700 text-left">
                 <th class="w-10 px-3 py-2"></th>
                 <th class="px-2 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">Name</th>
+                <th class="hidden sm:table-cell px-2 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider w-48">Tags</th>
                 <th class="px-2 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider w-28">Size</th>
                 <th class="px-2 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider w-44">Modified</th>
                 <th class="w-20 px-2 py-2"></th>
@@ -1019,6 +1179,11 @@
                         <span class="truncate text-gray-800 dark:text-gray-200">{node.name}</span>
                       {/if}
                     </button>
+                    <!-- No room for a Tags column on a phone: the chips go under the name. -->
+                    <TagChips tags={tagsFor($fileTags, node.id)} max={3} onSelect={filterByTag} cls="sm:hidden mt-1" />
+                  </td>
+                  <td class="hidden sm:table-cell px-2 py-2">
+                    <TagChips tags={tagsFor($fileTags, node.id)} max={3} onSelect={filterByTag} />
                   </td>
                   <td class="px-2 py-2 text-xs text-gray-500 dark:text-gray-400 tabular-nums">
                     {isFolder ? '—' : formatBytes(node.size)}
@@ -1082,8 +1247,21 @@
   onRename={startRename}
   onDelete={confirmDeleteIds}
   onShare={shareViaEmail}
+  onTags={openTags}
   onUpload={() => fileInput?.click()}
   onNewFolder={() => { creatingFolder = true; newFolderName = ''; }}
+/>
+
+<TagsModal
+  open={tagTargets.length > 0}
+  nodes={tagTargets}
+  tags={$fileTags}
+  known={knownTagNames}
+  busy={tagsBusy}
+  readOnly={!$tagIndex.index.writable}
+  error={$tagIndex.index.writable ? tagsSaveError : $tagIndex.error}
+  on:save={saveTags}
+  on:close={closeTags}
 />
 
 <!-- Sharing a file opens a compose window without leaving Files. -->
