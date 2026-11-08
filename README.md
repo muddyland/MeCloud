@@ -60,7 +60,7 @@ are built from the source archive, because each uses its own system webview:*
   code), autosave, full-text search, and front-matter aware titles. Relative
   image links are resolved against the note's own folder, so wiki-style
   attachment paths (`.attachments.NNN/image%20(4).png`) render
-- **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio, video, Word documents, spreadsheets (values) and presentations (outline). Images thumbnail in place of their icon in both views, and a right-click menu carries the per-item actions — open, download, rename, delete, and share via email
+- **Files** — an iCloud Drive–style browser over JMAP File Storage: folder tree, breadcrumbs, grid/list views, drag-and-drop upload with progress, drag-to-move, rename, search, and inline preview for images, PDFs, text, audio, video, Word documents, spreadsheets (values) and presentations (outline). Images thumbnail in place of their icon in both views, and a right-click menu carries the per-item actions — open, download, rename, tag, delete, and share via email. Tags are stored in the drive itself (`.mecloud/tags.json`, shared with the desktop client), show as chips on each file, and are searchable: clicking a tag, or typing `#tax`, lists everything with it
 - Mail attachments — downloadable through the same authenticated blob proxy, and
   sendable from either source: **from this device**, by picker or by dropping onto
   the compose window, with per-file upload progress; or **from Files**, browsing
@@ -308,6 +308,7 @@ mecloud/
 │       │   ├── fileTypes.js        # File classification (pure, unit-tested)
 │       │   ├── attachments.js      # Attachment selection rules (pure, unit-tested)
 │       │   ├── notes.js            # Notes over FileNode (.md in a Notes folder)
+│       │   ├── tags.js             # File tags: .mecloud/tags.json format + safe writes (pure, unit-tested)
 │       │   ├── markdown.js         # Markdown render + sanitise
 │       │   ├── markdownEdit.js     # Toolbar text transforms (pure, unit-tested)
 │       │   ├── jmapErrors.js       # RFC 8620 error mapping (pure, unit-tested)

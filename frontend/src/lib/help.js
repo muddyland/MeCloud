@@ -148,7 +148,7 @@ export const HELP = [
       {
         title: 'The right-click menu',
         body: [
-          'Right-click any file or folder for preview, open in a new tab, download, share by email, rename, select and delete. Right-clicking inside a multi-selection acts on the whole selection.',
+          'Right-click any file or folder for preview, open in a new tab, download, share by email, rename, tags, select and delete. Right-clicking inside a multi-selection acts on the whole selection.',
           'Right-clicking empty space gives you Upload and New folder for the folder you are in.',
         ],
       },
@@ -164,6 +164,16 @@ export const HELP = [
           'Drag items onto a folder in the listing or the sidebar tree to move them. The pencil renames. Search covers the whole drive rather than the open folder, so it finds things you have forgotten the location of.',
           'Deleting a folder deletes what is inside it.',
         ],
+      },
+      {
+        title: 'Tags',
+        body: [
+          'Tags are labels you choose — “Tax”, “Insurance 2026”, “Kitchen” — for finding files again by what they are rather than where they are. Right-click a file and choose Tags…, type a tag and press Enter or a comma, then Save. Tags you have used before are offered as you type, so “tax” joins your existing “Tax” instead of becoming a second tag.',
+          'Select several files first to tag them all at once: a tag added there goes on every selected file, and removing one takes it off all of them.',
+          'Tags show as small chips on each file, in both the grid and the list. Clicking a chip, or a tag in the Tags list in the sidebar, shows every file with that tag, wherever it is in your drive. You can also type it in the search box: #tax shows files tagged Tax, and #tax #2026 only those with both. Ordinary searches match tags as well as names.',
+          'Tags can also be added from the desktop app when it scans your files. Both use the same tags, and renaming or moving a file keeps them.',
+        ],
+        tip: 'Tags are kept in a small file in a hidden .mecloud folder at the top of your drive, so they travel with your files. Leave it in place: deleting it deletes every tag.',
       },
     ],
   },

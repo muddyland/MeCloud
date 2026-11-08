@@ -14,7 +14,7 @@
   import Modal from './Modal.svelte';
   import Spinner from './Spinner.svelte';
   import FileThumbnail from './FileThumbnail.svelte';
-  import { fileNodes, nodesById, childrenByParent } from '$lib/stores/files.js';
+  import { fileNodes, visibleFileNodes, nodesById, childrenByParent } from '$lib/stores/files.js';
   import { fetchFileNodes, supportsFiles } from '$lib/files.js';
   import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
   import { breadcrumbTrail, compareNodes, fileKind, formatBytes } from '$lib/fileTypes.js';
@@ -66,9 +66,10 @@
 
   $: query = search.trim().toLowerCase();
   // Search spans the whole drive, matching the Files app — scoping it to the
-  // open folder makes it useless for actually finding an attachment.
+  // open folder makes it useless for actually finding an attachment. MeCloud's
+  // own `.mecloud` folder is left out, here as everywhere files are listed.
   $: rows = (query
-      ? $fileNodes.filter((n) => String(n.name ?? '').toLowerCase().includes(query))
+      ? $visibleFileNodes.filter((n) => String(n.name ?? '').toLowerCase().includes(query))
       : ($childrenByParent.get(folderId ?? null) ?? [])
     ).slice().sort((a, b) => compareNodes(a, b, { key: 'name', ascending: true }));
 

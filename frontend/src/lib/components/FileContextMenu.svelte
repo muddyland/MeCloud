@@ -23,6 +23,8 @@
   export let onDelete = () => {};
   /** @type {(nodes: object[]) => void} */
   export let onShare = () => {};
+  /** @type {(ids: string[]) => void} */
+  export let onTags = () => {};
   export let onUpload = () => {};
   export let onNewFolder = () => {};
 
@@ -47,7 +49,7 @@
   // Keep the menu inside the viewport when opened near an edge — off-screen
   // items are unreachable, and the bottom row is the destructive one.
   const MENU_W = 210;
-  const MENU_H = 330;
+  const MENU_H = 370;
   $: menuX = menu
     ? Math.max(8, Math.min(menu.x, (typeof window !== 'undefined' ? window.innerWidth : 1e4) - MENU_W))
     : 0;
@@ -65,6 +67,7 @@
   const share     = run(() => onShare(shareable));
   const upload    = run(() => onUpload());
   const newFolder = run(() => onNewFolder());
+  const tags      = run(() => onTags(ids));
 
   const download = run(() => {
     // One <a>.click() per file, which is all the browser gives us — there is no
@@ -134,6 +137,13 @@
 
       <div class={divider}></div>
 
+      <button on:click={tags} class={itemCls}>
+        <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.25"/></svg>
+        Tags…
+      </button>
+
+      <div class={divider}></div>
+
       <button on:click={remove} class={dangerCls}>
         <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 011-1h4a1 1 0 011 1v2"/></svg>
         Delete
@@ -177,6 +187,10 @@
       <button on:click={rename} class={itemCls}>
         <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
         Rename
+      </button>
+      <button on:click={tags} class={itemCls}>
+        <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="7.5" cy="7.5" r="1.25"/></svg>
+        Tags…
       </button>
       <button on:click={selectOnly} class={itemCls}>
         <svg class="w-4 h-4 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="m9 12 2 2 4-4"/></svg>

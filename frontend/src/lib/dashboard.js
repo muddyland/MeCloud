@@ -23,6 +23,7 @@ import { fetchFileNodes } from './files.js';
 import { fileKind } from './fileTypes.js';
 import { isMarkdown } from './markdown.js';
 import { findNotesFolder, collectNotes } from './notes.js';
+import { reservedIds } from './tags.js';
 import { parseEventStart } from './calendarDates.js';
 
 /** How many rows each list on the overview shows. */
@@ -137,17 +138,22 @@ function subtreeIds(nodes, rootId) {
   return ids;
 }
 
-/** Roll a flat FileNode list up into counts and a byte total. */
+/**
+ * Roll a flat FileNode list up into counts and a byte total.
+ *
+ * MeCloud's own `.mecloud` folder is not one of the user's files, so it is
+ * not counted as one — but its bytes are real storage and stay in the total.
+ */
 export function summariseFiles(nodes) {
+  const hidden = reservedIds(nodes);
   let files = 0;
   let folders = 0;
   let bytes = 0;
   for (const node of nodes) {
+    if (fileKind(node) !== 'folder') bytes += Number(node.size) || 0;
+    if (hidden.has(node.id)) continue;
     if (fileKind(node) === 'folder') folders += 1;
-    else {
-      files += 1;
-      bytes += Number(node.size) || 0;
-    }
+    else files += 1;
   }
   return { files, folders, bytes, notes: allNotes(nodes).length };
 }
@@ -158,11 +164,13 @@ export function summariseFiles(nodes) {
  * Folders are excluded because "recent" here means something you worked on,
  * and a folder's timestamp moves whenever anything lands inside it. The Notes
  * subtree is excluded too — it has its own section below, and a note appearing
- * in both reads as a duplicate rather than as two facts.
+ * in both reads as a duplicate rather than as two facts. So is `.mecloud`:
+ * saving tags rewrites its index, which would otherwise top this list.
  */
 export function recentFiles(nodes, { limit = RECENT_FILES_LIMIT } = {}) {
   const notesFolder = findNotesFolder(nodes);
   const skip = subtreeIds(nodes, notesFolder?.id ?? null);
+  for (const id of reservedIds(nodes)) skip.add(id);
 
   return nodes
     .filter((node) => fileKind(node) !== 'folder' && !skip.has(node.id))
