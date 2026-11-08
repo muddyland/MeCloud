@@ -3,6 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::config::{self, Config};
+use crate::scanner::{self, discover, Mode, Paper, Scanner, Settings, Source};
 use crate::sync::{SharedStatus, State, Status};
 use crate::{run_pass, socket, update, Pass};
 
@@ -63,6 +64,29 @@ pub fn handle(loaded: &Config) {
         }
     }
 
+    // Scanners this computer can see, as JSON.
+    if args.iter().any(|a| a == "--scanners") {
+        let (found, notes) = discover::discover(std::time::Duration::from_secs(3), &loaded.scan.manual);
+        let out = serde_json::json!({ "scanners": found, "notes": notes });
+        println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+        std::process::exit(0);
+    }
+
+    // Scan straight into the drive with no window — for a scanner's button
+    // (scanbd runs a command), a keyboard shortcut, or a script.
+    if args.iter().any(|a| a == "--scan") {
+        match scan_from_args(loaded, &args) {
+            Ok(out) => {
+                println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
+                std::process::exit(0);
+            }
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     // A single pass, for a cron job or for working out why a sync is not
     // doing what was expected. Exits with the result.
     if args.iter().any(|a| a == "--sync-once") {
@@ -88,4 +112,111 @@ pub fn handle(loaded: &Config) {
             _ => 0,
         });
     }
+}
+
+/// The value after `--flag`, if given.
+fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+    args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+}
+
+/// `--scan [--scanner ID|ADDRESS] [--source flatbed|feeder|duplex]
+/// [--mode color|gray|bw] [--resolution DPI] [--paper a4|letter|legal|full]
+/// [--folder PATH] [--name NAME] [--tags "a, b"]`
+///
+/// Anything not given comes from the last scan made in the window, so a
+/// scanner button can run a bare `mecloud-desktop --scan`.
+fn scan_from_args(loaded: &Config, args: &[String]) -> Result<serde_json::Value, String> {
+    let server = loaded.server_url.clone().ok_or("Not connected to a server.")?;
+    let token = config::load_token().ok_or("This computer is not connected to your account.")?;
+    let prefs = &loaded.scan;
+
+    let scanner: Scanner = match flag(args, "--scanner") {
+        None => prefs.scanner.clone().ok_or("No scanner given, and none used before. Pass --scanner (see --scanners).")?,
+        Some(wanted) => {
+            let known: Vec<Scanner> = prefs.manual.iter().chain(prefs.scanner.iter()).cloned().collect();
+            if let Some(s) = known.into_iter().find(|s| s.id == wanted) {
+                s
+            } else if let Some(device) = wanted.strip_prefix("sane:") {
+                Scanner::sane(device, device)
+            } else if wanted.contains("://") || wanted.contains('.') && !wanted.starts_with("escl:") {
+                let root = scanner::escl::root_from_input(wanted)?;
+                Scanner::escl(&root, None, &root, true)
+            } else {
+                let (found, _) = discover::discover(std::time::Duration::from_secs(3), &prefs.manual);
+                found.into_iter().find(|s| s.id == wanted).ok_or(format!("No scanner \"{wanted}\" was found."))?
+            }
+        }
+    };
+
+    let remembered = prefs.settings.unwrap_or(Settings {
+        source: Source::Flatbed,
+        mode: Mode::Color,
+        resolution: 300,
+        paper: Paper::for_locale(std::env::var("LC_PAPER").or_else(|_| std::env::var("LANG")).ok().as_deref()),
+    });
+    let parse_or = |name: &str, current: Option<String>| flag(args, name).map(str::to_string).or(current);
+    let wanted = Settings {
+        source: match flag(args, "--source") {
+            Some(v) => Source::parse(v).ok_or(format!("Unknown --source {v}"))?,
+            None => remembered.source,
+        },
+        mode: match flag(args, "--mode") {
+            Some(v) => Mode::parse(v).ok_or(format!("Unknown --mode {v}"))?,
+            None => remembered.mode,
+        },
+        resolution: match flag(args, "--resolution") {
+            Some(v) => v.parse().map_err(|_| format!("Unknown --resolution {v}"))?,
+            None => remembered.resolution,
+        },
+        paper: match flag(args, "--paper") {
+            Some(v) => Paper::parse(v).ok_or(format!("Unknown --paper {v}"))?,
+            None => remembered.paper,
+        },
+    };
+    let settings = scanner::fit(&scanner::options(&scanner)?, wanted)?;
+
+    let api = crate::api::Api::new(&server, &token)?;
+    let account = api.account_id()?;
+
+    // A folder by path, as the web UI shows it; otherwise the last one used.
+    let (folder_id, folder_path) = match parse_or("--folder", None) {
+        None => (prefs.folder_id.clone(), prefs.folder_path.clone()),
+        Some(path) => {
+            let path = path.trim_matches('/').to_string();
+            if path.is_empty() {
+                (None, None)
+            } else {
+                let folders = crate::scanning::folders(&crate::api::Remote::nodes(&api, &account)?)?;
+                let found = folders
+                    .into_iter()
+                    .find(|f| f.path.eq_ignore_ascii_case(&path))
+                    .ok_or(format!("There is no folder \"{path}\" in your drive."))?;
+                (found.id, Some(found.path))
+            }
+        }
+    };
+
+    let job = crate::scanning::Job {
+        scanner,
+        settings,
+        folder_id,
+        folder_path,
+        name: flag(args, "--name").unwrap_or_default().to_string(),
+        tags: crate::tags::split_input(flag(args, "--tags").unwrap_or_default()),
+    };
+    let saved = crate::scanning::run(
+        &api,
+        &account,
+        job,
+        &|_, line| eprintln!("{line}"),
+        &std::sync::atomic::AtomicBool::new(false),
+    )?;
+    Ok(serde_json::json!({
+        "node_id": saved.open.node_id,
+        "name": saved.open.name,
+        "folder": saved.open.folder_path.unwrap_or_default(),
+        "pages": saved.open.pages.len(),
+        "tags": saved.open.tags,
+        "warning": saved.warning,
+    }))
 }

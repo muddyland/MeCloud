@@ -11,6 +11,7 @@ use crate::{background, windows, AppState};
 pub fn build(app: &AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open MeCloud", true, None::<&str>)?;
     let compose = MenuItem::with_id(app, "compose", "New message", true, None::<&str>)?;
+    let scan = MenuItem::with_id(app, "scan", "Scan a document…", true, None::<&str>)?;
 
     let mail = MenuItem::with_id(app, "app:/mail", "Mail", true, None::<&str>)?;
     let files = MenuItem::with_id(app, "app:/files", "Files", true, None::<&str>)?;
@@ -37,6 +38,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
         &[
             &open,
             &compose,
+            &scan,
             &PredefinedMenuItem::separator(app)?,
             &apps,
             &PredefinedMenuItem::separator(app)?,
@@ -71,6 +73,7 @@ pub fn build(app: &AppHandle) -> tauri::Result<()> {
                 }),
             ),
             "settings" => windows::open_setup(app),
+            "scan" => windows::open_setup_at(app, "scan"),
             "updates" => {
                 // The check is network work and cannot run on the main thread;
                 // opening the window afterwards may only run there.

@@ -2,7 +2,8 @@
 
 The MeCloud web apps in a native window, with the desktop integration a web
 page cannot do for itself: a tray icon, staying resident when its window is
-closed, and being the system's handler for `mailto:` links.
+closed, being the system's handler for `mailto:` links, syncing a folder, and
+scanning paper straight into the drive.
 
 Built with [Tauri 2](https://tauri.app/) — the window is the operating system's
 own webview, so the binary is small (**about 8 MB** stripped, release, sync engine included) and the
@@ -180,6 +181,11 @@ installed:
 | Arch | `sudo pacman -S webkit2gtk-4.1 gtk3 libappindicator-gtk3` |
 | openSUSE | `sudo zypper install libwebkit2gtk-4_1-0 gtk3 libayatana-appindicator3-1` |
 
+Scanning USB scanners needs SANE's `scanimage` as well (`sane-utils` on
+Debian and Ubuntu, `sane-backends` on Fedora and Arch); network scanners need
+nothing. It is optional: without it the Scan screen simply lists no SANE
+devices.
+
 `install.sh` checks for them with `ldd` before installing anything and prints
 the right line for the distribution it finds itself on. Without that check the
 first symptom is the dynamic linker's
@@ -233,6 +239,9 @@ mecloud-desktop --check-update   # print what the server ships, and whether it i
 mecloud-desktop --update         # check, and install if there is one
 mecloud-desktop --share <file>   # start a message with that file attached
 mecloud-desktop --open  <file>   # show that file in the web UI
+mecloud-desktop --scan-window    # open the Scan screen
+mecloud-desktop --scanners       # list the scanners this computer can see, as JSON
+mecloud-desktop --scan [...]     # scan into the drive with no window (see Scanning)
 ```
 
 ### How it decides
@@ -544,6 +553,156 @@ everywhere, not only in the window.
 Requests go to the server's own `/api/jmap` and `/api/files/blob` — the same
 endpoints the web UI uses. The client never holds a mail-server credential and
 never needs to know where the mail server is.
+## Scanning
+
+![Scan](../docs/screenshot-desktop-scan.png)
+
+**Scan** (in Settings, or *Scan a document…* on the tray menu) puts paper into
+the drive: pick the scanner, the folder, a name and some tags, press **Scan**,
+and the PDF is uploaded the moment the scanner finishes. It goes straight to
+the server through the same proxy sync uses — it does not wait for, depend
+on, or even need the sync folder, so a computer that does not sync can scan.
+
+### Which scanners
+
+Two ways in, which between them reach nearly every scanner a home or small
+office has:
+
+| | How | Reaches |
+|---|---|---|
+| **eSCL** (AirScan, Mopria) | HTTP + XML, found by mDNS (`_uscan._tcp`) or added by address | practically every network scanner and multifunction printer of the last decade, with no driver, on Linux, Windows and macOS alike |
+| **SANE** | the `scanimage` command (`sane-utils` on Debian/Ubuntu) | USB scanners on Linux, and anything else SANE has a driver for; macOS with Homebrew's `sane-backends` |
+
+Both are searched at once — SANE probing USB and the network takes a few
+seconds on its own. SANE's own network backends (`escl`, `airscan`) see the
+same network scanners mDNS does, so when mDNS found any, those SANE entries
+are left out rather than listing every printer twice.
+
+A network scanner that does not announce itself — on another subnet, or
+behind a router that filters multicast — can be added by address under
+*Not listed?*. It is asked for its capabilities first, so a typo is caught
+there and not at the first scan.
+
+USB scanners on **Windows** are not reachable: that would mean WIA or TWAIN,
+native code this repository cannot build or test. A network scanner works on
+Windows exactly as on Linux.
+
+Scanners on `https` (`_uscans`) present self-signed certificates — a printer
+has no way to get any other kind — so their certificate is not checked. That
+is the same protection as the plain-HTTP address the same scanner also
+offers, which is preferred whenever both are announced.
+
+### What it asks the scanner for
+
+Pages, as JPEG, which `scanner/pdf.rs` makes into one PDF **without decoding
+or re-encoding them**: JPEG goes in under `/DCTDecode` as the scanner sent it,
+and SANE's black-and-white PNG goes in under `/FlateDecode` with the PNG
+predictor, which PDF defines to read PNG's own image data. No PDF library, no
+image library, no second lossy pass. A scanner that offers only PDF is asked
+for PDF, and that file is uploaded as it is.
+
+The choices offered are the ones the scanner reports — glass, feeder, feeder
+both sides; colour, grey, black and white; the usual document resolutions it
+can do — and a remembered setting the scanner cannot do falls back to its
+nearest equivalent instead of being refused. Black and white is offered only
+through SANE: over eSCL it arrives as PDF or as a format this client would
+have to decode, and "black and white" that quietly arrived as grey would be a
+promise not kept.
+
+The page size (A4, Letter, Legal, or the whole glass) is cut to what the
+scanner can reach; it defaults to Letter where people use it and A4
+everywhere else, from `LC_PAPER` or `LANG`.
+
+### Multi-page documents
+
+The feeder reads until it is empty, and the pages become one PDF. From the
+glass, each scan is one page — and because the document is already on the
+server by then, **Add a page** scans another sheet and replaces the file's
+contents with the longer document: same file, same name, same tags. That is
+what multi-page scanning on a flatbed has to look like when every scan is
+uploaded the moment it is made.
+
+### Names
+
+Left empty, a scan is called `Scan 2026-11-08 14.31.pdf` — local time, because
+that is the clock beside the scanner, and dots rather than a colon, which
+Windows and macOS refuse in file names. A name already used in that folder
+gets ` (2)`, compared case-insensitively, so the drive never holds two names
+a Mac's file system would see as one.
+
+### Tags
+
+Tags are written into the drive's tag index, the same one the web Files app
+reads, shows and searches (`#tax` in the Files search finds everything tagged
+Tax). JMAP's FileNode has no tags property and the server keeps no state of
+its own, so the index is a file in the drive itself — `.mecloud/tags.json`,
+keyed by node id so a rename or a move keeps a file's tags:
+
+```json
+{ "version": 1, "tags": { "<node id>": ["Tax", "Insurance 2026"] } }
+```
+
+`tags.rs` and the web app's `tags.js` follow the same rules, and must: a
+leading `#` is dropped, spaces are collapsed, commas are refused, at most 40
+characters and 20 tags per file, and a tag already in use keeps its spelling
+— "tax" typed today joins yesterday's "Tax" rather than starting a second tag
+that finds half the files.
+
+Writing is read-modify-write under JMAP's `ifInState`: a second client
+tagging at the same moment is refused by the server, reads again, and applies
+its change on top — checked with four scans tagging at once, none lost.
+Unknown keys in the file are carried through, an index from a newer format is
+never written, and one that cannot be read is never replaced.
+
+The PDF's own *Keywords* carry the tags too, so a scan that leaves the drive —
+downloaded, mailed, synced elsewhere — keeps them, and desktop search tools
+index the field. They are what the document was scanned with; tags changed
+later live in the index.
+
+`.mecloud` is never synced: the index describes server nodes by id, so a
+local copy would mean nothing, and two machines editing one would make
+conflicted copies of the user's tags.
+
+### Without a window
+
+`--scan` does the same from a command line, which is what a scanner's own
+button can run (`scanbd` calls a script), or a keyboard shortcut:
+
+```bash
+mecloud-desktop --scanners                       # what is there, with ids
+mecloud-desktop --scan --scanner escl:<uuid> --source feeder --mode gray \
+    --resolution 300 --paper a4 --folder "Documents/Receipts" \
+    --name "Gas bill" --tags "Bills, Home"
+```
+
+Every option is optional and comes from the last scan made in the window,
+so a bare `mecloud-desktop --scan` repeats it. `--scanner` takes an id from
+`--scanners`, `sane:<device>`, or a network scanner's address. Progress goes
+to stderr; the result — node id, name, folder, pages, tags — is printed as
+JSON.
+
+### How it was checked
+
+Unit tests cover the PDF writer (every cross-reference entry lands on its
+object), capability and status parsing (a real HP's document), the job flow
+against a scripted scanner (feeder until empty, exactly one page from the
+glass, an empty feeder refused before a job starts, a cancelled job still
+released), SANE's option parsing, and the tag index's merge and retry logic
+against a server that refuses on cue. Two more run against real software when
+it is there:
+
+```bash
+# SANE's test driver (scanimage and the `test` backend):
+MECLOUD_SANE_TEST=1 SANE_CONFIG_DIR=/path/with/dll.conf/listing/test cargo test sane_test_driver
+
+# A real eSCL server — AirSane in front of the same test driver — and mDNS:
+MECLOUD_ESCL_TEST_URL=http://host:8090/eSCL MECLOUD_MDNS_TEST=1 cargo test real_escl announced_on
+```
+
+End to end, the client scanned through both against Stalwart 1.0.3 behind a
+MeCloud server: PDFs pass `qpdf --check`, carry their Keywords, and land in
+the chosen folder with their tags in the index.
+
 ## File manager integration
 
 Files in the sync folder carry a sync badge, and get a MeCloud submenu on
@@ -830,7 +989,10 @@ desktop/
 │   │   ├── syncdb.rs      # the baseline, in SQLite (tested)
 │   │   ├── update.rs      # version compare, digest, self-replace (tested)
 │   │   ├── api.rs         # JMAP + blobs via the server's proxy (tested)
-│   │   └── sync.rs        # the executor, tested end to end against a fake server
+│   │   ├── sync.rs        # the executor, tested end to end against a fake server
+│   │   ├── scanner/       # eSCL, SANE, discovery, and the PDF writer (tested)
+│   │   ├── scanning.rs    # a scan, from the scanner to a file in the drive (tested)
+│   │   └── tags.rs        # the drive's tag index, shared with the web app (tested)
 │   ├── capabilities/      # IPC scope — setup window only
 │   ├── icons/
 │   └── tauri.conf.json

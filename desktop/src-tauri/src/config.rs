@@ -75,6 +75,31 @@ pub struct Config {
     /// every launch for someone who deleted it.
     #[serde(default)]
     pub sidebar_entry_placed: bool,
+    /// The last scan's choices, so the next one starts where it left off.
+    #[serde(default)]
+    pub scan: ScanPrefs,
+}
+
+/// What the Scan screen remembers between scans. Tags are deliberately not
+/// remembered: they describe one document, and carrying them onto the next
+/// is how a gas bill ends up tagged "Tax 2025".
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+pub struct ScanPrefs {
+    /// The scanner last used, whole, so a scan can start without waiting for
+    /// discovery — and from the command line, with none at all.
+    #[serde(default)]
+    pub scanner: Option<crate::scanner::Scanner>,
+    #[serde(default)]
+    pub settings: Option<crate::scanner::Settings>,
+    /// Drive folder the scan goes into: its id, and its path for display.
+    /// None is the top of the drive.
+    #[serde(default)]
+    pub folder_id: Option<String>,
+    #[serde(default)]
+    pub folder_path: Option<String>,
+    /// Scanners added by address, which discovery would not find.
+    #[serde(default)]
+    pub manual: Vec<crate::scanner::Scanner>,
 }
 
 /// Written out by hand rather than derived.
@@ -102,6 +127,7 @@ impl Default for Config {
             sync_hidden: default_true(),
             sync_interval_secs: default_sync_interval(),
             sidebar_entry_placed: false,
+            scan: ScanPrefs::default(),
         }
     }
 }

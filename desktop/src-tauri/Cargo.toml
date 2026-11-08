@@ -1,6 +1,6 @@
 [package]
 name        = "mecloud-desktop"
-version     = "0.8.1"
+version     = "0.9.0"
 description = "MeCloud desktop client"
 edition     = "2021"
 # 1.89 for std::fs::File::try_lock, which keeps two sync passes from running at
@@ -39,6 +39,16 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 sha2 = "0.10"
 hex = "0.4"
 walkdir = "2"
+
+# Scanning.
+# eSCL scanners announce themselves over mDNS; pure Rust, no Avahi or Bonjour
+# needed, so discovery works the same on all three systems.
+mdns-sd = "0.21"
+# eSCL capabilities and status are XML. Already in the tree through Tauri.
+quick-xml = "0.42"
+# Local time, for a scan's default name ("Scan 2026-11-08 14.31"). Already in
+# the tree; `clock` is the only feature that adds anything, the time zone.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [profile.release]
 # The binary is served over the network from the web UI, so size is a feature.
