@@ -39,7 +39,12 @@ use serde::{Deserialize, Serialize};
 /// deleted; the scratch suffixes are its own half-finished downloads. A crash
 /// mid-download used to leave a `.mecloud-part` behind that the next pass
 /// uploaded as if it were a real file.
-const IGNORED_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini", ".Trash-1000", TRASH_DIR];
+///
+/// `.mecloud` is the drive's own: the tag index the web Files app and the
+/// Scan screen share (`tags.rs`). It describes nodes on the server by id, so a
+/// local copy would be meaningless, and two machines editing one would make
+/// conflicted copies of the user's tags.
+const IGNORED_NAMES: &[&str] = &[".DS_Store", "Thumbs.db", "desktop.ini", ".Trash-1000", TRASH_DIR, crate::tags::DIR];
 
 const IGNORED_PREFIXES: &[&str] = &[".~lock.", "~$"];
 const IGNORED_SUFFIXES: &[&str] =
@@ -333,6 +338,14 @@ mod tests {
     fn rules(patterns: &[&str]) -> Rules {
         let owned: Vec<String> = patterns.iter().map(|s| s.to_string()).collect();
         Rules::new(&owned, &[], None, true)
+    }
+
+    #[test]
+    fn the_drives_own_tag_index_is_never_synced() {
+        let r = rules(&[]);
+        assert!(r.excludes(".mecloud/tags.json"));
+        assert!(r.excludes(".mecloud"));
+        assert!(!r.excludes(".mecloudy/notes.txt"));
     }
 
     #[test]

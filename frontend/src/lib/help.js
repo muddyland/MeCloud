@@ -47,6 +47,7 @@ export const HELP = [
         body: [
           'There is a desktop version: the same apps in their own window, with a tray icon, and registered with your system so mail links from any program open here. Your avatar menu → Get the desktop app has it.',
           'Linux is a direct download. Windows and macOS are built from the source archive on the same screen — the client uses each system’s own webview, which cannot be cross-compiled, so the build has to happen on the machine that will run it.',
+          'It can also scan: Scan a document… on its tray menu finds your scanner — network scanners on their own, USB ones through the system’s scanner drivers — and saves each scan as a PDF in the folder you choose, with the tags you give it, the moment the scanner finishes.',
         ],
       },
       {

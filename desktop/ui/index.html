@@ -69,6 +69,8 @@
   /* ── Panes ─────────────────────────────────────────────────────────── */
   main { grid-area: main; overflow-y: auto; padding: 22px 26px; }
   section[hidden] { display: none; }
+  /* Anything given a display of its own below still has to hide. */
+  [hidden] { display: none !important; }
   h2 { font-size: 16px; margin: 0 0 3px; font-weight: 650; letter-spacing: -.01em; }
   .lede { font-size: 12.5px; color: var(--muted); margin: 0 0 18px; max-width: 52ch; }
   .panel {
@@ -141,6 +143,56 @@
   ul.files.picker input { margin: 0; flex-shrink: 0; }
   .empty { font-size: 12px; color: var(--muted); font-style: italic; padding: 8px 0 2px; }
 
+  /* ── Scan ──────────────────────────────────────────────────────────── */
+  select {
+    width: 100%; padding: 8px 10px; border-radius: 8px; font: inherit; font-size: 13.5px;
+    border: 1px solid var(--line); background: var(--bg); color: var(--text);
+  }
+  select:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  #pane-scan .between > h3 {
+    font-size: 12px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--muted);
+  }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px 12px; margin-top: 14px; }
+  .fields label { margin-bottom: 4px; }
+  .field + .field { margin-top: 12px; }
+  .inline { display: flex; gap: 8px; align-items: center; }
+  .inline > select, .inline > input { flex: 1; min-width: 0; }
+  .inline > button { flex-shrink: 0; }
+  details summary { cursor: pointer; font-size: 12px; color: var(--muted); margin-top: 10px; }
+  details[open] summary { margin-bottom: 8px; }
+  .tagbox {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px;
+    border: 1px solid var(--line); border-radius: 8px; background: var(--bg); min-height: 40px;
+  }
+  .tagbox:focus-within { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
+  .tagbox input { flex: 1; min-width: 9rem; border: 0; padding: 4px 2px; background: transparent; }
+  .tagbox input:focus { outline: none; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 9px; border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent); color: var(--text); font-size: 12px; font-weight: 600;
+  }
+  .chip button {
+    padding: 0 5px; border-radius: 999px; background: transparent; color: var(--muted);
+    font-size: 14px; line-height: 1.2; font-weight: 500;
+  }
+  .chip button:hover { color: var(--bad); }
+  .suggestions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .suggestions button {
+    padding: 2px 10px; border-radius: 999px; font-size: 11.5px; font-weight: 500;
+    background: transparent; color: var(--muted); border: 1px dashed var(--line);
+  }
+  .suggestions button:hover { color: var(--accent); border-color: var(--accent); }
+  .result { display: flex; gap: 12px; align-items: center; }
+  .result .doc {
+    width: 38px; height: 46px; border-radius: 6px; flex-shrink: 0; display: grid; place-items: center;
+    background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--accent);
+  }
+  .result .doc svg { width: 20px; height: 20px; }
+  .result .what { flex: 1; min-width: 0; font-size: 13px; }
+  .result .what strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result .what small { color: var(--muted); font-size: 12px; }
+  progress.busy { width: 100%; height: 4px; margin-top: 12px; accent-color: var(--accent); }
+
   /* ── Status bar ────────────────────────────────────────────────────── */
   footer {
     grid-area: foot; display: flex; align-items: center; gap: 10px;
@@ -177,6 +229,13 @@
     </button>
 
     <div class="group">Files</div>
+    <button data-pane="scan" data-needs-server>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
+           stroke-linecap="round" stroke-linejoin="round"><path d="M6 9V4.5A1.5 1.5 0 0 1 7.5 3h9A1.5 1.5 0 0 1 18 4.5V9"/>
+        <rect x="3" y="9" width="18" height="7" rx="1.5"/><path d="M7 16v3.5A1.5 1.5 0 0 0 8.5 21h7a1.5 1.5 0 0 0 1.5-1.5V16"/>
+        <path d="M7 12.5h10"/></svg>
+      Scan
+    </button>
     <button data-pane="sync" data-needs-server>
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"
            stroke-linecap="round" stroke-linejoin="round"><path d="M4 12a8 8 0 0 1 13.7-5.6L20 8"/>
@@ -253,6 +312,92 @@
       </div>
 
       <p class="hint">You sign in on the next screen, in your server’s own login page.</p>
+    </section>
+
+    <!-- ── Scan ─────────────────────────────────────────────────────── -->
+    <section id="pane-scan" hidden>
+      <h2>Scan</h2>
+      <p class="lede">Scan a document straight into your drive. It is uploaded the moment
+        the scanner finishes — no sync folder needed.</p>
+
+      <div id="scanneedspair" class="panel" hidden>
+        <p class="hint" style="margin:0">Connect this computer on the
+          <strong>Account</strong> screen before scanning.</p>
+      </div>
+
+      <div id="scanbody" hidden>
+        <div class="panel">
+          <div class="between">
+            <h3 style="margin:0">Scanner</h3>
+            <button id="findscanners" class="ghost">Look again</button>
+          </div>
+          <div class="field" style="margin-top:10px">
+            <select id="scanner" aria-label="Scanner"></select>
+            <p class="hint" id="scannerhint" style="margin:6px 0 0"></p>
+          </div>
+          <details id="addscanner">
+            <summary>Not listed? Add a network scanner by its address</summary>
+            <div class="inline">
+              <input id="scanaddress" type="text" placeholder="192.168.1.20"
+                     autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Scanner address" />
+              <button id="addscannerbtn" class="secondary">Add</button>
+            </div>
+          </details>
+          <div class="fields">
+            <div><label for="scansource">Paper is in</label><select id="scansource"></select></div>
+            <div><label for="scanmode">Colour</label><select id="scanmode"></select></div>
+            <div><label for="scanres" title="300 dpi suits documents; 150 makes smaller files, 600 is for photos">Quality</label><select id="scanres"></select></div>
+            <div><label for="scanpaper">Page size</label><select id="scanpaper">
+              <option value="a4">A4</option><option value="letter">Letter</option>
+              <option value="legal">Legal</option><option value="full">Whole glass</option>
+            </select></div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <h3>Save to your drive</h3>
+          <div class="field">
+            <label for="scanfolder">Folder</label>
+            <div class="inline">
+              <select id="scanfolder"></select>
+              <button id="newscanfolder" class="ghost">New folder…</button>
+            </div>
+          </div>
+          <div class="field">
+            <label for="scanname">Name</label>
+            <input id="scanname" type="text" autocomplete="off" spellcheck="false" />
+          </div>
+          <div class="field">
+            <label for="scantaginput">Tags</label>
+            <div class="tagbox" id="scantagbox">
+              <input id="scantaginput" type="text" list="scantaglist" autocomplete="off"
+                     placeholder="Type a tag, then Enter" />
+            </div>
+            <datalist id="scantaglist"></datalist>
+            <div class="suggestions" id="scansuggest"></div>
+            <p class="hint" style="margin:6px 0 0">Find it again in Files by searching for
+              <code>#tag</code>.</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="result" id="scanresult" hidden>
+            <div class="doc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
+              stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7.5A1.5 1.5 0 0 0 6 4.5v15A1.5 1.5 0 0 0 7.5 21h9a1.5 1.5 0 0 0 1.5-1.5V7z"/>
+              <path d="M14 3v4h4"/><path d="M9 13h6"/><path d="M9 16.5h4"/></svg></div>
+            <div class="what"><strong id="scanfile"></strong><small id="scanwhere"></small></div>
+          </div>
+          <p id="scanmsg" class="status" style="margin-top:0"></p>
+          <progress id="scanprogress" class="busy" hidden></progress>
+          <div class="actions">
+            <button id="scanbtn">Scan</button>
+            <button id="addpage" class="secondary" hidden>Add a page</button>
+            <button id="savetags" class="secondary" hidden>Save tags</button>
+            <button id="showscan" class="ghost" hidden>Show in MeCloud</button>
+            <button id="cancelscan" class="ghost" hidden>Cancel</button>
+          </div>
+        </div>
+      </div>
     </section>
 
     <!-- ── Sync ─────────────────────────────────────────────────────── -->
@@ -1024,6 +1169,365 @@
     }
   });
 
+  // ── Scan ────────────────────────────────────────────────────────────
+  const $scanNeedsPair = $('scanneedspair'), $scanBody = $('scanbody');
+  const $scanner = $('scanner'), $scannerHint = $('scannerhint'), $findScanners = $('findscanners');
+  const $scanAddress = $('scanaddress'), $addScanner = $('addscannerbtn');
+  const $scanSource = $('scansource'), $scanMode = $('scanmode'), $scanRes = $('scanres');
+  const $scanPaper = $('scanpaper'), $scanFolder = $('scanfolder'), $scanName = $('scanname');
+  const $tagBox = $('scantagbox'), $tagInput = $('scantaginput'), $tagList = $('scantaglist');
+  const $scanSuggest = $('scansuggest'), $scanMsg = $('scanmsg'), $scanProgress = $('scanprogress');
+  const $scanBtn = $('scanbtn'), $addPage = $('addpage'), $saveTags = $('savetags');
+  const $showScan = $('showscan'), $cancelScan = $('cancelscan');
+  const $scanResult = $('scanresult'), $scanFile = $('scanfile'), $scanWhere = $('scanwhere');
+
+  const SOURCE_LABEL = { flatbed: 'On the glass', feeder: 'In the feeder', duplex: 'In the feeder, both sides' };
+  const MODE_LABEL = { color: 'Colour', gray: 'Grey', black_white: 'Black and white' };
+  const resLabel = (dpi) => `${dpi} dpi`;
+
+  let scanners = [];        // as find_scanners returned them
+  let scanOptions = null;   // the chosen scanner's capabilities
+  let scanTags = [];        // chips in the box
+  let knownTags = [];       // [{tag, files}] for suggestions
+  let savedTags = null;     // the tags as stored with the last scan
+  let scanPoll = null;
+  let scanPrefs = {};
+  let scanLoaded = false;
+
+  const option = (value, label) => {
+    const o = document.createElement('option');
+    o.value = value; o.textContent = label;
+    return o;
+  };
+
+  /** Same rules as the drive's tag index (tags.rs / frontend tags.js). */
+  function normaliseTag(raw) {
+    const tag = raw.trim().replace(/^#+/, '').trim().replace(/\s+/g, ' ');
+    if (!tag || [...tag].length > 40 || tag.includes(',') || /[\u0000-\u001f\u007f]/.test(tag)) return null;
+    return tag;
+  }
+
+  function addTags(text) {
+    for (const piece of text.split(/[,\n]/)) {
+      let tag = normaliseTag(piece);
+      if (!tag) continue;
+      // The spelling already in the drive wins, so "tax" joins "Tax".
+      const existing = knownTags.find((k) => k.tag.toLowerCase() === tag.toLowerCase());
+      if (existing) tag = existing.tag;
+      if (!scanTags.some((t) => t.toLowerCase() === tag.toLowerCase()) && scanTags.length < 20) scanTags.push(tag);
+    }
+    renderTags();
+  }
+
+  function sameTags(a, b) {
+    return a && b && a.length === b.length && a.every((t, i) => t === b[i]);
+  }
+
+  function renderTags() {
+    for (const chip of [...$tagBox.querySelectorAll('.chip')]) chip.remove();
+    for (const tag of scanTags) {
+      const chip = document.createElement('span');
+      chip.className = 'chip';
+      const text = document.createElement('span');
+      text.textContent = tag;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.textContent = '×';
+      remove.title = `Remove ${tag}`;
+      remove.setAttribute('aria-label', `Remove tag ${tag}`);
+      remove.addEventListener('click', () => {
+        scanTags = scanTags.filter((t) => t !== tag);
+        renderTags();
+      });
+      chip.append(text, remove);
+      $tagBox.insertBefore(chip, $tagInput);
+    }
+    // Popular tags not already on, as one-click suggestions.
+    const lower = new Set(scanTags.map((t) => t.toLowerCase()));
+    const offer = knownTags.filter((k) => !lower.has(k.tag.toLowerCase())).slice(0, 8);
+    $scanSuggest.replaceChildren(...offer.map((k) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.textContent = `+ ${k.tag}`;
+      b.title = `${k.files} file${k.files === 1 ? '' : 's'}`;
+      b.addEventListener('click', () => addTags(k.tag));
+      return b;
+    }));
+    $tagList.replaceChildren(...knownTags.map((k) => option(k.tag, '')));
+    // After a scan, changed tags can be saved onto that document.
+    $saveTags.hidden = savedTags === null || sameTags(scanTags, savedTags);
+  }
+
+  $tagInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ',') {
+      e.preventDefault();
+      addTags($tagInput.value);
+      $tagInput.value = '';
+    } else if (e.key === 'Backspace' && !$tagInput.value && scanTags.length) {
+      scanTags.pop();
+      renderTags();
+    }
+  });
+  // Picking from the datalist fires input with the whole value.
+  $tagInput.addEventListener('change', () => {
+    if ($tagInput.value.trim()) { addTags($tagInput.value); $tagInput.value = ''; }
+  });
+  $tagBox.addEventListener('click', (e) => { if (e.target === $tagBox) $tagInput.focus(); });
+
+  const chosenScanner = () => scanners.find((s) => s.id === $scanner.value) ?? null;
+
+  function describeScanner(s) {
+    if (!s) return '';
+    if (s.backend.kind === 'escl') {
+      try { return `Network scanner · ${new URL(s.backend.url).host}`; } catch { return 'Network scanner'; }
+    }
+    return `SANE driver · ${s.backend.device}`;
+  }
+
+  function fillScanners(selectId) {
+    if (!scanners.length) {
+      $scanner.replaceChildren(option('', 'No scanners found'));
+      $scanner.disabled = true;
+      return;
+    }
+    $scanner.disabled = false;
+    // Two of the same model — or one scanner reachable both over the network
+    // and through a driver — need telling apart.
+    const seen = {};
+    for (const s of scanners) seen[s.name] = (seen[s.name] ?? 0) + 1;
+    const label = (s) => {
+      let text = s.name;
+      if (seen[s.name] > 1) text += ` — ${describeScanner(s).replace(/^.* · /, '')}`;
+      if (s.manual) text += ' (added by address)';
+      return text;
+    };
+    $scanner.replaceChildren(...scanners.map((s) => option(s.id, label(s))));
+    if (selectId && scanners.some((s) => s.id === selectId)) $scanner.value = selectId;
+  }
+
+  async function findScanners() {
+    $findScanners.disabled = true;
+    setStatus($scannerHint, 'Looking for scanners on this computer and the network…', 'busy');
+    try {
+      const found = await call('find_scanners');
+      scanners = found.scanners;
+      fillScanners($scanner.value || scanPrefs.scanner?.id);
+      if (!scanners.length) {
+        setStatus($scannerHint, 'None found. Check the scanner is on and on the same network, '
+          + 'or add it by its address below.' + (found.notes.length ? ` (${found.notes.join('; ')})` : ''), 'warn');
+        $('addscanner').open = true;
+      }
+      await loadScannerOptions();
+    } catch (e) {
+      setStatus($scannerHint, String(e), 'bad');
+    } finally {
+      $findScanners.disabled = false;
+    }
+  }
+
+  async function loadScannerOptions() {
+    const s = chosenScanner();
+    scanOptions = null;
+    for (const el of [$scanSource, $scanMode, $scanRes]) el.replaceChildren();
+    $scanBtn.disabled = !s;
+    if (!s) return;
+    setStatus($scannerHint, `${describeScanner(s)} · asking what it can do…`, 'busy');
+    try {
+      const { options, suggested } = await call('scanner_options', { scanner: s });
+      scanOptions = options;
+      $scanSource.replaceChildren(...options.sources.map((o) => option(o.source, SOURCE_LABEL[o.source])));
+      $scanSource.value = suggested.source;
+      fillSourceFields(suggested);
+      $scanPaper.value = suggested.paper;
+      setStatus($scannerHint, describeScanner(s), '');
+    } catch (e) {
+      setStatus($scannerHint, `${describeScanner(s)} · ${e}`, 'bad');
+      $scanBtn.disabled = true;
+    }
+  }
+
+  function fillSourceFields(prefer) {
+    const caps = scanOptions?.sources.find((o) => o.source === $scanSource.value);
+    if (!caps) return;
+    const mode = prefer?.mode ?? $scanMode.value, res = Number(prefer?.resolution ?? $scanRes.value);
+    $scanMode.replaceChildren(...caps.modes.map((m) => option(m, MODE_LABEL[m])));
+    $scanRes.replaceChildren(...caps.resolutions.map((r) => option(String(r), resLabel(r))));
+    if (caps.modes.includes(mode)) $scanMode.value = mode;
+    const nearest = caps.resolutions.reduce((a, b) => (Math.abs(b - res) < Math.abs(a - res) ? b : a), caps.resolutions[0]);
+    if (nearest) $scanRes.value = String(nearest);
+  }
+
+  $scanner.addEventListener('change', loadScannerOptions);
+  $scanSource.addEventListener('change', () => fillSourceFields());
+  $findScanners.addEventListener('click', findScanners);
+
+  $addScanner.addEventListener('click', async () => {
+    const address = $scanAddress.value.trim();
+    if (!address) { $scanAddress.focus(); return; }
+    $addScanner.disabled = true;
+    setStatus($scannerHint, `Asking ${address}…`, 'busy');
+    try {
+      const added = await call('add_scanner', { address });
+      scanners = [added, ...scanners.filter((s) => s.id !== added.id)];
+      fillScanners(added.id);
+      $scanAddress.value = '';
+      $('addscanner').open = false;
+      await loadScannerOptions();
+    } catch (e) {
+      setStatus($scannerHint, String(e), 'bad');
+    } finally {
+      $addScanner.disabled = false;
+    }
+  });
+
+  async function loadFolders(selectId) {
+    try {
+      const folders = await call('scan_folders');
+      $scanFolder.replaceChildren(...folders.map((f) => option(f.id ?? '', f.path ? f.path : 'Top of the drive')));
+      const wanted = selectId ?? scanPrefs.folder_id ?? '';
+      $scanFolder.value = folders.some((f) => (f.id ?? '') === wanted) ? wanted : '';
+    } catch (e) {
+      $scanFolder.replaceChildren(option(scanPrefs.folder_id ?? '', scanPrefs.folder_path || 'Top of the drive'));
+      setStatus($scanMsg, `Could not list your folders: ${e}`, 'bad');
+    }
+  }
+
+  $('newscanfolder').addEventListener('click', async () => {
+    const parentLabel = $scanFolder.selectedOptions[0]?.textContent ?? 'Top of the drive';
+    const name = window.prompt(`New folder inside “${parentLabel}”:`);
+    if (!name?.trim()) return;
+    try {
+      const made = await call('create_scan_folder', { parentId: $scanFolder.value || null, name });
+      await loadFolders(made.id);
+    } catch (e) {
+      setStatus($scanMsg, String(e), 'bad');
+    }
+  });
+
+  async function loadKnownTags() {
+    knownTags = await call('known_tags').catch(() => []);
+    renderTags();
+  }
+
+  function scanSettings() {
+    return {
+      source: $scanSource.value, mode: $scanMode.value,
+      resolution: Number($scanRes.value), paper: $scanPaper.value,
+    };
+  }
+
+  function showScanStatus(st) {
+    const busy = st.state === 'scanning' || st.state === 'uploading';
+    $scanProgress.hidden = !busy;
+    $cancelScan.hidden = st.state !== 'scanning';
+    $scanBtn.disabled = busy || !chosenScanner() || !scanOptions;
+    $addPage.disabled = busy;
+    const kind = { done: 'ok', error: 'bad', cancelled: 'warn' }[st.state] ?? (busy ? 'busy' : '');
+    const showsDoc = !!st.node_id && st.state !== 'idle';
+    $scanResult.hidden = !showsDoc;
+    $showScan.hidden = !showsDoc || busy;
+    $addPage.hidden = !showsDoc || !st.can_add_page || busy;
+    if (showsDoc) {
+      $scanFile.textContent = st.file_name ?? '';
+      const where = st.folder_path ? st.folder_path : 'Top of the drive';
+      $scanWhere.textContent = `${where}${st.pages ? ` · ${st.pages} page${st.pages === 1 ? '' : 's'}` : ''}`
+        + (st.tags?.length ? ` · ${st.tags.map((t) => `#${t}`).join(' ')}` : '');
+    }
+    let text = st.state === 'idle' ? '' : st.detail;
+    if (st.state === 'done' && st.warning) { text = st.warning; }
+    setStatus($scanMsg, text, st.state === 'done' && st.warning ? 'warn' : kind);
+  }
+
+  async function pollScan() {
+    const st = await call('scan_status').catch(() => null);
+    if (!st) return;
+    showScanStatus(st);
+    if (st.state === 'scanning' || st.state === 'uploading') return;
+    clearInterval(scanPoll);
+    scanPoll = null;
+    if (st.state === 'done') {
+      savedTags = st.tags ?? [];
+      scanTags = [...savedTags];
+      await loadKnownTags();
+    }
+  }
+
+  function followScan() {
+    if (!scanPoll) scanPoll = setInterval(pollScan, 600);
+    pollScan();
+  }
+
+  $scanBtn.addEventListener('click', async () => {
+    const scanner = chosenScanner();
+    if (!scanner) return;
+    if ($tagInput.value.trim()) { addTags($tagInput.value); $tagInput.value = ''; }
+    // A new document: whatever was open is finished with.
+    if (savedTags !== null) { savedTags = null; }
+    try {
+      await call('start_scan', {
+        scanner, settings: scanSettings(),
+        folderId: $scanFolder.value || null,
+        folderPath: $scanFolder.value ? $scanFolder.selectedOptions[0]?.textContent : null,
+        name: $scanName.value, tags: scanTags,
+      });
+      $scanName.value = '';
+      followScan();
+    } catch (e) {
+      setStatus($scanMsg, String(e), 'bad');
+    }
+  });
+
+  $addPage.addEventListener('click', async () => {
+    try {
+      await call('add_scan_page');
+      followScan();
+    } catch (e) {
+      setStatus($scanMsg, String(e), 'bad');
+    }
+  });
+
+  $saveTags.addEventListener('click', async () => {
+    if ($tagInput.value.trim()) { addTags($tagInput.value); $tagInput.value = ''; }
+    $saveTags.disabled = true;
+    try {
+      savedTags = await call('set_scan_tags', { tags: scanTags });
+      scanTags = [...savedTags];
+      setStatus($scanMsg, 'Tags saved.', 'ok');
+      await loadKnownTags();
+      pollScan();
+    } catch (e) {
+      setStatus($scanMsg, String(e), 'bad');
+    } finally {
+      $saveTags.disabled = false;
+      renderTags();
+    }
+  });
+
+  $cancelScan.addEventListener('click', () => call('cancel_scan').catch(() => {}));
+  $showScan.addEventListener('click', () => call('show_scan').catch((e) => setStatus($scanMsg, String(e), 'bad')));
+
+  async function refreshScan() {
+    const overview = await call('scan_overview').catch(() => null);
+    if (!overview) return;
+    $scanNeedsPair.hidden = overview.paired;
+    $scanBody.hidden = !overview.paired;
+    if (!overview.paired) return;
+    scanPrefs = overview.prefs ?? {};
+    $scanName.placeholder = overview.default_name;
+    if (!scanLoaded) {
+      scanLoaded = true;
+      $scanPaper.value = scanPrefs.settings?.paper ?? overview.default_paper;
+      // Show the last scanner straight away; discovery takes a few seconds.
+      if (scanPrefs.scanner) { scanners = [scanPrefs.scanner]; fillScanners(scanPrefs.scanner.id); }
+      else fillScanners();
+      loadFolders();
+      loadKnownTags();
+      findScanners();
+    }
+    showScanStatus(overview.status);
+    if (overview.status.state === 'scanning' || overview.status.state === 'uploading') followScan();
+  }
+
   // ── Chrome that is always on screen ─────────────────────────────────
   const $footDot = $('footdot'), $footDetail = $('footdetail'), $footState = $('footstate');
 
@@ -1053,6 +1557,7 @@
 
   const REFRESH = {
     account: refreshAccount,
+    scan: refreshScan,
     sync: refreshSync,
     folders: refreshFolders,
     rules: refreshRules,
@@ -1078,8 +1583,15 @@
   // Land on the screen the user came for: an unconfigured client needs an
   // address before anything else works, a configured one almost always came
   // to look at sync.
-  show(config?.server_url ? 'sync' : 'account');
+  // A pane named in the address (the tray's "Scan a document…" opens
+  // index.html#scan) wins, as long as there is a server for it to talk to.
+  const fromHash = () => {
+    const name = location.hash.replace(/^#/, '');
+    return REFRESH[name] && config?.server_url ? name : null;
+  };
+  show(fromHash() ?? (config?.server_url ? 'sync' : 'account'));
   if (!config?.server_url) $server.focus();
+  window.addEventListener('hashchange', () => { const name = fromHash(); if (name) show(name); });
 
   // The engine runs on its own schedule, so the status line follows it. Only
   // the two panes whose contents actually change on their own are refreshed.

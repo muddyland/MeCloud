@@ -21,6 +21,8 @@ pub enum Target {
     },
     /// Open one of the apps at its own route.
     App(&'static str),
+    /// Reveal one file in the Files app, by node id.
+    Node(String),
 }
 
 impl Target {
@@ -29,6 +31,7 @@ impl Target {
         let base = server.trim_end_matches('/');
         match self {
             Target::App(path) => format!("{base}{path}"),
+            Target::Node(id) => format!("{base}/files?node={}", crate::encode::component(id)),
             Target::Compose { to, cc, subject, body } => {
                 let mut url = format!("{base}/mail?compose=1");
                 for (key, value) in
@@ -105,6 +108,11 @@ mod tests {
     use super::*;
 
     const SERVER: &str = "https://cloud.example.com";
+
+    #[test]
+    fn a_node_opens_in_files_with_its_id_encoded() {
+        assert_eq!(Target::Node("a b/c".into()).to_url("https://cloud.example/"), "https://cloud.example/files?node=a%20b%2Fc");
+    }
 
     #[test]
     fn ignores_anything_that_is_not_a_mailto() {

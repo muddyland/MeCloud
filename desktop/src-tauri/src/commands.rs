@@ -22,7 +22,9 @@ use crate::rules::{self, TRASH_DIR};
 use crate::sync::{State, Status};
 use crate::update::UpdateInfo;
 use crate::windows::{self, SETUP};
-use crate::{handlers, hostname, pairing, scan, sync, syncdb, update, update_config, with_pass_lock, AppState};
+use crate::scanner::{self, discover, escl, Paper, Scanner, Settings};
+use crate::scanning::{self, Folder, Job};
+use crate::{handlers, hostname, pairing, scan, sync, syncdb, tags, update, update_config, with_pass_lock, AppState};
 
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
@@ -58,6 +60,20 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         unpair_device,
         set_sync,
         sync_now,
+        scan_overview,
+        find_scanners,
+        add_scanner,
+        forget_scanner,
+        scanner_options,
+        scan_folders,
+        create_scan_folder,
+        known_tags,
+        start_scan,
+        add_scan_page,
+        set_scan_tags,
+        cancel_scan,
+        scan_status,
+        show_scan,
     ]
 }
 
@@ -621,6 +637,302 @@ async fn install_update(app: AppHandle) -> Result<String, String> {
 #[tauri::command]
 fn set_auto_update(state: tauri::State<'_, AppState>, enabled: bool) -> Result<(), String> {
     update_config(&state, |c| c.auto_update = enabled)
+}
+
+// ── Scan ────────────────────────────────────────────────────────────────────
+
+/// A connection as this device, for the commands that write to the drive.
+fn device_api(state: &AppState) -> Result<(api::Api, String), String> {
+    let server = state.config_now().server_url.ok_or("Connect to a server first.")?;
+    let token = config::load_token().ok_or("Connect this computer to your account first.")?;
+    let api = api::Api::new(&server, &token)?;
+    let account = api.account_id()?;
+    Ok((api, account))
+}
+
+#[derive(serde::Serialize)]
+struct ScanOverview {
+    paired: bool,
+    prefs: config::ScanPrefs,
+    status: scanning::Status,
+    /// What a new scan is called if the name is left empty, so the field can
+    /// show it as a placeholder.
+    default_name: String,
+    default_paper: Paper,
+}
+
+#[tauri::command]
+fn scan_overview(state: tauri::State<'_, AppState>) -> ScanOverview {
+    ScanOverview {
+        paired: config::load_token().is_some(),
+        prefs: state.config_now().scan,
+        status: state.scan.status_now(),
+        default_name: scanning::default_stem(chrono::Local::now()),
+        default_paper: Paper::for_locale(std::env::var("LC_PAPER").or_else(|_| std::env::var("LANG")).ok().as_deref()),
+    }
+}
+
+#[derive(serde::Serialize)]
+struct Found {
+    scanners: Vec<Scanner>,
+    /// Why a source found nothing, when it could not even look.
+    notes: Vec<String>,
+}
+
+/// Look for scanners for a few seconds: mDNS and SANE together.
+#[tauri::command]
+async fn find_scanners(app: AppHandle) -> Result<Found, String> {
+    blocking(app, |state| {
+        let prefs = state.config_now().scan;
+        let (mut scanners, notes) = discover::discover(Duration::from_secs(3), &prefs.manual);
+        // The last one used stays on the list even when it is switched off
+        // or asleep, so the choice is not silently lost.
+        if let Some(last) = prefs.scanner {
+            if !scanners.iter().any(|s| s.id == last.id) {
+                scanners.push(last);
+            }
+        }
+        Ok(Found { scanners, notes })
+    })
+    .await
+}
+
+/// Add a network scanner by address, for networks where it does not
+/// announce itself (another subnet, multicast filtered by a router).
+#[tauri::command]
+async fn add_scanner(app: AppHandle, address: String) -> Result<Scanner, String> {
+    blocking(app, move |state| {
+        let root = escl::root_from_input(&address)?;
+        let caps = escl::Escl::new(&root)?
+            .capabilities()
+            .map_err(|e| format!("No eSCL scanner answered at {root}: {e}"))?;
+        let name = caps.make_and_model.clone().unwrap_or_else(|| root.clone());
+        let found = Scanner::escl(&root, caps.uuid.clone(), &name, true);
+        let saved = found.clone();
+        update_config(state, move |c| {
+            c.scan.manual.retain(|s| s.id != saved.id);
+            c.scan.manual.push(saved);
+        })?;
+        Ok(found)
+    })
+    .await
+}
+
+#[tauri::command]
+fn forget_scanner(state: tauri::State<'_, AppState>, id: String) -> Result<(), String> {
+    update_config(&state, |c| {
+        c.scan.manual.retain(|s| s.id != id);
+        if c.scan.scanner.as_ref().is_some_and(|s| s.id == id) {
+            c.scan.scanner = None;
+        }
+    })
+}
+
+#[derive(serde::Serialize)]
+struct ScannerChoices {
+    options: scanner::Options,
+    /// The remembered settings, fitted to what this scanner can do.
+    suggested: Settings,
+}
+
+#[tauri::command]
+async fn scanner_options(app: AppHandle, scanner: Scanner) -> Result<ScannerChoices, String> {
+    blocking(app, move |state| {
+        let options = scanner::options(&scanner)?;
+        let paper = Paper::for_locale(std::env::var("LC_PAPER").or_else(|_| std::env::var("LANG")).ok().as_deref());
+        let wanted = state.config_now().scan.settings.unwrap_or(Settings {
+            source: scanner::Source::Flatbed,
+            mode: scanner::Mode::Color,
+            resolution: 300,
+            paper,
+        });
+        let suggested = scanner::fit(&options, wanted)?;
+        Ok(ScannerChoices { options, suggested })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn scan_folders(app: AppHandle) -> Result<Vec<Folder>, String> {
+    blocking(app, |state| {
+        let (api, account) = device_api(state)?;
+        scanning::folders(&api.nodes(&account)?)
+    })
+    .await
+}
+
+/// A new folder in the drive, for scans to go into.
+#[tauri::command]
+async fn create_scan_folder(app: AppHandle, parent_id: Option<String>, name: String) -> Result<Folder, String> {
+    blocking(app, move |state| {
+        let name = name.trim().to_string();
+        if name.is_empty() || name == "." || name == ".." || name.contains('/') || name.contains('\\') {
+            return Err("That is not a folder name.".into());
+        }
+        let (api, account) = device_api(state)?;
+        let id = api.create_folder(&account, &name, parent_id.as_deref())?;
+        // The path comes from a fresh listing rather than being pieced
+        // together here, so it is whatever the web UI will show.
+        let folders = scanning::folders(&api.nodes(&account)?)?;
+        folders
+            .into_iter()
+            .find(|f| f.id.as_deref() == Some(id.as_str()))
+            .ok_or_else(|| "The folder was created but is not listed yet.".into())
+    })
+    .await
+}
+
+#[derive(serde::Serialize)]
+struct TagCount {
+    tag: String,
+    files: usize,
+}
+
+/// Tags already in use, for suggestions.
+#[tauri::command]
+async fn known_tags(app: AppHandle) -> Result<Vec<TagCount>, String> {
+    blocking(app, |state| {
+        let (api, account) = device_api(state)?;
+        Ok(tags::load(&api, &account)?.counts().into_iter().map(|(tag, files)| TagCount { tag, files }).collect())
+    })
+    .await
+}
+
+/// Run scan work on its own thread, reporting into the session as it goes.
+fn spawn_scan<F>(app: AppHandle, work: F) -> Result<(), String>
+where
+    F: FnOnce(&AppState, &api::Api, &str, &dyn Fn(&str, &str), &AtomicBool) -> Result<(), String> + Send + 'static,
+{
+    let state = app.state::<AppState>();
+    let cancel = state.scan.begin()?;
+    state.scan.set(|s| {
+        s.state = "scanning".into();
+        s.detail = "Connecting…".into();
+        s.warning = None;
+    });
+    std::thread::spawn(move || {
+        let state = app.state::<AppState>();
+        let report = |phase: &str, line: &str| {
+            state.scan.set(|s| {
+                s.state = phase.to_string();
+                s.detail = line.to_string();
+            })
+        };
+        let outcome = device_api(&state).and_then(|(api, account)| work(&state, &api, &account, &report, &cancel));
+        if let Err(e) = outcome {
+            let cancelled = cancel.load(Ordering::Relaxed);
+            state.scan.set(|s| {
+                s.state = if cancelled { "cancelled".into() } else { "error".into() };
+                s.detail = if cancelled { "Cancelled. Nothing was saved.".into() } else { e };
+            });
+        }
+        state.scan.end();
+    });
+    Ok(())
+}
+
+/// Scan a document into the drive. Returns at once; `scan_status` follows it.
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+fn start_scan(
+    app: AppHandle, scanner: Scanner, settings: Settings, folder_id: Option<String>, folder_path: Option<String>,
+    name: String, tags: Vec<String>,
+) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    if config::load_token().is_none() {
+        return Err("Connect this computer to your account first, on the Account screen.".into());
+    }
+    {
+        let (scanner, folder_id, folder_path) = (scanner.clone(), folder_id.clone(), folder_path.clone());
+        update_config(&state, move |c| {
+            c.scan.scanner = Some(scanner);
+            c.scan.settings = Some(settings);
+            c.scan.folder_id = folder_id;
+            c.scan.folder_path = folder_path;
+        })?;
+    }
+    let job = Job { scanner, settings, folder_id, folder_path, name, tags };
+    spawn_scan(app, move |state, api, account, report, cancel| {
+        let saved = scanning::run(api, account, job, report, cancel)?;
+        let open = saved.open;
+        let pages = if open.pages.is_empty() { None } else { Some(open.pages.len()) };
+        state.scan.set(|s| {
+            s.state = "done".into();
+            s.detail = match pages {
+                Some(n) => format!("Saved {} — {n} page{}.", open.name, if n == 1 { "" } else { "s" }),
+                None => format!("Saved {}.", open.name),
+            };
+            s.pages = pages.unwrap_or(0);
+            s.node_id = Some(open.node_id.clone());
+            s.file_name = Some(open.name.clone());
+            s.folder_path = open.folder_path.clone();
+            s.tags = open.tags.clone();
+            s.can_add_page = saved.extendable;
+            s.warning = saved.warning.clone();
+        });
+        *state.scan.open.lock().unwrap() = Some(open);
+        Ok(())
+    })
+}
+
+/// Scan another page onto the end of the document just saved.
+#[tauri::command]
+fn add_scan_page(app: AppHandle) -> Result<(), String> {
+    if app.state::<AppState>().scan.open.lock().unwrap().is_none() {
+        return Err("Scan a document first.".into());
+    }
+    spawn_scan(app, |state, api, account, report, cancel| {
+        let mut open = state.scan.open.lock().unwrap().clone().ok_or("Scan a document first.")?;
+        scanning::add_page(api, account, &mut open, report, cancel)?;
+        let n = open.pages.len();
+        state.scan.set(|s| {
+            s.state = "done".into();
+            s.detail = format!("Saved {} — {n} pages.", open.name);
+            s.pages = n;
+        });
+        *state.scan.open.lock().unwrap() = Some(open);
+        Ok(())
+    })
+}
+
+/// Change the tags of the document just saved — or save them again, after
+/// a scan whose tags could not be written.
+#[tauri::command]
+async fn set_scan_tags(app: AppHandle, tags: Vec<String>) -> Result<Vec<String>, String> {
+    blocking(app, move |state| {
+        let node = state.scan.open.lock().unwrap().as_ref().map(|o| o.node_id.clone()).ok_or("Scan a document first.")?;
+        let (api, account) = device_api(state)?;
+        let stored = tags::set_tags(&api, &account, &node, &tags)?;
+        if let Some(open) = state.scan.open.lock().unwrap().as_mut() {
+            open.tags = stored.clone();
+        }
+        let saved = stored.clone();
+        state.scan.set(move |s| {
+            s.tags = saved;
+            s.warning = None;
+        });
+        Ok(stored)
+    })
+    .await
+}
+
+#[tauri::command]
+fn cancel_scan(state: tauri::State<'_, AppState>) {
+    state.scan.cancel();
+}
+
+#[tauri::command]
+fn scan_status(state: tauri::State<'_, AppState>) -> scanning::Status {
+    state.scan.status_now()
+}
+
+/// Open the saved scan in the Files app.
+#[tauri::command]
+fn show_scan(app: AppHandle) -> Result<(), String> {
+    let node = app.state::<AppState>().scan.status_now().node_id.ok_or("Nothing has been scanned yet.")?;
+    let handle = app.clone();
+    app.run_on_main_thread(move || windows::open_main(&handle, Some(crate::deeplink::Target::Node(node))))
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

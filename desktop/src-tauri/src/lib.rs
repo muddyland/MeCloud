@@ -26,9 +26,12 @@ pub mod pairing;
 pub mod reconcile;
 pub mod rules;
 pub mod scan;
+pub mod scanner;
+pub mod scanning;
 pub mod socket;
 pub mod sync;
 pub mod syncdb;
+pub mod tags;
 pub mod update;
 
 mod background;
@@ -54,6 +57,8 @@ pub struct AppState {
     pub update: Mutex<UpdateInfo>,
     /// Set to cancel the pairing currently waiting, if any.
     pub pairing: Mutex<Option<Arc<AtomicBool>>>,
+    /// The Scan screen's job, progress and last document.
+    pub scan: scanning::Session,
     /// Whether a tray icon was actually created.
     ///
     /// Not a given: a session with no StatusNotifier host, a bare window
@@ -70,6 +75,7 @@ impl AppState {
             status: Arc::new(Mutex::new(Status::default())),
             update: Mutex::new(UpdateInfo { current: update::CURRENT.into(), ..Default::default() }),
             pairing: Mutex::new(None),
+            scan: scanning::Session::default(),
             tray: AtomicBool::new(false),
         }
     }
@@ -293,6 +299,9 @@ pub fn run() {
             } else if std::env::args().any(|a| a == "--settings") {
                 // Straight to Preferences, for a desktop with no tray.
                 windows::open_setup(&handle);
+            } else if std::env::args().any(|a| a == "--scan-window") {
+                // A launcher or keyboard shortcut for "scan something now".
+                windows::open_setup_at(&handle, "scan");
             } else {
                 windows::handle_target(&handle, deeplink::first_target(std::env::args()));
             }

@@ -175,13 +175,33 @@ pub fn open_main(app: &AppHandle, target: Option<Target>) {
 }
 
 pub fn open_setup(app: &AppHandle) {
+    open_setup_pane(app, None);
+}
+
+/// Open Settings on one pane, e.g. `scan`. The page reads the pane from its
+/// URL fragment, and follows changes to it while open.
+pub fn open_setup_at(app: &AppHandle, pane: &'static str) {
+    open_setup_pane(app, Some(pane));
+}
+
+fn open_setup_pane(app: &AppHandle, pane: Option<&'static str>) {
     if let Some(window) = app.get_webview_window(SETUP) {
+        if let Some(pane) = pane {
+            // A fixed identifier from this file, never user input, so this
+            // cannot inject anything into the page. Cleared first, so asking
+            // for the pane the address already names still switches to it.
+            let _ = window.eval(format!("location.hash = ''; location.hash = '{pane}'"));
+        }
         let _ = window.show();
         let _ = window.unminimize();
         let _ = window.set_focus();
         return;
     }
-    let _ = WebviewWindowBuilder::new(app, SETUP, WebviewUrl::App("index.html".into()))
+    let page = match pane {
+        Some(pane) => format!("index.html#{pane}"),
+        None => "index.html".into(),
+    };
+    let _ = WebviewWindowBuilder::new(app, SETUP, WebviewUrl::App(page.into()))
         .title("MeCloud — Settings")
         // Wide enough for the navigation rail beside a pane, short enough to
         // fit a laptop screen. The panes scroll inside the frame.

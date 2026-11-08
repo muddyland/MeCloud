@@ -87,7 +87,10 @@ are built from the source archive, because each uses its own system webview:*
   registers as the system `mailto:` handler so mail links from any app open a
   pre-filled compose window. Two-way file sync with conflict handling, sync
   badges and a MeCloud menu in Nautilus / Nemo / Caja, start-at-login, and
-  self-updating from the server
+  self-updating from the server. **Scanning** straight into the drive from
+  network scanners (eSCL/AirScan, found automatically) and USB ones (SANE):
+  pick a folder and tags, and the PDF is uploaded the moment the scanner
+  finishes
 - **The client ships with the server** — the Linux binary and a source archive
   are built into the Docker image and offered under *Get the desktop app*.
   Downloads are gated: the session buys a signed link that expires in five
@@ -366,7 +369,9 @@ mecloud/
 │   │   ├── lib.rs                  # windows, tray, commands
 │   │   ├── config.rs               # server address (pure, unit-tested)
 │   │   ├── deeplink.rs             # mailto: → compose URL (pure, unit-tested)
-│   │   └── handlers.rs             # .desktop entry + xdg-mime (unit-tested)
+│   │   ├── handlers.rs             # .desktop entry + xdg-mime (unit-tested)
+│   │   ├── scanner/                # eSCL + SANE scanning, PDF writer (unit-tested)
+│   │   └── tags.rs                 # the drive's tag index, shared with the web app
 │   └── ui/index.html               # local setup page
 ├── Dockerfile
 ├── docker-compose.yml

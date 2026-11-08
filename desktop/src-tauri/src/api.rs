@@ -207,14 +207,25 @@ impl Api {
     fn create_node(
         &self, account_id: &str, key: &str, name: &str, parent: Option<&str>, file: Option<(&str, u64, &str)>,
     ) -> Result<Value, String> {
+        self.create_node_if(account_id, key, name, parent, file, None)
+    }
+
+    /// As `create_node`, refused by the server unless the account's FileNode
+    /// state is still `if_in_state` — JMAP's compare-and-swap, for writers that
+    /// read something first and must not overwrite a change made since.
+    fn create_node_if(
+        &self, account_id: &str, key: &str, name: &str, parent: Option<&str>, file: Option<(&str, u64, &str)>,
+        if_in_state: Option<&str>,
+    ) -> Result<Value, String> {
         let send = |dialect: Dialect| {
-            self.jmap(
-                &[CORE, FILENODE],
-                json!([["FileNode/set", {
-                    "accountId": account_id,
-                    "create": { key: create_props(dialect, name, parent, file) }
-                }, "s"]]),
-            )
+            let mut args = json!({
+                "accountId": account_id,
+                "create": { key: create_props(dialect, name, parent, file) }
+            });
+            if let Some(state) = if_in_state {
+                args["ifInState"] = json!(state);
+            }
+            self.jmap(&[CORE, FILENODE], json!([["FileNode/set", args, "s"]]))
         };
         let first = self.dialect().unwrap_or(Dialect::FileNode18);
         let data = send(first)?;
@@ -232,6 +243,124 @@ impl Api {
             self.dialect.store(first.other().code(), Ordering::Relaxed);
         }
         Ok(retry)
+    }
+
+    /// Upload a file as a new node of a given media type.
+    ///
+    /// The sync engine always says `application/octet-stream`, because it
+    /// cannot know better; a scan knows it is a PDF, and a server or web UI
+    /// that previews by media type should be told so.
+    pub fn create_typed_file(
+        &self, account_id: &str, name: &str, parent: Option<&str>, blob_id: &str, size: u64, media_type: &str,
+    ) -> Result<Created, String> {
+        let data = self.create_node(account_id, "n", name, parent, Some((blob_id, size, media_type)))?;
+        Ok(created_or_refusal(&data, "n"))
+    }
+
+    /// The FileNode state of the account and the blob a node points at, read
+    /// in one call so the state really describes that content. `node_id`
+    /// may be None to read the state alone.
+    pub fn node_and_state(&self, account_id: &str, node_id: Option<&str>) -> Result<(String, Option<String>), String> {
+        let ids: Vec<&str> = node_id.into_iter().collect();
+        let data = self.jmap(
+            &[CORE, FILENODE],
+            json!([["FileNode/get", { "accountId": account_id, "ids": ids, "properties": ["id", "blobId"] }, "g"]]),
+        )?;
+        let responses = data.get("methodResponses").and_then(Value::as_array).cloned().unwrap_or_default();
+        if let Some(problem) = method_error(&responses) {
+            return Err(format!("The server could not read your files: {problem}"));
+        }
+        let body = responses.first().and_then(|r| r.get(1)).cloned().unwrap_or(Value::Null);
+        let state = body.get("state").and_then(Value::as_str).unwrap_or_default().to_string();
+        let blob = body
+            .get("list")
+            .and_then(Value::as_array)
+            .and_then(|l| l.first())
+            .and_then(|n| n.get("blobId"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        Ok((state, blob))
+    }
+
+    /// Create a node only if nothing has changed since `state`.
+    pub fn create_if(
+        &self, account_id: &str, name: &str, parent: Option<&str>, file: Option<(&str, u64, &str)>, state: &str,
+    ) -> Result<Created, String> {
+        let data = self.create_node_if(account_id, "n", name, parent, file, Some(state))?;
+        Ok(created_or_refusal(&data, "n"))
+    }
+
+    /// Point a node at new content only if nothing has changed since `state`.
+    pub fn update_blob_if(
+        &self, account_id: &str, node_id: &str, blob_id: &str, size: u64, state: &str,
+    ) -> Result<Created, String> {
+        let data = self.jmap(
+            &[CORE, FILENODE],
+            json!([["FileNode/set", {
+                "accountId": account_id,
+                "ifInState": state,
+                "update": { node_id: { "blobId": blob_id, "size": size } }
+            }, "s"]]),
+        )?;
+        let responses = data.get("methodResponses").and_then(Value::as_array).cloned().unwrap_or_default();
+        if let Some(kind) = method_error(&responses) {
+            return Ok(Created::Refused(kind));
+        }
+        let body = responses.first().and_then(|r| r.get(1)).cloned().unwrap_or(Value::Null);
+        if let Some(refusal) = body.get("notUpdated").and_then(|n| n.get(node_id)) {
+            return Ok(Created::Refused(refusal.get("type").and_then(Value::as_str).unwrap_or("refused").to_string()));
+        }
+        let new_state = body.get("newState").and_then(Value::as_str).unwrap_or_default().to_string();
+        Ok(Created::Done { id: node_id.to_string(), new_state })
+    }
+
+    /// A blob's bytes, in memory — for small files the client reads itself,
+    /// such as the tag index. Anything larger than `limit` is refused rather
+    /// than buffered.
+    pub fn download_bytes(&self, blob_id: &str, name: &str, limit: usize) -> Result<Vec<u8>, String> {
+        let url = format!(
+            "{}/api/files/blob/{}?name={}",
+            self.base,
+            encode::component(blob_id),
+            encode::component(name)
+        );
+        let response =
+            with_retry(|| self.http.get(&url).bearer_auth(&self.token).send().map_err(|e| e.to_string()))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(UNPAIRED.to_string());
+        }
+        if !response.status().is_success() {
+            return Err(format!("Download refused ({}).", response.status()));
+        }
+        let mut out = Vec::new();
+        use std::io::Read;
+        response.take(limit as u64 + 1).read_to_end(&mut out).map_err(|e| e.to_string())?;
+        if out.len() > limit {
+            return Err(format!("\"{name}\" is larger than this client will read into memory."));
+        }
+        Ok(out)
+    }
+
+    /// Upload bytes held in memory as a blob.
+    pub fn upload_bytes(&self, bytes: &[u8]) -> Result<(String, u64), String> {
+        let response = with_retry(|| {
+            self.http
+                .post(self.url("/api/files/blob"))
+                .bearer_auth(&self.token)
+                .header("Content-Type", "application/octet-stream")
+                .body(bytes.to_vec())
+                .send()
+                .map_err(|e| e.to_string())
+        })?;
+        let status = response.status();
+        if status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(UNPAIRED.to_string());
+        }
+        if !status.is_success() {
+            return Err(format!("Upload refused ({status})."));
+        }
+        let blob: BlobUpload = response.json().map_err(|e| e.to_string())?;
+        Ok((blob.blob_id, blob.size.unwrap_or(bytes.len() as u64)))
     }
 
     pub fn account_id(&self) -> Result<String, String> {
@@ -522,6 +651,42 @@ fn method_error(responses: &[Value]) -> Option<String> {
         }
     }
     None
+}
+
+/// How a conditional write went.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Created {
+    Done { id: String, new_state: String },
+    /// The server said no, with the JMAP error type — `stateMismatch` and
+    /// `alreadyExists` mean someone else wrote first, and the caller should
+    /// read again and retry.
+    Refused(String),
+}
+
+impl Created {
+    pub fn is_conflict(&self) -> bool {
+        matches!(self, Created::Refused(kind) if kind == "stateMismatch" || kind == "alreadyExists")
+    }
+}
+
+/// Read a FileNode/set create response.
+pub fn created_or_refusal(data: &Value, key: &str) -> Created {
+    let responses = data.get("methodResponses").and_then(Value::as_array).cloned().unwrap_or_default();
+    if let Some(kind) = method_error(&responses) {
+        return Created::Refused(kind);
+    }
+    let body = responses.first().and_then(|r| r.get(1)).cloned().unwrap_or(Value::Null);
+    if let Some(id) = created_id(data, key) {
+        let new_state = body.get("newState").and_then(Value::as_str).unwrap_or_default().to_string();
+        return Created::Done { id, new_state };
+    }
+    let kind = body
+        .get("notCreated")
+        .and_then(|n| n.get(key))
+        .and_then(|e| e.get("type"))
+        .and_then(Value::as_str)
+        .unwrap_or("refused");
+    Created::Refused(kind.to_string())
 }
 
 fn created_id(data: &Value, key: &str) -> Option<String> {
