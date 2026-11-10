@@ -465,6 +465,18 @@ with access to everything on the origin. Three independent defences apply:
 - a per-response `Content-Security-Policy: sandbox; default-src 'none'`, which
   strips script and same-origin privileges even if the first two were wrong.
 
+Previews of the allow-listed types (images, PDF, audio, video, plain text) can't
+be sandboxed, because a sandbox disables the browser's PDF viewer. They get
+`default-src 'none'` with no script source instead, plus two allowances:
+- `style-src 'unsafe-inline'`, because WebKit builds the page around a PDF or
+  image itself and sizes it with inline styles. Without it, the PDF viewer in
+  WebKitGTK (the desktop client, GNOME Web) shrinks to a 300×150 box. None of
+  these types can carry markup of its own, so the only inline styles this
+  allows are the browser's.
+- `frame-ancestors 'self'` plus any `FRAME_ANCESTORS` origins, with
+  `X-Frame-Options: SAMEORIGIN` where that can express it, because the app
+  shows previews in a frame on its own origin.
+
 Blob ids are validated against a conservative character class and percent-encoded
 before interpolation, so they cannot add path segments or query parameters to the
 upstream download URL. Uploads have their own 64 MiB ceiling
@@ -475,7 +487,8 @@ cap provides.
 **Embedding**
 
 Framing is denied outright by default (`X-Frame-Options: DENY` plus
-`frame-ancestors 'none'`) — a mail client that can be framed can be overlaid and
+`frame-ancestors 'none'`; file previews alone allow the app's own origin, see
+above) — a mail client that can be framed can be overlaid and
 click-jacked, and this one has destructive controls and shows private mail. To
 embed it in a dashboard you control, set `FRAME_ANCESTORS` to that exact origin;
 never a wildcard. Doing so also drops `X-Frame-Options`, which cannot express an

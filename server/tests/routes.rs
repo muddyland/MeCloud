@@ -107,11 +107,44 @@ async fn images_and_pdfs_preview_inline_unsandboxed() {
                 && policy.contains("default-src 'none'")
                 && !policy.contains("script-src")
         );
+        assert!(policy.contains("style-src 'unsafe-inline'"));
+        assert!(policy.contains("frame-ancestors 'self'"));
+        // The app frames its own previews, so not the global DENY.
+        assert_eq!(r.header("x-frame-options"), "SAMEORIGIN");
         assert_eq!(r.header("content-length"), r.body.len().to_string());
     }
     // The upstream's type is used when the client names none.
     let r = app.get("/api/files/blob/P1?inline=true").await;
     assert!(r.header("content-type").starts_with("image/png"));
+}
+
+#[tokio::test]
+async fn downloads_keep_the_global_frame_policy() {
+    let app = TestApp::new().await;
+    app.sign_in_with_token("tok");
+    put_blob(&app, "D1", "application/pdf", b"%PDF-1.7");
+    let r = app
+        .get("/api/files/blob/D1?name=doc.pdf&type=application/pdf")
+        .await;
+    assert_eq!(r.status, 200);
+    assert!(r.header("content-disposition").starts_with("attachment;"));
+    assert!(r.header("content-security-policy").starts_with("sandbox;"));
+    assert_eq!(r.header("x-frame-options"), "DENY");
+}
+
+#[tokio::test]
+async fn previews_inside_a_framed_app_allow_the_framing_origin() {
+    let app = TestApp::with(&[("FRAME_ANCESTORS", "https://dash.example")]).await;
+    app.sign_in_with_token("tok");
+    put_blob(&app, "D1", "application/pdf", b"%PDF-1.7");
+    let r = app
+        .get("/api/files/blob/D1?name=doc.pdf&type=application/pdf&inline=true")
+        .await;
+    assert_eq!(r.status, 200);
+    assert!(r
+        .header("content-security-policy")
+        .ends_with("frame-ancestors 'self' https://dash.example"));
+    assert_eq!(r.header("x-frame-options"), "");
 }
 
 #[tokio::test]

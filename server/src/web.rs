@@ -101,8 +101,12 @@ pub async fn security_headers(
         }
     };
     set(headers, "x-content-type-options", "nosniff");
-    if let Some(xfo) = state.settings.x_frame_options() {
-        set(headers, "x-frame-options", xfo);
+    // Unless the handler chose: an inline blob preview is framed by the app
+    // itself, and sets SAMEORIGIN (or nothing) to match its own CSP.
+    if !headers.contains_key("x-frame-options") {
+        if let Some(xfo) = state.settings.x_frame_options() {
+            set(headers, "x-frame-options", xfo);
+        }
     }
     // Only where the handler did not choose: the device hand-off sends
     // no-referrer, and must keep it.

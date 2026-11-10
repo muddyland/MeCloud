@@ -71,12 +71,54 @@ pub fn safe_content_type(declared: Option<&str>, inline: bool) -> String {
 /// the browser's PDF viewer is one. What keeps a preview safe is earlier —
 /// only INLINE_SAFE_TYPES render inline, with `nosniff` — and this policy
 /// still grants no way to run anything.
-pub fn blob_csp(inline: bool) -> &'static str {
-    if inline {
-        "default-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; \
-         object-src 'none'; base-uri 'none'; form-action 'none'"
-    } else {
-        "sandbox; default-src 'none'; base-uri 'none'"
+///
+/// Two allowances are needed for a preview to work, and neither lets a script
+/// run:
+///
+/// - `style-src 'unsafe-inline'`. WebKit shows a PDF, image or video as a
+///   document it builds itself, and sizes that document's content with
+///   inline `style` attributes. The response's CSP covers that document, so
+///   under `default-src 'none'` the styles are dropped. In WebKitGTK, which is
+///   the desktop client's webview and GNOME Web's engine, the PDF viewer then
+///   shrinks to the default 300×150 frame size. None of the inline-safe types
+///   can carry markup of its own, so the only inline styles this unlocks are
+///   the browser's.
+/// - `frame-ancestors`. The web UI shows a preview in an iframe on its own
+///   origin, so `'self'` is always allowed. Without that, the default
+///   `FRAME_ANCESTORS='none'` (sent as `X-Frame-Options: DENY`) would block
+///   the app's own preview. Any origin the deployment lets frame the app is
+///   added too: frame-ancestors checks every ancestor, so a preview inside an
+///   app that is itself framed by a dashboard needs the dashboard listed as
+///   well.
+pub fn blob_csp(inline: bool, frame_ancestors: &str) -> String {
+    if !inline {
+        return "sandbox; default-src 'none'; base-uri 'none'".into();
+    }
+    let mut ancestors = vec!["'self'"];
+    ancestors.extend(
+        frame_ancestors
+            .split_whitespace()
+            .filter(|s| *s != "'none'" && *s != "'self'"),
+    );
+    format!(
+        "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data: blob:; \
+         media-src 'self' blob:; object-src 'none'; base-uri 'none'; form-action 'none'; \
+         frame-ancestors {}",
+        ancestors.join(" ")
+    )
+}
+
+/// The X-Frame-Options to send with an inline preview, if any.
+///
+/// Browsers that know CSP ignore this when frame-ancestors is present. It is
+/// for older ones, and it has to agree with the CSP. `SAMEORIGIN` does that
+/// when only the app's own origin may frame the preview. X-Frame-Options can't
+/// name another origin, so with a configured list it is left out and
+/// frame-ancestors decides alone.
+pub fn inline_x_frame_options(frame_ancestors: &str) -> Option<&'static str> {
+    match frame_ancestors {
+        "'none'" | "'self'" => Some("SAMEORIGIN"),
+        _ => None,
     }
 }
 
@@ -261,10 +303,9 @@ mod tests {
 
     #[test]
     fn policies() {
-        assert!(
-            blob_csp(false).contains("sandbox") && blob_csp(false).contains("default-src 'none'")
-        );
-        let inline = blob_csp(true);
+        let download = blob_csp(false, "'none'");
+        assert!(download.contains("sandbox") && download.contains("default-src 'none'"));
+        let inline = blob_csp(true, "'none'");
         assert!(!inline.contains("sandbox") && !inline.contains("script-src"));
         for needed in [
             "default-src 'none'",
@@ -272,10 +313,24 @@ mod tests {
             "form-action 'none'",
             "img-src",
             "media-src",
+            "style-src 'unsafe-inline'",
+            "frame-ancestors 'self'",
         ] {
             assert!(inline.contains(needed), "{needed}");
         }
-        assert!(!inline.contains("unsafe"));
+        // Inline styles only: nothing that runs.
+        assert!(!inline.contains("unsafe-eval") && !inline.contains("script"));
+        assert!(inline.ends_with("frame-ancestors 'self'"));
+    }
+
+    #[test]
+    fn preview_framing_follows_the_configured_ancestors() {
+        assert!(blob_csp(true, "'self'").ends_with("frame-ancestors 'self'"));
+        assert!(blob_csp(true, "https://dash.example https://b.example")
+            .ends_with("frame-ancestors 'self' https://dash.example https://b.example"));
+        assert_eq!(inline_x_frame_options("'none'"), Some("SAMEORIGIN"));
+        assert_eq!(inline_x_frame_options("'self'"), Some("SAMEORIGIN"));
+        assert_eq!(inline_x_frame_options("https://dash.example"), None);
     }
 
     #[test]
