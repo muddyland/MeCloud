@@ -32,7 +32,7 @@ Connecting to a server, and once connected, the web apps in a native window:
 └────────────────────────────────────────────────┘
                      │ https
                      ▼
-        MeCloud server (FastAPI + JMAP proxy)
+        MeCloud server (Rust: JMAP proxy + web UI)
                      │
                      ▼
               Stalwart Mail Server

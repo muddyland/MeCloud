@@ -1,0 +1,65 @@
+[package]
+name         = "mecloud-server"
+version      = "1.0.0"
+description  = "MeCloud web server: the JMAP proxy, OAuth login and static frontend"
+edition      = "2021"
+rust-version = "1.85"
+publish      = false
+
+[lib]
+name = "mecloud_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mecloud-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "json", "matched-path"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time", "fs", "io-util"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["cors", "fs"] }
+# Upstream (Stalwart) client. Compiled-in Mozilla roots, the same set httpx used
+# through certifi, so the final image needs no CA bundle; SSL_CERT_FILE adds a
+# private CA (see upstream.rs). No gzip feature on purpose: the blob proxy
+# passes bytes through, so the upstream must not compress them.
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+bytes = "1"
+http-body-util = "0.1"
+
+# preserve_order: the first account in a JMAP session's `accounts` is the one
+# used, so the document's key order is meaningful.
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+indexmap = "2"
+
+# The cookie, device and pairing tokens are Fernet, and the download links
+# HMAC-SHA256, with keys from HKDF over SESSION_SECRET. Implemented on these
+# primitives so the tokens the Python backend issued stay valid (crypto.rs).
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+hmac = "0.12"
+hkdf = "0.12"
+sha2 = "0.10"
+subtle = "2"
+base64 = "0.22"
+getrandom = "0.3"
+
+url = "2"
+form_urlencoded = "1"
+percent-encoding = "2"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "test-util"] }
+
+[profile.release]
+opt-level     = 3
+lto           = true
+codegen-units = 1
+strip         = true
+# Unwind, not abort: a panic in one request then costs that connection, not
+# every signed-in user's.

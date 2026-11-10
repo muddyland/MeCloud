@@ -9,8 +9,8 @@
 // security and settings permissions, so an app password cannot mint more
 // passwords or change the account.
 //
-// backend/app/stalwart_permissions.py holds the same list; a test keeps the two
-// in step.
+// server/src/permissions.rs holds the same list; a test there keeps the two in
+// step.
 
 export const INTEROPERABLE_PERMISSIONS = Object.freeze([
   'authenticate',

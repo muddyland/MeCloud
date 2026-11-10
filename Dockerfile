@@ -7,20 +7,14 @@
 # Declared before the first FROM so every stage below can interpolate it.
 ARG BASE_REGISTRY=
 
-# The Python images for the dependency stage and the final stage. Both default
-# to python:3.14-slim. To build on a hardened, shell-less runtime instead, point
-# them at a matching pair: a "-dev" image with a shell and pip to install into,
-# and its runtime sibling to ship. CI does this when USE_DHI=true (Docker
-# Hardened Images; see .gitlab-ci.yml).
+# The image the server ships on. `scratch` by default: the server is one
+# statically linked binary with its CA roots compiled in, so there is nothing
+# else to put in the image — no shell, no package manager, no libc. Any image
+# can stand in, for instance a hardened static one; CI uses one when
+# USE_DHI=true (Docker Hardened Images; see .gitlab-ci.yml).
 #
-#   docker build \
-#     --build-arg PYTHON_BUILDER_IMAGE=dhi.io/python:3.14-alpine-dev \
-#     --build-arg PYTHON_RUNTIME_IMAGE=dhi.io/python:3.14-alpine .
-#
-# The two must come from the same family: packages built against glibc in a
-# slim builder will not load on a musl (Alpine) runtime, and vice versa.
-ARG PYTHON_BUILDER_IMAGE=${BASE_REGISTRY}python:3.14-slim
-ARG PYTHON_RUNTIME_IMAGE=${BASE_REGISTRY}python:3.14-slim
+#   docker build --build-arg RUNTIME_IMAGE=dhi.io/static:20261020-alpine3.24 .
+ARG RUNTIME_IMAGE=scratch
 
 # ── Stage 1: Build SvelteKit frontend ────────────────────────────────────────
 FROM ${BASE_REGISTRY}node:24-alpine AS frontend-builder
@@ -96,71 +90,73 @@ RUN mkdir -p /out && \
     fi
 
 
-# ── Stage 3: Install Python dependencies ─────────────────────────────────────
-FROM ${PYTHON_BUILDER_IMAGE} AS python-deps
+# ── Stage 3: Build the server ────────────────────────────────────────────────
+#
+# Alpine, so the binary links musl statically and runs on `scratch`. The
+# compiler is pinned to the same minor version as the desktop stage above.
+FROM ${BASE_REGISTRY}rust:1.99-alpine AS server-builder
 
-WORKDIR /deps
+RUN apk add --no-cache musl-dev
 
-COPY backend/requirements.txt ./
-# requirements.txt is the compiled lockfile: every package in the tree, pinned,
-# with hashes, so pip runs in hash-checking mode and two builds of one commit
-# install the same bytes. --target rather than --prefix or a venv: a plain
-# directory on PYTHONPATH does not depend on where the interpreter lives, which
-# differs between the slim image (/usr/local) and the hardened one (/usr).
-RUN pip install --no-cache-dir --require-hashes --target=/opt/pydeps -r requirements.txt
+# A crates.io mirror, as a cargo registry URL ("sparse+https://…/index/").
+# Empty by default: crates come from crates.io.
+ARG CARGO_REGISTRY_MIRROR=
+RUN if [ -n "$CARGO_REGISTRY_MIRROR" ]; then \
+      printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+        "$CARGO_REGISTRY_MIRROR" > "$CARGO_HOME/config.toml"; \
+    fi
+
+WORKDIR /build/server
+
+# Dependencies in their own layer, as for the desktop client: with stub
+# sources in place, editing the server's code does not rebuild ~200 crates.
+COPY server/Cargo.toml server/Cargo.lock ./
+RUN mkdir src && echo 'fn main() {}' > src/main.rs && touch src/lib.rs && \
+    cargo build --release --locked && \
+    rm -rf src target/release/mecloud-server target/release/deps/mecloud_server* \
+           target/release/deps/libmecloud_server* target/release/.fingerprint/mecloud-server-*
+
+COPY server/src/ ./src/
+RUN cargo build --release --locked && \
+    install -D -m 0755 target/release/mecloud-server /out/mecloud-server
 
 
 # ── Stage 4: Final image ──────────────────────────────────────────────────────
 #
-# No RUN steps in this stage. The hardened runtime has no shell, so anything
-# here must be a COPY or metadata. The app is stateless and writes nothing to
-# disk, so the files stay root-owned and read-only to the process. It runs as
-# 65532, the hardened image's own non-root user. Slim has no passwd entry for
-# that uid, which is fine because nothing looks the user up.
-FROM ${PYTHON_RUNTIME_IMAGE}
+# No RUN steps in this stage: `scratch` has nothing to run them with. The app
+# is stateless and writes nothing to disk, so the files stay root-owned and
+# read-only to the process, which runs as 65532 (the hardened images' own
+# non-root user; nothing looks the user up, so no passwd entry is needed).
+FROM ${RUNTIME_IMAGE}
 
 WORKDIR /app
 
-COPY --from=python-deps /opt/pydeps /opt/pydeps
-
-# Application code only — tests, dev requirements and caches stay out of the
-# image (see also .dockerignore).
-COPY backend/app/ ./app/
+COPY --from=server-builder /out/mecloud-server /app/mecloud-server
 
 # Copy built frontend static files
-COPY --from=frontend-builder /app/build ./static
+COPY --from=frontend-builder /app/build /app/static
 
-# The desktop client, served over a signed short-lived link (app/downloads.py).
+# The desktop client, served over a signed short-lived link (server/src/downloads.rs).
 # An empty directory is a valid outcome — see WITH_DESKTOP above.
-COPY --from=desktop-builder /out/ ./downloads/
+COPY --from=desktop-builder /out/ /app/downloads/
 
 USER 65532:65532
 
+# Which peers may set X-Forwarded-For comes from FORWARDED_ALLOW_IPS. It
+# defaults to loopback only: trusting "*" lets anyone who reaches the port
+# directly pick their own IP, and with it their own rate-limit bucket. Set it to
+# your reverse proxy's address (or its Docker network, e.g. 172.18.0.0/16) in
+# .env.
 ENV ENVIRONMENT=production \
     FRONTEND_STATIC_DIR=/app/static \
     DESKTOP_DOWNLOAD_DIR=/app/downloads \
-    PYTHONPATH=/opt/pydeps \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
     FORWARDED_ALLOW_IPS=127.0.0.1
 
 EXPOSE 8000
 
-# Exec form: there is no shell to run a shell-form command on the hardened
-# image. urlopen raises on a refused connection or a non-2xx, which exits 1.
+# Exec form, and the server probing itself: there is no shell, curl or wget
+# in the image to do it with.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+  CMD ["/app/mecloud-server", "healthcheck"]
 
-# --proxy-headers so the app sees the real client IP behind a reverse proxy
-# (per-IP rate limiting depends on it); --no-server-header so we don't advertise
-# the exact server stack to scanners.
-#
-# Which peers may set X-Forwarded-For comes from FORWARDED_ALLOW_IPS, which
-# uvicorn reads itself. It defaults to loopback only: trusting "*" let anyone
-# who reached the port directly pick their own IP, and with it their own rate
-# limit bucket. Set it to your reverse proxy's address (or its Docker network,
-# e.g. 172.18.0.0/16) in .env.
-#
-# `python -m`: the uvicorn launcher script is in /opt/pydeps/bin, not on PATH.
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", \
-     "--proxy-headers", "--no-server-header"]
+CMD ["/app/mecloud-server"]
