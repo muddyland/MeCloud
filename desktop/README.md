@@ -145,7 +145,8 @@ server offers. Run it from the **repository root** (the directory containing
 argument: `desktop/package-linux.sh /tmp/out`. It needs `zip`, which the
 toolchain image installs.
 
-The version comes from `src-tauri/Cargo.toml` and nowhere else. `tauri.conf.json`
+The version comes from `src-tauri/Cargo.toml` and nowhere else (CI rewrites it
+there for its own build; see [Versions](#versions)). `tauri.conf.json`
 deliberately has no `version`, so Tauri falls back to the crate's; the script
 refuses to package if one has crept back in with a different value.
 
@@ -946,6 +947,39 @@ a half-written file, and the running process keeps its own inode until it exits.
 
 Nothing restarts underneath you. An update applies the next time the client
 starts; interrupting a sync to save one manual step is not a good trade.
+
+### Versions
+
+Nobody bumps the patch version by hand. CI builds the client as
+`<major>.<minor>.<n>`, where major and minor come from `src-tauri/Cargo.toml`
+and `n` is the number of commits that have touched `desktop/`
+(`git rev-list --count HEAD -- desktop/`). It writes that into `Cargo.toml` and
+`Cargo.lock` inside the image build only, so the binary, the tarball and
+`/api/desktop/releases` all report it, and nothing is committed.
+
+So every change that reaches the client, code, dependencies, `Cargo.lock` or
+the bundled README, gives a higher version, and clients offer the update. A
+change to the server or the web UI alone does not, so clients are not asked to
+reinstall an identical build. History on `main` only grows, so the number never
+goes down. A branch build counts its own commits, which is the number `main`
+will reach when it merges, unless another desktop change lands first.
+
+To mark a milestone, raise major or minor in `Cargo.toml`. Leave the patch
+number at `0`, because CI replaces it. `0.10.31` sorts above `0.9.30`, so the
+count need not restart.
+
+Why not a hash of the binary or the sources? A hash only says the build is
+different, not that it is newer, so a server rolled back to an older image
+would push the older client as an update. Rust release builds are not
+byte-for-byte reproducible either, so a cache-less rebuild of the same commit
+would look like a new release. And installed clients only understand dotted
+numbers. They refuse anything else (see above), so switching to a hash would
+leave every existing install unable to update.
+
+A local build (`docker build` without `--build-arg DESKTOP_VERSION`, or
+`cargo build`) keeps Cargo.toml's version as it is, for example `0.9.0`. The
+server's version is higher, so a server built by CI offers that build an
+update.
 
 Version comparison refuses to act on anything it cannot parse. A server sending
 `latest`, or `v0.2.0`, or nonsense, cannot talk a client into replacing its own

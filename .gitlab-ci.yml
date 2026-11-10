@@ -186,6 +186,9 @@ build-image:
   needs:
     - server-tests
     - frontend-tests
+  variables:
+    # Full history: the desktop client's version counts commits (below).
+    GIT_DEPTH: "0"
   before_script:
     - *wait-for-docker
     # $CI_REGISTRY for pulling the cache tags and pushing the result.
@@ -232,6 +235,22 @@ build-image:
       if [ -n "${MINIREG_URL:-}" ]; then
         COMMON="$COMMON --build-arg CARGO_REGISTRY_MIRROR=sparse+${MINIREG_URL%/}/cargo/index/"
       fi
+      # The desktop client's version: major.minor from Cargo.toml, then the
+      # number of commits that have touched desktop/. It rises with every
+      # change to the client and with nothing else, so no one has to remember
+      # a release commit before clients will update (desktop/README.md,
+      # "Versions"). A shallow clone would count only its last few commits and
+      # hand clients a version lower than the one they run, so refuse one.
+      command -v git >/dev/null || apk add --no-cache git >/dev/null
+      git config --global --add safe.directory "$CI_PROJECT_DIR"
+      if [ "$(git rev-parse --is-shallow-repository)" != "false" ]; then
+        echo "ERROR: shallow clone; the desktop version needs the full history (GIT_DEPTH: 0)." >&2
+        exit 1
+      fi
+      DESKTOP_BASE=$(sed -n 's/^version *= *"\([0-9]*\.[0-9]*\)\.[0-9]*"/\1/p' desktop/src-tauri/Cargo.toml | head -1)
+      DESKTOP_VERSION="$DESKTOP_BASE.$(git rev-list --count HEAD -- desktop/)"
+      echo "desktop client version: $DESKTOP_VERSION"
+      COMMON="$COMMON --build-arg DESKTOP_VERSION=$DESKTOP_VERSION"
       CACHE="--cache-from $DESKTOP_CACHE --cache-from $CI_REGISTRY_IMAGE:desktop-cache-main"
       CACHE="$CACHE --cache-from $SERVER_CACHE --cache-from $CI_REGISTRY_IMAGE:server-cache-main"
 

@@ -78,12 +78,40 @@ RUN if [ "$WITH_DESKTOP" = "1" ]; then \
 
 COPY desktop/ ./desktop/
 
+# The client's version, which installed clients compare to decide whether to
+# update. CI passes `<major>.<minor>.<n>`: major and minor from Cargo.toml, and
+# n the number of commits that have touched desktop/. That makes the version
+# rise by itself with every change to the client, and only then: a server-only
+# change leaves it alone, so clients are not told to reinstall an identical
+# build. See "Versions" in desktop/README.md.
+#
+# Empty (a local build) keeps Cargo.toml's own version. Declared here rather
+# than at the top of the stage so a new value reruns only the build below, not
+# the dependency layer.
+ARG DESKTOP_VERSION=
+
 # --locked and nothing else. A `|| cargo build` fallback would quietly
 # re-resolve a stale Cargo.lock — the very drift `npm ci` above refuses — and
 # turn a real compile error into two full builds before failing.
+#
+# The version is written into both Cargo.toml and Cargo.lock (which records the
+# crate's own version), or --locked would refuse the mismatch. Only this build
+# sees the rewrite; nothing is committed. package-linux.sh then reads the same
+# Cargo.toml, so the binary, the tarball and /api/desktop/releases agree.
 RUN mkdir -p /out && \
     if [ "$WITH_DESKTOP" = "1" ]; then \
-      cd desktop/src-tauri && cargo build --release --locked && \
+      cd desktop/src-tauri && \
+      if [ -n "$DESKTOP_VERSION" ]; then \
+        echo "$DESKTOP_VERSION" | grep -Eqx '[0-9]+\.[0-9]+\.[0-9]+' || \
+          { echo "DESKTOP_VERSION '$DESKTOP_VERSION' is not <major>.<minor>.<patch>" >&2; exit 1; }; \
+        sed -i "0,/^version *= *\".*\"/s//version     = \"$DESKTOP_VERSION\"/" Cargo.toml && \
+        sed -i "/^name = \"mecloud-desktop\"$/{n;s/^version = \".*\"/version = \"$DESKTOP_VERSION\"/}" Cargo.lock && \
+        grep -q "^version *= *\"$DESKTOP_VERSION\"" Cargo.toml && \
+        grep -A1 '^name = "mecloud-desktop"$' Cargo.lock | grep -q "\"$DESKTOP_VERSION\"" || \
+          { echo "could not set the desktop version to $DESKTOP_VERSION" >&2; exit 1; }; \
+        echo "desktop client version: $DESKTOP_VERSION"; \
+      fi && \
+      cargo build --release --locked && \
       cd /build && sh desktop/package-linux.sh /out; \
     else \
       echo "WITH_DESKTOP=0 — skipping the desktop client"; \
