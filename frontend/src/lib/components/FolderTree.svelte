@@ -1,8 +1,8 @@
 <script>
   import FileIcon from './FileIcon.svelte';
   import Spinner from './Spinner.svelte';
-  import { childrenByParent, currentFolderId, expandedFolders, fileSearch } from '$lib/stores/files.js';
-  import { fileKind } from '$lib/fileTypes.js';
+  import { childrenByParent, currentFolderId, expandedFolders, fileSearch } from '#lib/stores/files.js';
+  import { fileKind } from '#lib/fileTypes.js';
 
   /** null renders the top level; a folder id renders that folder's children. */
   export let parentId = null;

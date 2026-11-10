@@ -9,10 +9,10 @@
    */
   import Modal from './Modal.svelte';
   import Spinner from './Spinner.svelte';
-  import { downloadsOpen, appName } from '$lib/stores/mail.js';
-  import { getDesktopReleases, downloadDesktopArtifact } from '$lib/api.js';
-  import { formatBytes } from '$lib/fileTypes.js';
-  import { toast } from '$lib/stores/toast.js';
+  import { downloadsOpen, appName } from '#lib/stores/mail.js';
+  import { getDesktopReleases, downloadDesktopArtifact } from '#lib/api.js';
+  import { formatBytes } from '#lib/fileTypes.js';
+  import { toast } from '#lib/stores/toast.js';
 
   let artifacts = [];
   let loading = false;

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { sanitizeEmailHtml } from '$lib/sanitize.js';
-import { normalizeCss, blockRemoteCss, stripEscapingPosition, isRemoteUrl } from '$lib/urls.js';
+import { sanitizeEmailHtml } from '#lib/sanitize.js';
+import { normalizeCss, blockRemoteCss, stripEscapingPosition, isRemoteUrl } from '#lib/urls.js';
 
 // A <style> that opens a fragment is hoisted into <head> by the HTML parser
 // and so never reaches a fragment render at all; body-position stylesheets are

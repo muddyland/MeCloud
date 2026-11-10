@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   setErrorMessage, methodErrorMessage, findMethodError,
   JmapSetError, JmapMethodError,
-} from '$lib/jmapErrors.js';
+} from '#lib/jmapErrors.js';
 
 /*
  * Checked against RFC 8620 rather than memory. Two things that check corrected:

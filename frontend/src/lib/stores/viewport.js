@@ -1,5 +1,5 @@
 import { readable, writable, derived } from 'svelte/store';
-import { browser } from '$app/environment';
+import { browser } from '$app/env';
 
 /**
  * A store that tracks a CSS media query.

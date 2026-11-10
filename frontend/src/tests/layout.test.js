@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { listPaneClass, detailPaneClass, visiblePanes } from '$lib/layout.js';
+import { listPaneClass, detailPaneClass, visiblePanes } from '#lib/layout.js';
 
 /*
  * Regression cover for a blank page.

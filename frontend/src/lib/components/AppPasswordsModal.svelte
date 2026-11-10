@@ -1,8 +1,8 @@
 <script>
   import { fly, fade } from 'svelte/transition';
-  import { appPasswordsOpen, jmapAccountId, jmapSession } from '$lib/stores/mail.js';
-  import { getAppPasswords, createAppPassword, deleteAppPassword } from '$lib/api.js';
-  import { toast } from '$lib/stores/toast.js';
+  import { appPasswordsOpen, jmapAccountId, jmapSession } from '#lib/stores/mail.js';
+  import { getAppPasswords, createAppPassword, deleteAppPassword } from '#lib/api.js';
+  import { toast } from '#lib/stores/toast.js';
   import Spinner from './Spinner.svelte';
 
   let passwords = [];

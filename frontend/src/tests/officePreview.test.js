@@ -7,10 +7,10 @@ import {
   readSpreadsheet, parseCsv, sniffDelimiter, columnIndex, columnLabel,
   formatNumber, isDateFormat, serialToText, finishGrid, MAX_ROWS,
   percentDecimals, formatPercent,
-} from '$lib/sheetPreview.js';
-import { readPresentation } from '$lib/slidePreview.js';
-import { sniffRasterImage, resolveTarget, OfficeReadError } from '$lib/officeZip.js';
-import { isSpreadsheet, isPresentation, isPreviewable } from '$lib/fileTypes.js';
+} from '#lib/sheetPreview.js';
+import { readPresentation } from '#lib/slidePreview.js';
+import { sniffRasterImage, resolveTarget, OfficeReadError } from '#lib/officeZip.js';
+import { isSpreadsheet, isPresentation, isPreviewable } from '#lib/fileTypes.js';
 
 const fixture = (name) => {
   const buf = readFileSync(resolve('src/tests/fixtures', name));

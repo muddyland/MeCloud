@@ -1,7 +1,7 @@
 import { writable, derived } from 'svelte/store';
 import { persisted } from './persisted.js';
-import { compareNodes } from '$lib/fileTypes.js';
-import { emptyIndex, searchNodes, tagCounts as countTags, withoutReserved } from '$lib/tags.js';
+import { compareNodes } from '#lib/fileTypes.js';
+import { emptyIndex, searchNodes, tagCounts as countTags, withoutReserved } from '#lib/tags.js';
 
 /** Every FileNode in the account, flat. The tree is derived from parentId. */
 export const fileNodes     = writable([]);

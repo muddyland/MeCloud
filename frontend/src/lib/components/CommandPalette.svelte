@@ -5,16 +5,16 @@
   import {
     commandPaletteOpen, mailboxes, selectedMailbox, composeOpen, composeContext, helpOpen, downloadsOpen,
     sieveOpen, appPasswordsOpen, shortcutsOpen, newFolderOpen, darkMode, searchQuery,
-  } from '$lib/stores/mail.js';
-  import { contacts, selectedContact } from '$lib/stores/contacts.js';
-  import { calendars, selectedCalendar } from '$lib/stores/calendar.js';
-  import { visibleFileNodes, currentFolderId, fileSearch } from '$lib/stores/files.js';
-  import { noteNodes, selectedNoteId } from '$lib/stores/notes.js';
-  import { noteName } from '$lib/markdown.js';
-  import { fileKind } from '$lib/fileTypes.js';
-  import { rankItems, highlightRuns } from '$lib/fuzzy.js';
-  import { logout } from '$lib/api.js';
-  import { APPS } from '$lib/apps.js';
+  } from '#lib/stores/mail.js';
+  import { contacts, selectedContact } from '#lib/stores/contacts.js';
+  import { calendars, selectedCalendar } from '#lib/stores/calendar.js';
+  import { visibleFileNodes, currentFolderId, fileSearch } from '#lib/stores/files.js';
+  import { noteNodes, selectedNoteId } from '#lib/stores/notes.js';
+  import { noteName } from '#lib/markdown.js';
+  import { fileKind } from '#lib/fileTypes.js';
+  import { rankItems, highlightRuns } from '#lib/fuzzy.js';
+  import { logout } from '#lib/api.js';
+  import { APPS } from '#lib/apps.js';
 
   let query = '';
   let cursor = 0;

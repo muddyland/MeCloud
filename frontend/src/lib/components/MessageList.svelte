@@ -1,18 +1,18 @@
 <script>
-  import { isTyping } from '$lib/dom.js';
+  import { isTyping } from '#lib/dom.js';
   import { onMount, onDestroy } from 'svelte';
   import {
     emails, selectedEmailId, selectedMailbox, loading,
     draggedEmailId, contextMenu, composeOpen, jmapAccountId, searchQuery,
     selectedEmailIds, movePickerOpen, mailboxes, visibleEmails, mailRefresher, currentUser
-  } from '$lib/stores/mail.js';
-  import { getEmails, searchEmails, bulkMarkSeen, getThreadEmails } from '$lib/api.js';
-  import { deleteMessages } from '$lib/mailActions.js';
+  } from '#lib/stores/mail.js';
+  import { getEmails, searchEmails, bulkMarkSeen, getThreadEmails } from '#lib/api.js';
+  import { deleteMessages } from '#lib/mailActions.js';
   import {
     appendUnique, groupByThread, groupIds, conversationMessages,
     navigationOrder, shownInConversation, cardSummary,
-  } from '$lib/mailList.js';
-  import { toast } from '$lib/stores/toast.js';
+  } from '#lib/mailList.js';
+  import { toast } from '#lib/stores/toast.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
 

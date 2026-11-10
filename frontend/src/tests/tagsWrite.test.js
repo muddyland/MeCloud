@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { jmapPost } = vi.hoisted(() => ({ jmapPost: vi.fn() }));
-vi.mock('$lib/api.js', () => ({ jmapPost, sessionExpired: vi.fn() }));
-vi.mock('$lib/stores/activity.js', () => ({ begin: vi.fn(), end: vi.fn() }));
+vi.mock('#lib/api.js', () => ({ jmapPost, sessionExpired: vi.fn() }));
+vi.mock('#lib/stores/activity.js', () => ({ begin: vi.fn(), end: vi.fn() }));
 
 // Blob transfer is XHR and fetch against the backend; the fake server below
 // keeps blobs in memory instead. Everything else in files.js stays real, so
 // the FileNode/set calls tags.js makes are the ones the app would send.
 const { blobs, counter } = vi.hoisted(() => ({ blobs: new Map(), counter: { n: 0 } }));
-vi.mock('$lib/files.js', async (importOriginal) => ({
+vi.mock('#lib/files.js', async (importOriginal) => ({
   ...(await importOriginal()),
   uploadBlob: vi.fn(async (file) => {
     const text = await file.text();
@@ -19,12 +19,12 @@ vi.mock('$lib/files.js', async (importOriginal) => ({
   fetchBlobBytes: vi.fn(async (node) => new TextEncoder().encode(blobs.get(node.blobId)).buffer),
 }));
 
-const { JmapMethodError } = await import('$lib/jmapErrors.js');
-const { resetFileNodeDialect } = await import('$lib/files.js');
+const { JmapMethodError } = await import('#lib/jmapErrors.js');
+const { resetFileNodeDialect } = await import('#lib/files.js');
 const {
   setTags, loadTagIndex, serializeIndex, parseIndex, TagIndexError,
   GAVE_UP_MESSAGE, MAX_WRITE_ATTEMPTS, RESERVED_FOLDER, TAG_INDEX_NAME,
-} = await import('$lib/tags.js');
+} = await import('#lib/tags.js');
 
 const session = { capabilities: { 'urn:ietf:params:jmap:core': {}, 'urn:ietf:params:jmap:filenode': {} } };
 

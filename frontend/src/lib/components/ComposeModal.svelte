@@ -1,13 +1,13 @@
 <script>
   import { onDestroy } from 'svelte';
   import { fly } from 'svelte/transition';
-  import { composeOpen, composeContext, jmapAccountId, jmapSession, mailboxes, currentUser } from '$lib/stores/mail.js';
-  import { getIdentities, getMailboxes, sendEmail, saveDraft, discardDraft } from '$lib/api.js';
-  import { toast } from '$lib/stores/toast.js';
-  import { sanitizeEmailHtml } from '$lib/sanitize.js';
-  import { uploadBlob, supportsFiles } from '$lib/files.js';
-  import { formatBytes } from '$lib/fileTypes.js';
-  import { selectDriveAttachments } from '$lib/attachments.js';
+  import { composeOpen, composeContext, jmapAccountId, jmapSession, mailboxes, currentUser } from '#lib/stores/mail.js';
+  import { getIdentities, getMailboxes, sendEmail, saveDraft, discardDraft } from '#lib/api.js';
+  import { toast } from '#lib/stores/toast.js';
+  import { sanitizeEmailHtml } from '#lib/sanitize.js';
+  import { uploadBlob, supportsFiles } from '#lib/files.js';
+  import { formatBytes } from '#lib/fileTypes.js';
+  import { selectDriveAttachments } from '#lib/attachments.js';
   import Spinner from './Spinner.svelte';
   import FilePicker from './FilePicker.svelte';
 

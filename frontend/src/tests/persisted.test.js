@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readPersisted } from '$lib/stores/persisted.js';
+import { readPersisted } from '#lib/stores/persisted.js';
 
 describe('readPersisted', () => {
   it('uses the default when nothing is stored', () => {

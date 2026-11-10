@@ -7,8 +7,8 @@
    * past the first screen.
    */
   import Modal from './Modal.svelte';
-  import { helpOpen, appName } from '$lib/stores/mail.js';
-  import { HELP, searchHelp, countTopics } from '$lib/help.js';
+  import { helpOpen, appName } from '#lib/stores/mail.js';
+  import { HELP, searchHelp, countTopics } from '#lib/help.js';
 
   let query = '';
   let activeId = HELP[0].id;

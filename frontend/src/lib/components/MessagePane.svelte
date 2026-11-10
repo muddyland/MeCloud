@@ -5,17 +5,17 @@
     selectedEmailId, jmapSession, movePickerOpen,
     mailboxes, selectedMailbox, jmapAccountId, emails,
     composeContext, composeOpen, darkMode, messageActions
-  } from '$lib/stores/mail.js';
-  import { getEmailBody, markEmailSeen } from '$lib/api.js';
-  import { deleteMessages } from '$lib/mailActions.js';
-  import { toast } from '$lib/stores/toast.js';
-  import { sanitizeEmailHtml, escapeText, decodeEntities } from '$lib/sanitize.js';
-  import { formatBytes } from '$lib/fileTypes.js';
-  import { downloadNode } from '$lib/files.js';
-  import { isTrustedSender, trustSender, untrustSender } from '$lib/trustedSenders.js';
+  } from '#lib/stores/mail.js';
+  import { getEmailBody, markEmailSeen } from '#lib/api.js';
+  import { deleteMessages } from '#lib/mailActions.js';
+  import { toast } from '#lib/stores/toast.js';
+  import { sanitizeEmailHtml, escapeText, decodeEntities } from '#lib/sanitize.js';
+  import { formatBytes } from '#lib/fileTypes.js';
+  import { downloadNode } from '#lib/files.js';
+  import { isTrustedSender, trustSender, untrustSender } from '#lib/trustedSenders.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
-  import { isCompact } from '$lib/stores/viewport.js';
+  import { isCompact } from '#lib/stores/viewport.js';
 
   let email = null;
   let frameContent = '';    // sanitised content cached for dark-mode rebuilds

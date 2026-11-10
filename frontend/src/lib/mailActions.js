@@ -2,10 +2,10 @@ import { get } from 'svelte/store';
 import {
   emails, selectedEmailId, selectedEmailIds, jmapAccountId, mailboxes,
   selectedMailbox, mailRefresher,
-} from '$lib/stores/mail.js';
-import { bulkMove, bulkDestroy } from '$lib/api.js';
-import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
-import { toast, undoToast } from '$lib/stores/toast.js';
+} from '#lib/stores/mail.js';
+import { bulkMove, bulkDestroy } from '#lib/api.js';
+import { refreshMailboxCounts } from '#lib/mailboxRefresh.js';
+import { toast, undoToast } from '#lib/stores/toast.js';
 
 /**
  * Moving and deleting mail, in one place.

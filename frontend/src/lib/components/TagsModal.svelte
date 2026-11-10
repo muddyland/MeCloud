@@ -17,7 +17,7 @@
   import {
     normalizeTag, canonicalize, splitTagInput, tagKey, tagsFor,
     MAX_TAG_LENGTH, MAX_TAGS_PER_FILE,
-  } from '$lib/tags.js';
+  } from '#lib/tags.js';
 
   export let open = false;
   /** The items being tagged. */

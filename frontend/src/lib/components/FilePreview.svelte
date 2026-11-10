@@ -2,18 +2,18 @@
   import Modal from './Modal.svelte';
   import Spinner from './Spinner.svelte';
   import MarkdownToolbar from './MarkdownToolbar.svelte';
-  import { previewNode } from '$lib/stores/files.js';
-  import { blobUrl, downloadNode, fetchBlobBytes, fetchTextBlob, saveTextFile } from '$lib/files.js';
-  import { fileKind, formatBytes, isPreviewable, isWordDocument, isSpreadsheet, isPresentation } from '$lib/fileTypes.js';
-  import { MAX_DOCX_BYTES, renderDocxDocument } from '$lib/docxPreview.js';
-  import { MAX_OFFICE_BYTES, OfficeReadError } from '$lib/officeZip.js';
+  import { previewNode } from '#lib/stores/files.js';
+  import { blobUrl, downloadNode, fetchBlobBytes, fetchTextBlob, saveTextFile } from '#lib/files.js';
+  import { fileKind, formatBytes, isPreviewable, isWordDocument, isSpreadsheet, isPresentation } from '#lib/fileTypes.js';
+  import { MAX_DOCX_BYTES, renderDocxDocument } from '#lib/docxPreview.js';
+  import { MAX_OFFICE_BYTES, OfficeReadError } from '#lib/officeZip.js';
   import SheetView from './SheetView.svelte';
   import SlideOutline from './SlideOutline.svelte';
-  import { isMarkdown, renderMarkdown, imageResolver } from '$lib/markdown.js';
-  import { resolvePath } from '$lib/notes.js';
-  import { fileNodes } from '$lib/stores/files.js';
-  import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
-  import { toast } from '$lib/stores/toast.js';
+  import { isMarkdown, renderMarkdown, imageResolver } from '#lib/markdown.js';
+  import { resolvePath } from '#lib/notes.js';
+  import { fileNodes } from '#lib/stores/files.js';
+  import { jmapAccountId, jmapSession } from '#lib/stores/mail.js';
+  import { toast } from '#lib/stores/toast.js';
 
   let textContent = '';
   let loadingText = false;
@@ -75,8 +75,8 @@
       return renderDocxDocument(await fetchBlobBytes(target, { maxBytes: MAX_DOCX_BYTES }));
     }
     const bytes = await fetchBlobBytes(target, { maxBytes: MAX_OFFICE_BYTES });
-    if (type === 'sheet') return (await import('$lib/sheetPreview.js')).readSpreadsheet(bytes, target.name);
-    return (await import('$lib/slidePreview.js')).readPresentation(bytes, target.name);
+    if (type === 'sheet') return (await import('#lib/sheetPreview.js')).readSpreadsheet(bytes, target.name);
+    return (await import('#lib/slidePreview.js')).readPresentation(bytes, target.name);
   }
 
   async function loadOffice(target, type) {

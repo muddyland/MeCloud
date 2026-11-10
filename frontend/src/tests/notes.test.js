@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { findNotesFolder, collectNotes, noteFilename, resolvePath, NOTES_FOLDER, saveDecision } from '$lib/notes.js';
+import { findNotesFolder, collectNotes, noteFilename, resolvePath, NOTES_FOLDER, saveDecision } from '#lib/notes.js';
 
 const folder = (id, name, parentId = null) => ({ id, name, parentId, blobId: null });
 const file = (id, name, parentId = null) => ({ id, name, parentId, blobId: `b${id}`, type: 'text/markdown' });

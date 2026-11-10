@@ -1,28 +1,28 @@
 <script>
   import { onMount, onDestroy, tick } from 'svelte';
-  import { page } from '$app/stores';
+  import { page } from '#lib/page.js';
   import { fade } from 'svelte/transition';
-  import Navbar from '$lib/components/Navbar.svelte';
-  import Toasts from '$lib/components/Toasts.svelte';
-  import Spinner from '$lib/components/Spinner.svelte';
-  import MarkdownToolbar from '$lib/components/MarkdownToolbar.svelte';
-  import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
-  import { ensureSession } from '$lib/session.js';
-  import { supportsFiles } from '$lib/files.js';
+  import Navbar from '#lib/components/Navbar.svelte';
+  import Toasts from '#lib/components/Toasts.svelte';
+  import Spinner from '#lib/components/Spinner.svelte';
+  import MarkdownToolbar from '#lib/components/MarkdownToolbar.svelte';
+  import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '#lib/stores/mail.js';
+  import { ensureSession } from '#lib/session.js';
+  import { supportsFiles } from '#lib/files.js';
   import {
     loadNotes, ensureNotesFolder, readNote, writeNote, createNote,
     renameNote, deleteNote, resolvePath, NOTES_FOLDER, saveDecision,
-  } from '$lib/notes.js';
-  import { renderMarkdown, imageResolver, noteTitle, noteName } from '$lib/markdown.js';
-  import { blobUrl } from '$lib/files.js';
+  } from '#lib/notes.js';
+  import { renderMarkdown, imageResolver, noteTitle, noteName } from '#lib/markdown.js';
+  import { blobUrl } from '#lib/files.js';
   import {
     noteNodes, allFileNodes, notesFolder, notesLoading, notesError, selectedNoteId,
     selectedNote, noteSearch, noteCache, noteView, saveState, saveError, visibleNotes,
     cacheNote, forgetNote,
-  } from '$lib/stores/notes.js';
-  import { isCompact } from '$lib/stores/viewport.js';
-  import { listPaneClass, detailPaneClass } from '$lib/layout.js';
-  import { toast } from '$lib/stores/toast.js';
+  } from '#lib/stores/notes.js';
+  import { isCompact } from '#lib/stores/viewport.js';
+  import { listPaneClass, detailPaneClass } from '#lib/layout.js';
+  import { toast } from '#lib/stores/toast.js';
 
   let stalwartUrl = '';
   let supported   = true;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { selectDriveAttachments } from '$lib/attachments.js';
+import { selectDriveAttachments } from '#lib/attachments.js';
 
 const node = (over = {}) =>
   ({ id: 'n1', name: 'a.png', blobId: 'b1', type: 'image/png', size: 100, ...over });

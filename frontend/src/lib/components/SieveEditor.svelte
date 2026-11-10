@@ -1,9 +1,9 @@
 <script>
   import { fly } from 'svelte/transition';
-  import { sieveOpen, mailboxes } from '$lib/stores/mail.js';
-  import { getSieveScript, saveSieveScript } from '$lib/api.js';
+  import { sieveOpen, mailboxes } from '#lib/stores/mail.js';
+  import { getSieveScript, saveSieveScript } from '#lib/api.js';
   import Spinner from './Spinner.svelte';
-  import { generateSieve, extractRules } from '$lib/sieve.js';
+  import { generateSieve, extractRules } from '#lib/sieve.js';
 
   const FIELDS = [
     { value: 'from',    label: 'From' },

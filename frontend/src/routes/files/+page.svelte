@@ -1,46 +1,46 @@
 <script>
-  import { isTyping } from '$lib/dom.js';
+  import { isTyping } from '#lib/dom.js';
   import { onMount, onDestroy } from 'svelte';
-  import { page } from '$app/stores';
+  import { page } from '#lib/page.js';
   import { fly, fade } from 'svelte/transition';
-  import Navbar from '$lib/components/Navbar.svelte';
-  import Toasts from '$lib/components/Toasts.svelte';
-  import Spinner from '$lib/components/Spinner.svelte';
-  import FileIcon from '$lib/components/FileIcon.svelte';
-  import FileThumbnail from '$lib/components/FileThumbnail.svelte';
-  import FolderTree from '$lib/components/FolderTree.svelte';
-  import FilePreview from '$lib/components/FilePreview.svelte';
-  import FileContextMenu from '$lib/components/FileContextMenu.svelte';
-  import ComposeModal from '$lib/components/ComposeModal.svelte';
-  import TagChips from '$lib/components/TagChips.svelte';
-  import TagsModal from '$lib/components/TagsModal.svelte';
-  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
-  import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
+  import Navbar from '#lib/components/Navbar.svelte';
+  import Toasts from '#lib/components/Toasts.svelte';
+  import Spinner from '#lib/components/Spinner.svelte';
+  import FileIcon from '#lib/components/FileIcon.svelte';
+  import FileThumbnail from '#lib/components/FileThumbnail.svelte';
+  import FolderTree from '#lib/components/FolderTree.svelte';
+  import FilePreview from '#lib/components/FilePreview.svelte';
+  import FileContextMenu from '#lib/components/FileContextMenu.svelte';
+  import ComposeModal from '#lib/components/ComposeModal.svelte';
+  import TagChips from '#lib/components/TagChips.svelte';
+  import TagsModal from '#lib/components/TagsModal.svelte';
+  import SidebarDrawer from '#lib/components/SidebarDrawer.svelte';
+  import { isCompact, closeSidebar } from '#lib/stores/viewport.js';
   import {
     jmapAccountId, jmapSession, currentUser, sidebarWidth,
     composeOpen, composeContext,
-  } from '$lib/stores/mail.js';
-  import { ensureSession } from '$lib/session.js';
+  } from '#lib/stores/mail.js';
+  import { ensureSession } from '#lib/session.js';
   import {
     fileNodes, filesLoading, filesError, currentFolderId, selectedFileIds,
     previewNode, fileSearch, viewMode, sortKey, sortAsc, fileContextMenu,
     uploads, nodesById, childrenByParent, allChildrenByParent, visibleNodes, totalUsage,
     visibleFileNodes, tagIndex, fileTags, tagCounts,
-  } from '$lib/stores/files.js';
+  } from '#lib/stores/files.js';
   import {
     loadTagIndex, setTags, findTagIndexNodes, isReservedNode, isReservedFolder,
     parseTagQuery, tagQuery, tagsFor, tagKey,
-  } from '$lib/tags.js';
+  } from '#lib/tags.js';
   import {
     fetchFileNodes, getFileNodesByIds, createFolder, renameNode, moveNode, destroyNodes,
     uploadFile, downloadNode, supportsFiles, fileLimits,
     readDropEntries, buildDropTree, countTreeFiles,
-  } from '$lib/files.js';
+  } from '#lib/files.js';
   import {
     fileKind, formatBytes, isPreviewable, validateName, breadcrumbTrail,
-  } from '$lib/fileTypes.js';
-  import { toast } from '$lib/stores/toast.js';
-  import { createUploader } from '$lib/uploads.js';
+  } from '#lib/fileTypes.js';
+  import { toast } from '#lib/stores/toast.js';
+  import { createUploader } from '#lib/uploads.js';
 
   const INCOMPLETE_LISTING =
     'This server cannot list the whole drive in one request and does not support paging '

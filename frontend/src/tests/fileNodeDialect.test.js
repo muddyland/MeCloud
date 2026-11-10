@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const { jmapPost } = vi.hoisted(() => ({ jmapPost: vi.fn() }));
-vi.mock('$lib/api.js', () => ({ jmapPost, sessionExpired: vi.fn() }));
-vi.mock('$lib/stores/activity.js', () => ({ begin: vi.fn(), end: vi.fn() }));
+vi.mock('#lib/api.js', () => ({ jmapPost, sessionExpired: vi.fn() }));
+vi.mock('#lib/stores/activity.js', () => ({ begin: vi.fn(), end: vi.fn() }));
 
 const {
   createFolder, createFile, updateNode, renameNode, fetchFileNodes, getFileNodesByIds,
   normalizeNode, encodeNodeProps, isDialectError, fileNodeDialect, resetFileNodeDialect,
   FILENODE_18, FILENODE_LEGACY,
-} = await import('$lib/files.js');
+} = await import('#lib/files.js');
 
 /*
  * Stalwart 0.16 and 1.0 speak different drafts of JMAP File Storage, and the

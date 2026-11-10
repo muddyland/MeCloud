@@ -1,4 +1,4 @@
-import { begin, end } from '$lib/stores/activity.js';
+import { begin, end } from '#lib/stores/activity.js';
 import { JmapSetError, findMethodError } from './jmapErrors.js';
 import { withThreadSizes } from './mailList.js';
 import { isForbidden, refusedPermissions, replacePermissions } from './stalwartPermissions.js';

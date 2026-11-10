@@ -3,7 +3,7 @@
    * A read-only grid for one spreadsheet: sheet tabs along the bottom, like
    * Excel, column letters and row numbers, and every cell rendered as text.
    */
-  import { columnLabel, MAX_ROWS, MAX_COLS } from '$lib/sheetPreview.js';
+  import { columnLabel, MAX_ROWS, MAX_COLS } from '#lib/sheetPreview.js';
 
   /** @type {{ name: string, rows: string[][], truncated: boolean, hidden?: boolean }[]} */
   export let sheets = [];

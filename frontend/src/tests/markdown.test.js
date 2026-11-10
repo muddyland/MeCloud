@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import {
   splitFrontMatter, firstHeading, noteName, noteTitle, excerpt,
   renderMarkdown, isMarkdown, imageResolver,
-} from '$lib/markdown.js';
+} from '#lib/markdown.js';
 
 describe('splitFrontMatter', () => {
   it('separates a YAML block from the body', () => {

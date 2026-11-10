@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toCardPatch, safeWebsiteHref } from '$lib/contactCard.js';
+import { toCardPatch, safeWebsiteHref } from '#lib/contactCard.js';
 
 describe('toCardPatch', () => {
   it('nulls every edited property the form left empty', () => {

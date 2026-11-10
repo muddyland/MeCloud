@@ -11,9 +11,9 @@
    * reimplemented here.
    */
   import { fly } from 'svelte/transition';
-  import { fileContextMenu, nodesById, selectedFileIds } from '$lib/stores/files.js';
-  import { blobUrl, downloadNode } from '$lib/files.js';
-  import { fileKind, formatBytes, isPreviewable } from '$lib/fileTypes.js';
+  import { fileContextMenu, nodesById, selectedFileIds } from '#lib/stores/files.js';
+  import { blobUrl, downloadNode } from '#lib/files.js';
+  import { fileKind, formatBytes, isPreviewable } from '#lib/fileTypes.js';
 
   /** @type {(node: object) => void} */
   export let onOpen = () => {};

@@ -4,11 +4,11 @@
     contextMenu, movePickerOpen, emails, mailboxes,
     selectedMailbox, jmapAccountId, selectedEmailId, selectedEmailIds,
     composeContext, composeOpen
-  } from '$lib/stores/mail.js';
-  import { markEmailSeen, bulkMarkSeen } from '$lib/api.js';
-  import { deleteMessages } from '$lib/mailActions.js';
-  import { refreshMailboxCounts } from '$lib/mailboxRefresh.js';
-  import { toast } from '$lib/stores/toast.js';
+  } from '#lib/stores/mail.js';
+  import { markEmailSeen, bulkMarkSeen } from '#lib/api.js';
+  import { deleteMessages } from '#lib/mailActions.js';
+  import { refreshMailboxCounts } from '#lib/mailboxRefresh.js';
+  import { toast } from '#lib/stores/toast.js';
 
   $: email        = $emails.find(e => e.id === $contextMenu?.emailId) ?? null;
   $: inTrash      = $selectedMailbox?.role === 'trash';

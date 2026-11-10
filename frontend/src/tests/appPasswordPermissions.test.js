@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   INTEROPERABLE_PERMISSIONS, isForbidden, refusedPermissions, replacePermissions,
-} from '$lib/stalwartPermissions.js';
+} from '#lib/stalwartPermissions.js';
 
 /*
  * Stalwart 1.0.3 scopes OAuth tokens and refuses an app password that would
@@ -35,14 +35,14 @@ describe('createAppPassword', () => {
 
   it('asks for the account permissions first (Stalwart 0.16)', async () => {
     const sent = fakeServer(() => created);
-    const { createAppPassword } = await import('$lib/api.js');
+    const { createAppPassword } = await import('#lib/api.js');
     expect(await createAppPassword('a', 'Thunderbird', {})).toEqual({ id: 'p1', secret: 's3cret' });
     expect(sent).toEqual([{ description: 'Thunderbird', expiresAt: null }]);
   });
 
   it('lists the interoperable permissions when a scoped token is refused (1.0.3)', async () => {
     const sent = fakeServer((props) => (props.permissions ? created : { notCreated: { new: REFUSAL } }));
-    const { createAppPassword } = await import('$lib/api.js');
+    const { createAppPassword } = await import('#lib/api.js');
     expect((await createAppPassword('a', 'Phone', {})).secret).toBe('s3cret');
     expect(sent).toHaveLength(2);
     expect(sent[1].permissions['@type']).toBe('Replace');
@@ -55,7 +55,7 @@ describe('createAppPassword', () => {
       if (n === 2) return { notCreated: { new: { type: 'forbidden', description: 'You are not authorized to grant permissions: calendarAlarmsSend, davCalAcl' } } };
       return created;
     });
-    const { createAppPassword } = await import('$lib/api.js');
+    const { createAppPassword } = await import('#lib/api.js');
     expect((await createAppPassword('a', 'Phone', {})).id).toBe('p1');
     expect(sent).toHaveLength(3);
     const granted = sent[2].permissions.permissions;
@@ -66,14 +66,14 @@ describe('createAppPassword', () => {
 
   it('reports a refusal it cannot work around', async () => {
     const sent = fakeServer(() => ({ notCreated: { new: { type: 'forbidden', description: 'Quota exceeded' } } }));
-    const { createAppPassword } = await import('$lib/api.js');
+    const { createAppPassword } = await import('#lib/api.js');
     await expect(createAppPassword('a', 'Phone', {})).rejects.toThrow();
     expect(sent).toHaveLength(2);
   });
 
   it('does not retry other errors', async () => {
     const sent = fakeServer(() => ({ notCreated: { new: { type: 'invalidProperties', properties: ['description'] } } }));
-    const { createAppPassword } = await import('$lib/api.js');
+    const { createAppPassword } = await import('#lib/api.js');
     await expect(createAppPassword('a', 'x', {})).rejects.toThrow();
     expect(sent).toHaveLength(1);
   });

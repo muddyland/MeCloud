@@ -492,7 +492,7 @@ allow-list and would otherwise keep blocking the frame regardless of the CSP.
 
 - `script-src` has no `'unsafe-inline'`. The server hashes the inline
   hydration script of the `index.html` it serves, at startup, and names it in
-  the header; SvelteKit's hash mode (`svelte.config.js`) adds the same hash as a
+  the header; SvelteKit's hash mode (`vite.config.js`) adds the same hash as a
   page-level policy. An injected inline script or event handler matches neither
   and does not run. `style-src` keeps `'unsafe-inline'`, which Svelte's
   transitions need; style cannot execute script.

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   isRemoteUrl, hasRemoteCssUrl, stripRemoteCssUrls, escapeText, decodeEntities,
-} from '$lib/urls.js';
+} from '#lib/urls.js';
 
 // These back the remote-image blocking in the reading pane: anything
 // isRemoteUrl() misses is a tracking pixel that loads without the user asking.

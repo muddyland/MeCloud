@@ -9,8 +9,8 @@
    * corrupted file rather than a missing preview.
    */
   import FileIcon from './FileIcon.svelte';
-  import { blobUrl } from '$lib/files.js';
-  import { canThumbnail } from '$lib/fileTypes.js';
+  import { blobUrl } from '#lib/files.js';
+  import { canThumbnail } from '#lib/fileTypes.js';
 
   export let node = null;
   /** sm (list rows) | lg (grid tiles) */

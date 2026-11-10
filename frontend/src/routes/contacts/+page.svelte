@@ -1,23 +1,23 @@
 <script>
   import { onMount } from 'svelte';
-  import Navbar from '$lib/components/Navbar.svelte';
-  import ErrorBanner from '$lib/components/ErrorBanner.svelte';
-  import { ensureSession } from '$lib/session.js';
-  import ContactModal from '$lib/components/ContactModal.svelte';
-  import ContactImportModal from '$lib/components/ContactImportModal.svelte';
-  import ComposeModal from '$lib/components/ComposeModal.svelte';
-  import Toasts from '$lib/components/Toasts.svelte';
-  import Avatar from '$lib/components/Avatar.svelte';
-  import Spinner from '$lib/components/Spinner.svelte';
-  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
-  import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
-  import { listPaneClass, detailPaneClass } from '$lib/layout.js';
+  import Navbar from '#lib/components/Navbar.svelte';
+  import ErrorBanner from '#lib/components/ErrorBanner.svelte';
+  import { ensureSession } from '#lib/session.js';
+  import ContactModal from '#lib/components/ContactModal.svelte';
+  import ContactImportModal from '#lib/components/ContactImportModal.svelte';
+  import ComposeModal from '#lib/components/ComposeModal.svelte';
+  import Toasts from '#lib/components/Toasts.svelte';
+  import Avatar from '#lib/components/Avatar.svelte';
+  import Spinner from '#lib/components/Spinner.svelte';
+  import SidebarDrawer from '#lib/components/SidebarDrawer.svelte';
+  import { isCompact, closeSidebar } from '#lib/stores/viewport.js';
+  import { listPaneClass, detailPaneClass } from '#lib/layout.js';
   import {
     addressBooks, contacts, selectedAddressBook, selectedContact,
     contactsLoading, contactSearch, contactModalOpen, editingContact,
     contactImportModalOpen
-  } from '$lib/stores/contacts.js';
-  import { jmapAccountId, jmapSession, currentUser, sidebarWidth, composeOpen, composeContext } from '$lib/stores/mail.js';
+  } from '#lib/stores/contacts.js';
+  import { jmapAccountId, jmapSession, currentUser, sidebarWidth, composeOpen, composeContext } from '#lib/stores/mail.js';
 
   function mailTo(address, name) {
     composeContext.set({ mode: 'compose', to: name ? `${name} <${address}>` : address });
@@ -26,9 +26,9 @@
   import {
     getAddressBooks, getContacts,
     createAddressBook, deleteAddressBook
-  } from '$lib/api.js';
-  import { toast } from '$lib/stores/toast.js';
-  import { safeWebsiteHref } from '$lib/contactCard.js';
+  } from '#lib/api.js';
+  import { toast } from '#lib/stores/toast.js';
+  import { safeWebsiteHref } from '#lib/contactCard.js';
 
   let stalwartUrl    = '';
   let newBookInput   = false;

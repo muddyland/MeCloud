@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fuzzyMatch, fuzzyScore, rankItems, highlightRuns } from '$lib/fuzzy.js';
+import { fuzzyMatch, fuzzyScore, rankItems, highlightRuns } from '#lib/fuzzy.js';
 
 const labels = (items) => items.map((i) => i.label);
 

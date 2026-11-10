@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { HELP, searchHelp, countTopics } from '$lib/help.js';
+import { HELP, searchHelp, countTopics } from '#lib/help.js';
 
 const sections = [
   {

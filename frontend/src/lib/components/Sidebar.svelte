@@ -2,10 +2,10 @@
   import {
     mailboxes, selectedMailbox, newFolderOpen,
     draggedEmailId, emails, selectedEmailId, selectedEmailIds, jmapAccountId
-  } from '$lib/stores/mail.js';
-  import { renameMailbox, deleteMailbox } from '$lib/api.js';
-  import { moveMessages } from '$lib/mailActions.js';
-  import { toast } from '$lib/stores/toast.js';
+  } from '#lib/stores/mail.js';
+  import { renameMailbox, deleteMailbox } from '#lib/api.js';
+  import { moveMessages } from '#lib/mailActions.js';
+  import { toast } from '#lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
   import Spinner from './Spinner.svelte';
 

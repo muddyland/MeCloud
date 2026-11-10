@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   escapeSieveString, escapeMatchLiteral, commentSafe, buildCondition,
   generateSieve, extractRules,
-} from '$lib/sieve.js';
+} from '#lib/sieve.js';
 
 const rule = (over = {}) => ({
   id: 'r1', name: 'Rule', enabled: true, match: 'all',

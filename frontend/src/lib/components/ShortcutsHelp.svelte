@@ -1,6 +1,6 @@
 <script>
   import Modal from './Modal.svelte';
-  import { shortcutsOpen } from '$lib/stores/mail.js';
+  import { shortcutsOpen } from '#lib/stores/mail.js';
 
   const GROUPS = [
     {

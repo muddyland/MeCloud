@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { get } from 'svelte/store';
-import { busy, inFlight, begin, end, tracked } from '$lib/stores/activity.js';
+import { busy, inFlight, begin, end, tracked } from '#lib/stores/activity.js';
 
 // This counter drives the progress bar under the navbar. If it ever fails to
 // return to zero the bar sticks on forever, so the balancing is what matters.

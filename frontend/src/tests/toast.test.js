@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { get } from 'svelte/store';
-import { toasts, toast, dismiss, clearToasts } from '$lib/stores/toast.js';
+import { toasts, toast, dismiss, clearToasts } from '#lib/stores/toast.js';
 
 function drainToasts() {
   toasts.subscribe(() => {})();          // subscribe once to flush

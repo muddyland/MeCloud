@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseRetryAfter, retryDelayMs } from '$lib/files.js';
+import { parseRetryAfter, retryDelayMs } from '#lib/files.js';
 
 // Dropping a folder fires one upload per file, so hitting the per-minute limit
 // is a normal consequence of normal use. These govern waiting it out rather
