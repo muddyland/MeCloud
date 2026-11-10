@@ -817,10 +817,17 @@ pub async fn download_blob(
     {
         h.insert(CONTENT_DISPOSITION, value);
     }
-    h.insert(
-        CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(blobs::blob_csp(render_inline)),
-    );
+    let ancestors = st.settings.frame_ancestors_value();
+    if let Ok(value) = HeaderValue::from_str(&blobs::blob_csp(render_inline, &ancestors)) {
+        h.insert(CONTENT_SECURITY_POLICY, value);
+    }
+    // Set here so the security-header middleware leaves it. Its global value
+    // is DENY by default, which would block the app's own preview frame.
+    if render_inline {
+        if let Some(xfo) = blobs::inline_x_frame_options(&ancestors) {
+            h.insert("x-frame-options", HeaderValue::from_static(xfo));
+        }
+    }
     h.insert(
         "x-content-type-options",
         HeaderValue::from_static("nosniff"),
