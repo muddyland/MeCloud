@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 import JSZip from 'jszip';
-import { renderDocxDocument } from '$lib/docxPreview.js';
-import { isWordDocument, isPreviewable } from '$lib/fileTypes.js';
+import { renderDocxDocument } from '#lib/docxPreview.js';
+import { isWordDocument, isPreviewable } from '#lib/fileTypes.js';
 
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
 const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';

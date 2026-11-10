@@ -1,11 +1,11 @@
 <script>
   import { fly } from 'svelte/transition';
-  import { movePickerOpen, selectedMailbox, emails, selectedEmailId, jmapAccountId, selectedEmailIds } from '$lib/stores/mail.js';
-  import { moveMessages } from '$lib/mailActions.js';
-  import { toast } from '$lib/stores/toast.js';
+  import { movePickerOpen, selectedMailbox, emails, selectedEmailId, jmapAccountId, selectedEmailIds } from '#lib/stores/mail.js';
+  import { moveMessages } from '#lib/mailActions.js';
+  import { toast } from '#lib/stores/toast.js';
   import MailboxIcon from './MailboxIcon.svelte';
   import Spinner from './Spinner.svelte';
-  import { mailboxes } from '$lib/stores/mail.js';
+  import { mailboxes } from '#lib/stores/mail.js';
 
   let moving = false;
   let movingId = null;      // which row was clicked, so its spinner shows there

@@ -1,6 +1,6 @@
 <script>
   import { tick } from 'svelte';
-  import { applyAction } from '$lib/markdownEdit.js';
+  import { applyAction } from '#lib/markdownEdit.js';
 
   /** The textarea being edited. Bound by the parent. */
   export let textarea = null;

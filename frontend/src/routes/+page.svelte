@@ -2,20 +2,20 @@
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
   import { goto } from '$app/navigation';
-  import Navbar from '$lib/components/Navbar.svelte';
-  import Toasts from '$lib/components/Toasts.svelte';
-  import AppIcon from '$lib/components/AppIcon.svelte';
-  import Avatar from '$lib/components/Avatar.svelte';
-  import FileIcon from '$lib/components/FileIcon.svelte';
-  import ComposeModal from '$lib/components/ComposeModal.svelte';
+  import Navbar from '#lib/components/Navbar.svelte';
+  import Toasts from '#lib/components/Toasts.svelte';
+  import AppIcon from '#lib/components/AppIcon.svelte';
+  import Avatar from '#lib/components/Avatar.svelte';
+  import FileIcon from '#lib/components/FileIcon.svelte';
+  import ComposeModal from '#lib/components/ComposeModal.svelte';
   import {
     jmapSession, jmapAccountId, currentUser, appName,
     composeOpen, composeContext, selectedMailbox, mailboxes,
-  } from '$lib/stores/mail.js';
-  import { ensureSession } from '$lib/session.js';
-  import { getDashboardSummary, eventEnd, senderLabel } from '$lib/dashboard.js';
-  import { formatBytes } from '$lib/fileTypes.js';
-  import { noteTitle } from '$lib/markdown.js';
+  } from '#lib/stores/mail.js';
+  import { ensureSession } from '#lib/session.js';
+  import { getDashboardSummary, eventEnd, senderLabel } from '#lib/dashboard.js';
+  import { formatBytes } from '#lib/fileTypes.js';
+  import { noteTitle } from '#lib/markdown.js';
 
   let stalwartUrl = '';
   let summary = null;

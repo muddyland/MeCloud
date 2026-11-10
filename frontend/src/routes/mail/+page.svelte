@@ -1,33 +1,33 @@
 <script>
-  import { isTyping } from '$lib/dom.js';
+  import { isTyping } from '#lib/dom.js';
   import { onMount, onDestroy } from 'svelte';
-  import { page } from '$app/stores';
-  import Navbar from '$lib/components/Navbar.svelte';
-  import Sidebar from '$lib/components/Sidebar.svelte';
-  import MessageList from '$lib/components/MessageList.svelte';
-  import MessagePane from '$lib/components/MessagePane.svelte';
-  import ComposeModal from '$lib/components/ComposeModal.svelte';
-  import ContextMenu from '$lib/components/ContextMenu.svelte';
-  import NewFolderModal from '$lib/components/NewFolderModal.svelte';
-  import SieveEditor from '$lib/components/SieveEditor.svelte';
-  import AppPasswordsModal from '$lib/components/AppPasswordsModal.svelte';
-  import MailboxPicker from '$lib/components/MailboxPicker.svelte';
-  import Toasts from '$lib/components/Toasts.svelte';
-  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
-  import { isCompact, closeSidebar } from '$lib/stores/viewport.js';
-  import { listPaneClass, detailPaneClass } from '$lib/layout.js';
+  import { page } from '#lib/page.js';
+  import Navbar from '#lib/components/Navbar.svelte';
+  import Sidebar from '#lib/components/Sidebar.svelte';
+  import MessageList from '#lib/components/MessageList.svelte';
+  import MessagePane from '#lib/components/MessagePane.svelte';
+  import ComposeModal from '#lib/components/ComposeModal.svelte';
+  import ContextMenu from '#lib/components/ContextMenu.svelte';
+  import NewFolderModal from '#lib/components/NewFolderModal.svelte';
+  import SieveEditor from '#lib/components/SieveEditor.svelte';
+  import AppPasswordsModal from '#lib/components/AppPasswordsModal.svelte';
+  import MailboxPicker from '#lib/components/MailboxPicker.svelte';
+  import Toasts from '#lib/components/Toasts.svelte';
+  import SidebarDrawer from '#lib/components/SidebarDrawer.svelte';
+  import { isCompact, closeSidebar } from '#lib/stores/viewport.js';
+  import { listPaneClass, detailPaneClass } from '#lib/layout.js';
   import {
     mailboxes, selectedMailbox, emails, loading,
     jmapSession, jmapAccountId, selectedEmailId, sidebarWidth, messageListWidth, currentUser,
     composeOpen, composeContext, anyModalOpen, visibleEmails, messageActions,
     shortcutsOpen, selectedEmailIds, mailRefresher
-  } from '$lib/stores/mail.js';
-  import { getMailboxes, getMailboxCounts, getEmails } from '$lib/api.js';
-  import { ensureSession } from '$lib/session.js';
-  import { toast } from '$lib/stores/toast.js';
+  } from '#lib/stores/mail.js';
+  import { getMailboxes, getMailboxCounts, getEmails } from '#lib/api.js';
+  import { ensureSession } from '#lib/session.js';
+  import { toast } from '#lib/stores/toast.js';
   // A mailto: body is plain text from whatever handed us the link, so it is
   // escaped before it becomes the editor's HTML.
-  import { escapeText } from '$lib/urls.js';
+  import { escapeText } from '#lib/urls.js';
 
   const MIN_SIDEBAR  = 180;  const MAX_SIDEBAR  = 380;
   const MIN_MSGLIST  = 220;  const MAX_MSGLIST  = 520;

@@ -1,6 +1,6 @@
 import { get } from 'svelte/store';
-import { mailboxes, jmapAccountId } from '$lib/stores/mail.js';
-import { getMailboxes } from '$lib/api.js';
+import { mailboxes, jmapAccountId } from '#lib/stores/mail.js';
+import { getMailboxes } from '#lib/api.js';
 
 // Fetch fresh unread counts from the server and merge them into the mailboxes store,
 // preserving the sidebar sort order established at startup.

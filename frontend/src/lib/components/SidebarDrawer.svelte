@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { fade } from 'svelte/transition';
-  import { isCompact, sidebarOpen, closeSidebar, registerSidebar } from '$lib/stores/viewport.js';
+  import { isCompact, sidebarOpen, closeSidebar, registerSidebar } from '#lib/stores/viewport.js';
 
   // Tells the navbar there is something for its toggle to open.
   onMount(() => registerSidebar());

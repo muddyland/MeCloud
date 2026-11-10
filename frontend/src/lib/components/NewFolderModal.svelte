@@ -1,7 +1,7 @@
 <script>
-  import { newFolderOpen, mailboxes, jmapAccountId } from '$lib/stores/mail.js';
-  import { createMailbox } from '$lib/api.js';
-  import { toast } from '$lib/stores/toast.js';
+  import { newFolderOpen, mailboxes, jmapAccountId } from '#lib/stores/mail.js';
+  import { createMailbox } from '#lib/api.js';
+  import { toast } from '#lib/stores/toast.js';
   import Modal from './Modal.svelte';
   import Spinner from './Spinner.svelte';
 

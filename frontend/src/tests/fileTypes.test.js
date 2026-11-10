@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatBytes, extensionOf, fileKind, isPreviewable, validateName,
   breadcrumbTrail, compareNodes, uniqueName, canThumbnail, MAX_THUMBNAIL_BYTES,
-} from '$lib/fileTypes.js';
+} from '#lib/fileTypes.js';
 
 const folder = (over = {}) => ({ id: 'f1', name: 'Docs', blobId: null, ...over });
 const file = (over = {}) => ({ id: 'n1', name: 'a.txt', blobId: 'b1', type: 'text/plain', ...over });

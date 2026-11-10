@@ -1,7 +1,7 @@
 <script>
-  import { page } from '$app/stores';
+  import { page } from '#lib/page.js';
   import { goto } from '$app/navigation';
-  import { APPS, activeApp } from '$lib/apps.js';
+  import { APPS, activeApp } from '#lib/apps.js';
   import AppIcon from './AppIcon.svelte';
 
   $: active = activeApp($page.url.pathname);

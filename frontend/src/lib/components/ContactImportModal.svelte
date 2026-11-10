@@ -1,11 +1,11 @@
 <script>
   import {
     contactImportModalOpen, addressBooks, selectedAddressBook, contacts
-  } from '$lib/stores/contacts.js';
-  import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
-  import { createContact } from '$lib/api.js';
-  import { parseVCard } from '$lib/vcardParser.js';
-  import { toast } from '$lib/stores/toast.js';
+  } from '#lib/stores/contacts.js';
+  import { jmapAccountId, jmapSession } from '#lib/stores/mail.js';
+  import { createContact } from '#lib/api.js';
+  import { parseVCard } from '#lib/vcardParser.js';
+  import { toast } from '#lib/stores/toast.js';
 
   let fileInput;
   let dragging  = false;

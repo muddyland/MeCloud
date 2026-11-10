@@ -1,5 +1,5 @@
 import { writable, derived } from 'svelte/store';
-import { noteTitle, excerpt } from '$lib/markdown.js';
+import { noteTitle, excerpt } from '#lib/markdown.js';
 import { persisted } from './persisted.js';
 
 /** Markdown FileNodes under the Notes folder. */

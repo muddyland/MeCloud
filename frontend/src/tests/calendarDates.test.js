@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   localDateString, parseLocalDate, addDays, daysBetween, durationDays,
   allDayDuration, parseEventStart, buildEventPatch,
-} from '$lib/calendarDates.js';
-import { isToday } from '$lib/dashboard.js';
+} from '#lib/calendarDates.js';
+import { isToday } from '#lib/dashboard.js';
 
 // The test runner's zone is whatever the container says; these assertions
 // hold in every zone because nothing here may go through UTC.

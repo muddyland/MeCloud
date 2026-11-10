@@ -1,11 +1,11 @@
 <script>
-  import { eventModalOpen, editingEvent, newEventDate, calendars, selectedCalendar, calendarRefreshToken } from '$lib/stores/calendar.js';
-  import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
-  import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent } from '$lib/api.js';
-  import { toast } from '$lib/stores/toast.js';
+  import { eventModalOpen, editingEvent, newEventDate, calendars, selectedCalendar, calendarRefreshToken } from '#lib/stores/calendar.js';
+  import { jmapAccountId, jmapSession } from '#lib/stores/mail.js';
+  import { createCalendarEvent, updateCalendarEvent, deleteCalendarEvent } from '#lib/api.js';
+  import { toast } from '#lib/stores/toast.js';
   import {
     localDateString, addDays, durationDays, buildEventPatch,
-  } from '$lib/calendarDates.js';
+  } from '#lib/calendarDates.js';
 
   let saving   = false;
   let deleting = false;

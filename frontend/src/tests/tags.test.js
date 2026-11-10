@@ -5,12 +5,12 @@ import {
   parseTagQuery, matchesQuery, searchNodes, tagCounts, knownTags, compareCodePoints,
   isReservedFolder, isReservedNode, reservedIds, withoutReserved, findTagIndexNodes,
   MAX_TAGS_PER_FILE, MALFORMED_MESSAGE, NEWER_VERSION_MESSAGE,
-} from '$lib/tags.js';
-import { recentFiles, summariseFiles } from '$lib/dashboard.js';
+} from '#lib/tags.js';
+import { recentFiles, summariseFiles } from '#lib/dashboard.js';
 import {
   fileNodes, fileSearch, currentFolderId, tagIndex, visibleNodes, childrenByParent,
   allChildrenByParent, visibleFileNodes, tagCounts as tagCountsStore, totalUsage,
-} from '$lib/stores/files.js';
+} from '#lib/stores/files.js';
 
 const folder = (id, name, parentId = null) => ({ id, name, parentId, blobId: null });
 const file = (id, name, parentId = null, extra = {}) => ({ id, name, parentId, blobId: `b-${id}`, size: 10, ...extra });

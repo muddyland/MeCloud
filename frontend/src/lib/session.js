@@ -1,6 +1,6 @@
 import { get } from 'svelte/store';
-import { jmapSession, jmapAccountId, currentUser } from '$lib/stores/mail.js';
-import { getJMAPSession, getAppConfig } from '$lib/api.js';
+import { jmapSession, jmapAccountId, currentUser } from '#lib/stores/mail.js';
+import { getJMAPSession, getAppConfig } from '#lib/api.js';
 
 /**
  * Everything a route needs before it can talk to the server: the app config

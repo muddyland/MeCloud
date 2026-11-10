@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseVCard, decodeQuotedPrintable } from '$lib/vcardParser.js';
+import { parseVCard, decodeQuotedPrintable } from '#lib/vcardParser.js';
 
 describe('decodeQuotedPrintable', () => {
   it('decodes UTF-8 byte sequences as one character', () => {

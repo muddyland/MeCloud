@@ -1,5 +1,5 @@
 <script>
-  import { calendarEvents, calendarDate, eventModalOpen, editingEvent, newEventDate } from '$lib/stores/calendar.js';
+  import { calendarEvents, calendarDate, eventModalOpen, editingEvent, newEventDate } from '#lib/stores/calendar.js';
 
   const DAYS = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
 

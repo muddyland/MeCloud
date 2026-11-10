@@ -1,6 +1,6 @@
 <script>
   import { fly } from 'svelte/transition';
-  import { toasts, dismiss, runToastAction } from '$lib/stores/toast.js';
+  import { toasts, dismiss, runToastAction } from '#lib/stores/toast.js';
 
   const config = {
     success: {

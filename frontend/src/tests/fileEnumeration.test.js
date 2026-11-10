@@ -4,9 +4,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // gets called by the mock machinery with no arguments as well as by the code
 // under test, which makes the implementation see calls that never happened.
 const { jmapPost } = vi.hoisted(() => ({ jmapPost: vi.fn() }));
-vi.mock('$lib/api.js', () => ({ jmapPost }));
+vi.mock('#lib/api.js', () => ({ jmapPost }));
 
-const { fetchFileNodes, maxObjectsInGet } = await import('$lib/files.js');
+const { fetchFileNodes, maxObjectsInGet } = await import('#lib/files.js');
 
 /*
  * The bug this covers, observed live rather than inferred:

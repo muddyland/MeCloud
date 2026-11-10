@@ -1,5 +1,5 @@
 <script>
-  import { busy } from '$lib/stores/activity.js';
+  import { busy } from '#lib/stores/activity.js';
 
   // A request that resolves in 80 ms should not produce a visible flash, and a
   // bar that vanishes the instant the last request lands reads as a glitch.

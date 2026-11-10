@@ -2,16 +2,16 @@
   import '../app.css';
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
-  import { page } from '$app/stores';
-  import { darkMode, appName, inboxUnread } from '$lib/stores/mail.js';
-  import { getMe, getAppConfig } from '$lib/api.js';
-  import ProgressBar from '$lib/components/ProgressBar.svelte';
-  import Spinner from '$lib/components/Spinner.svelte';
-  import BrandMark from '$lib/components/BrandMark.svelte';
-  import CommandPalette from '$lib/components/CommandPalette.svelte';
-  import HelpModal from '$lib/components/HelpModal.svelte';
-  import DownloadsModal from '$lib/components/DownloadsModal.svelte';
-  import ShortcutsHelp from '$lib/components/ShortcutsHelp.svelte';
+  import { page } from '#lib/page.js';
+  import { darkMode, appName, inboxUnread } from '#lib/stores/mail.js';
+  import { getMe, getAppConfig } from '#lib/api.js';
+  import ProgressBar from '#lib/components/ProgressBar.svelte';
+  import Spinner from '#lib/components/Spinner.svelte';
+  import BrandMark from '#lib/components/BrandMark.svelte';
+  import CommandPalette from '#lib/components/CommandPalette.svelte';
+  import HelpModal from '#lib/components/HelpModal.svelte';
+  import DownloadsModal from '#lib/components/DownloadsModal.svelte';
+  import ShortcutsHelp from '#lib/components/ShortcutsHelp.svelte';
 
   let checkingAuth = true;
 

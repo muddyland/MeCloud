@@ -1,5 +1,5 @@
 <script>
-  import { fileKind } from '$lib/fileTypes.js';
+  import { fileKind } from '#lib/fileTypes.js';
 
   export let node = null;
   /** sm (list rows) | lg (grid tiles) */

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { parseAddresses, threadingHeaders, attachmentParts, buildEmailCreate } from '$lib/api.js';
+import { parseAddresses, threadingHeaders, attachmentParts, buildEmailCreate } from '#lib/api.js';
 
 // ---------------------------------------------------------------------------
 // parseAddresses
@@ -120,7 +120,7 @@ describe('getCalendarEvents', () => {
       }),
     });
 
-    const { getCalendarEvents } = await import('$lib/api.js');
+    const { getCalendarEvents } = await import('#lib/api.js');
     const result = await getCalendarEvents('acc1', {}, null, null, null);
     expect(result).toEqual([]);
   });
@@ -138,7 +138,7 @@ describe('getCalendarEvents', () => {
       }),
     });
 
-    const { getCalendarEvents } = await import('$lib/api.js');
+    const { getCalendarEvents } = await import('#lib/api.js');
     const result = await getCalendarEvents('acc1', {}, null, null, null);
     expect(result).toEqual(events);
   });
@@ -166,7 +166,7 @@ describe('getContacts', () => {
       }),
     });
 
-    const { getContacts } = await import('$lib/api.js');
+    const { getContacts } = await import('#lib/api.js');
     const result = await getContacts('acc1', {}, null);
     expect(result).toEqual([]);
   });
@@ -184,7 +184,7 @@ describe('getContacts', () => {
       }),
     });
 
-    const { getContacts } = await import('$lib/api.js');
+    const { getContacts } = await import('#lib/api.js');
     const result = await getContacts('acc1', {}, null);
     expect(result).toEqual(cards);
   });
@@ -204,7 +204,7 @@ describe('apiFetch 401 redirect', () => {
     fetch.mockResolvedValueOnce({ status: 401, ok: false });
 
     // We import dynamically so the window stub is in place
-    const { getMe } = await import('$lib/api.js');
+    const { getMe } = await import('#lib/api.js');
     const result = await getMe();
 
     expect(result).toEqual({ authenticated: false });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { interpretCreate } from '$lib/files.js';
+import { interpretCreate } from '#lib/files.js';
 
 /*
  * Regression cover for folder creation breaking outright.

@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   todayBounds, isToday, eventEnd, compareEvents, summariseFiles, summariseMail,
   recentFiles, recentNotes, senderLabel,
-} from '$lib/dashboard.js';
+} from '#lib/dashboard.js';
 
 // A fixed "now" so these do not drift with the wall clock.
 const NOW = new Date(2026, 4, 15, 14, 30);        // 15 May 2026, 14:30 local

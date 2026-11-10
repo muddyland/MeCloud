@@ -1,12 +1,15 @@
 /// <reference types="@sveltejs/kit" />
-import { build, files, version } from '$service-worker';
+import { version } from '$app/env';
+import { immutable, assets } from '$app/manifest';
 
 const CACHE = `mecloud-${version}`;
 // '/' is the app shell. The static adapter writes it as a fallback page, which
 // is in neither `build` nor `files`, so it is named here — without it there is
 // nothing to serve a navigation when the network is down.
 const SHELL = '/';
-const PRECACHE = [...new Set([...build, ...files, SHELL])];
+// The manifest's paths are relative to the base path, which is the root here.
+const absolute = ({ path }) => '/' + path.replace(/^\//, '');
+const PRECACHE = [...new Set([...immutable.map(absolute), ...assets.map(absolute), SHELL])];
 
 self.addEventListener('install', e => {
   e.waitUntil(

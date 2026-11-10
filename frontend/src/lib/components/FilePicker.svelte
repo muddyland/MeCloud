@@ -14,10 +14,10 @@
   import Modal from './Modal.svelte';
   import Spinner from './Spinner.svelte';
   import FileThumbnail from './FileThumbnail.svelte';
-  import { fileNodes, visibleFileNodes, nodesById, childrenByParent } from '$lib/stores/files.js';
-  import { fetchFileNodes, supportsFiles } from '$lib/files.js';
-  import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
-  import { breadcrumbTrail, compareNodes, fileKind, formatBytes } from '$lib/fileTypes.js';
+  import { fileNodes, visibleFileNodes, nodesById, childrenByParent } from '#lib/stores/files.js';
+  import { fetchFileNodes, supportsFiles } from '#lib/files.js';
+  import { jmapAccountId, jmapSession } from '#lib/stores/mail.js';
+  import { breadcrumbTrail, compareNodes, fileKind, formatBytes } from '#lib/fileTypes.js';
 
   export let open = false;
   /** Blob ids already on the message, so they can be shown as attached. */

@@ -1,23 +1,23 @@
 <script>
   import { onMount } from 'svelte';
-  import Navbar from '$lib/components/Navbar.svelte';
-  import ErrorBanner from '$lib/components/ErrorBanner.svelte';
-  import { ensureSession } from '$lib/session.js';
-  import CalendarGrid from '$lib/components/CalendarGrid.svelte';
-  import EventModal from '$lib/components/EventModal.svelte';
-  import Toasts from '$lib/components/Toasts.svelte';
-  import Spinner from '$lib/components/Spinner.svelte';
-  import SidebarDrawer from '$lib/components/SidebarDrawer.svelte';
-  import { closeSidebar } from '$lib/stores/viewport.js';
+  import Navbar from '#lib/components/Navbar.svelte';
+  import ErrorBanner from '#lib/components/ErrorBanner.svelte';
+  import { ensureSession } from '#lib/session.js';
+  import CalendarGrid from '#lib/components/CalendarGrid.svelte';
+  import EventModal from '#lib/components/EventModal.svelte';
+  import Toasts from '#lib/components/Toasts.svelte';
+  import Spinner from '#lib/components/Spinner.svelte';
+  import SidebarDrawer from '#lib/components/SidebarDrawer.svelte';
+  import { closeSidebar } from '#lib/stores/viewport.js';
   import {
     calendars, calendarEvents, calendarLoading, selectedCalendar, calendarDate, calendarRefreshToken
-  } from '$lib/stores/calendar.js';
-  import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '$lib/stores/mail.js';
+  } from '#lib/stores/calendar.js';
+  import { jmapAccountId, jmapSession, currentUser, sidebarWidth } from '#lib/stores/mail.js';
   import {
     getCalendars, getCalendarEvents,
     createCalendar, deleteCalendar
-  } from '$lib/api.js';
-  import { toast } from '$lib/stores/toast.js';
+  } from '#lib/api.js';
+  import { toast } from '#lib/stores/toast.js';
 
   let stalwartUrl    = '';
   let newCalInput    = false;

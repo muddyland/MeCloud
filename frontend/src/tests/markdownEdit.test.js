@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   applyAction, toggleWrap, toggleLinePrefix, lineRange, stripPrefix, ACTION_NAMES,
-} from '$lib/markdownEdit.js';
+} from '#lib/markdownEdit.js';
 
 /** Compact notation: "he[llo] world" marks the selection. */
 const parse = (marked) => {

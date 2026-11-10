@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.hoisted so the spy itself is the module export — see fileEnumeration.test.js.
 const { jmapPost } = vi.hoisted(() => ({ jmapPost: vi.fn() }));
-vi.mock('$lib/api.js', () => ({ jmapPost }));
+vi.mock('#lib/api.js', () => ({ jmapPost }));
 
-const { getDashboardSummary } = await import('$lib/dashboard.js');
+const { getDashboardSummary } = await import('#lib/dashboard.js');
 
 /*
  * The dashboard had the same bug the Files listing had: FileNode/get with

@@ -1,10 +1,10 @@
 <script>
   import { fly, fade } from 'svelte/transition';
-  import { page } from '$app/stores';
+  import { page } from '#lib/page.js';
   import { goto } from '$app/navigation';
-  import { APPS, activeApp, appFor } from '$lib/apps.js';
+  import { APPS, activeApp, appFor } from '#lib/apps.js';
   import AppIcon from './AppIcon.svelte';
-  import { inboxUnread } from '$lib/stores/mail.js';
+  import { inboxUnread } from '#lib/stores/mail.js';
 
   let open = false;
 

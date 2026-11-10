@@ -3,14 +3,14 @@
   import {
     appName, currentUser, darkMode, sieveOpen, appPasswordsOpen, shortcutsOpen,
     commandPaletteOpen, helpOpen, downloadsOpen
-  } from '$lib/stores/mail.js';
-  import { logout } from '$lib/api.js';
+  } from '#lib/stores/mail.js';
+  import { logout } from '#lib/api.js';
   import Avatar from './Avatar.svelte';
   import Spinner from './Spinner.svelte';
   import AppTabs from './AppTabs.svelte';
   import AppMenu from './AppMenu.svelte';
   import BrandMark from './BrandMark.svelte';
-  import { isCompact, hasSidebar, toggleSidebar } from '$lib/stores/viewport.js';
+  import { isCompact, hasSidebar, toggleSidebar } from '#lib/stores/viewport.js';
 
   export let stalwartUrl = '';
 

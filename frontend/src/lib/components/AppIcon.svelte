@@ -1,5 +1,5 @@
 <script>
-  /** One of the app ids from $lib/apps.js. */
+  /** One of the app ids from #lib/apps.js. */
   export let id = 'mail';
   export let cls = 'w-4 h-4';
 </script>

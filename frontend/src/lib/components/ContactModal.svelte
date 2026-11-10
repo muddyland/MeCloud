@@ -1,9 +1,9 @@
 <script>
-  import { contactModalOpen, editingContact, contacts, selectedAddressBook, addressBooks, selectedContact } from '$lib/stores/contacts.js';
-  import { jmapAccountId, jmapSession } from '$lib/stores/mail.js';
-  import { createContact, updateContact, deleteContact } from '$lib/api.js';
-  import { toast } from '$lib/stores/toast.js';
-  import { toCardPatch } from '$lib/contactCard.js';
+  import { contactModalOpen, editingContact, contacts, selectedAddressBook, addressBooks, selectedContact } from '#lib/stores/contacts.js';
+  import { jmapAccountId, jmapSession } from '#lib/stores/mail.js';
+  import { createContact, updateContact, deleteContact } from '#lib/api.js';
+  import { toast } from '#lib/stores/toast.js';
+  import { toCardPatch } from '#lib/contactCard.js';
 
   let saving   = false;
   let deleting = false;

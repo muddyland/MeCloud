@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { createUploader } from '$lib/uploads.js';
+import { createUploader } from '#lib/uploads.js';
 
 function harness({ uploadFails = new Set(), folderFails = new Set(), existing = {} } = {}) {
   const calls = [];
