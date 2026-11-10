@@ -542,8 +542,10 @@ lockfile with any dependency change (`cargo update -p <crate>` for one crate).
 The toolchain tag (`rust:1.99-alpine`) appears in the root `Dockerfile` and
 `.gitlab-ci.yml`.
 
-**Desktop.** The version lives only in `desktop/src-tauri/Cargo.toml`, and the
-Rust toolchain tag (`rust:1.99-trixie`) appears in the root `Dockerfile` and
+**Desktop.** Major and minor versions live in `desktop/src-tauri/Cargo.toml`.
+CI sets the patch number to the count of commits that have touched `desktop/`,
+so the client's version rises by itself (see "Versions" in
+`desktop/README.md`). The Rust toolchain tag (`rust:1.99-trixie`) appears in the root `Dockerfile` and
 `desktop/Dockerfile.build`; bump the two together. Cargo builds with
 `--locked`, so commit `Cargo.lock` with any dependency change.
 
