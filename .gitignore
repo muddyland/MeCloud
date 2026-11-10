@@ -2,18 +2,9 @@
 .env
 *.env.local
 
-# Python
+# Python (the GTK file manager extension)
 __pycache__/
 *.py[cod]
-*.pyo
-.venv/
-venv/
-dist/
-*.egg-info/
-.eggs/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
 
 # Node / SvelteKit
 node_modules/
@@ -35,3 +26,4 @@ frontend/static/icons/
 desktop/**/target/
 desktop/.cargo-cache/
 desktop/src-tauri/gen/
+server/target/

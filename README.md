@@ -109,13 +109,14 @@ are built from the source archive, because each uses its own system webview:*
 - Loading indicators throughout — a global activity bar, skeleton lists, and a spinner on every action that talks to the server
 - Installable as a PWA — web manifest, generated icons and a service worker that
   precaches the built assets
-- Single Docker image — FastAPI serves both the API and the compiled frontend
+- Single Docker image — one static Rust binary serves both the API and the
+  compiled frontend, on an otherwise empty (`scratch`) image of about 10 MB
 
 ## Stack
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.14, FastAPI, Starlette, httpx |
+| Server | Rust: axum, tokio, reqwest (rustls) |
 | Frontend | SvelteKit 2, Svelte 5, Vite 8, Tailwind CSS 4 |
 | Sanitisation | DOMPurify, plus a script-less sandboxed iframe |
 | Auth | OAuth2 authorization code flow with PKCE (S256) |
@@ -152,7 +153,7 @@ STALWART_URL=https://mail.example.com
 OAUTH_CLIENT_ID=jmap-webclient
 OAUTH_CLIENT_SECRET=your-client-secret
 OAUTH_REDIRECT_URI=http://localhost:8000/auth/callback
-SESSION_SECRET=<output of: python3 -c "import secrets; print(secrets.token_hex(32))">
+SESSION_SECRET=<output of: openssl rand -hex 32>
 ```
 
 ### 3. Run
@@ -165,14 +166,13 @@ Open `http://localhost:8000` — you will be redirected to Stalwart's OAuth logi
 
 ## Development
 
-Run the backend and frontend separately for a faster dev loop:
+Run the server and frontend separately for a faster dev loop:
 
-**Backend:**
+**Server** (reads `.env` from the directory it runs in):
 ```bash
-cd backend
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
+cd server
+cp ../.env .env        # with ENVIRONMENT=development
+cargo run
 ```
 
 **Frontend** (in a separate terminal):
@@ -191,30 +191,36 @@ The image uses a true multi-stage build:
 1. **`frontend-builder`** (Node 24) — runs `npm run build`, producing a static SvelteKit output
 2. **`desktop-builder`** (Rust 1, trixie) — builds the Linux desktop client and
    packages it, plus a source archive for Windows and macOS, into `/out`
-3. **`python-deps`** (Python 3.14-slim) — installs Python packages into `/opt/pydeps`
-4. **Final stage** (Python 3.14-slim) — copies packages, built frontend and desktop
-   artefacts, runs as non-root uid 65532 with read-only application files
+3. **`server-builder`** (Rust 1, Alpine) — builds the server as a statically
+   linked musl binary, with its CA roots compiled in
+4. **Final stage** (`scratch`) — the binary, the built frontend and the desktop
+   artefacts, nothing else; runs as non-root uid 65532 with read-only
+   application files. The image's healthcheck is the binary itself
+   (`mecloud-server healthcheck`), since there is no shell or curl to run one
 
-### Hardened base image
+### Base image
 
-The two Python stages can instead be built on a
-[Docker Hardened Image](https://docs.docker.com/dhi/), whose runtime has no shell
-or package manager. Pass a matching pair: the `-dev` variant installs the
-packages and the plain variant ships them.
+The server needs nothing from its base image, so any can stand in for
+`scratch`, for instance a [Docker Hardened Image](https://docs.docker.com/dhi/)
+of the static kind:
 
 ```bash
-docker build \
-  --build-arg PYTHON_BUILDER_IMAGE=dhi.io/python:3.14-alpine-dev \
-  --build-arg PYTHON_RUNTIME_IMAGE=dhi.io/python:3.14-alpine \
-  -t mecloud .
+docker build --build-arg RUNTIME_IMAGE=dhi.io/static:20261020-alpine3.24 -t mecloud .
 ```
 
-In CI, set `USE_DHI=true`. Set `DHI_PYTHON_IMAGE` too if the images come from a
-mirror rather than `dhi.io/python`, which needs a Docker login. The final stage
+In CI, set `USE_DHI=true`. Set `DHI_STATIC_IMAGE` too if the image comes from a
+mirror rather than `dhi.io/static`, which needs a Docker login. The final stage
 runs no commands, so it builds the same way on either base. With no shell in the
 image, debug it with `docker debug` or a sidecar rather than `docker exec sh`.
 
-The Rust stage is by far the slowest, and only depends on `desktop/`, so it
+To fetch crates through a mirror, pass it as a cargo registry URL:
+`--build-arg CARGO_REGISTRY_MIRROR=sparse+https://mirror.example/cargo/index/`.
+CI derives one from `MINIREG_URL` when that is set.
+
+A private CA for the mail server is trusted on top of the built-in roots when
+the container is given `SSL_CERT_FILE` (or `SSL_CERT_DIR`) and the file mounted.
+
+The desktop stage is by far the slowest, and only depends on `desktop/`, so it
 caches independently of the web app. Skip it while iterating:
 
 ```bash
@@ -244,15 +250,16 @@ the port: whoever can set that header chooses their own rate-limit bucket.
 
 ## CI/CD (GitLab)
 
-The included `.gitlab-ci.yml` pipeline:
+The included `.gitlab-ci.yml` pipeline runs the unit tests first, so a failure
+shows in minutes rather than after the image build:
 
 | Stage | Job | What it does |
 |---|---|---|
-| `build` | `build-image` | Builds and pushes `:sha` + `:branch` tags, plus a `:desktop-cache-<branch>` layer cache for the Rust stage |
-| `test` | `backend-tests` | `pytest` |
+| `test` | `server-tests` | `cargo test --locked` for the server |
 | `test` | `frontend-tests` | lockfile host check, `npm ci`, `svelte-check`, `vitest` |
 | `test` | `audit:dependencies` | CVE scan of every lockfile via the internal registry (internal instance only) |
-| `test` | `smoke-test` | Starts the image in **production** mode, read-only, and checks `/health`, the SPA shell, the CSP script hash, HSTS and the host allow-list |
+| `build` | `build-image` | Once the unit tests pass, builds and pushes `:sha` + `:branch` tags, plus `:desktop-cache-<branch>` and `:server-cache-<branch>` layer caches for the two Rust stages |
+| `smoke` | `smoke-test` | Starts the image in **production** mode, read-only, and checks `/health`, the SPA shell, the CSP script hash, HSTS and the host allow-list |
 | `release` | `tag-latest` | Promotes `:sha` to `:latest` — only on `main`, only after every test job |
 
 Uses GitLab's built-in container registry (`$CI_REGISTRY_IMAGE`), and pulls
@@ -265,13 +272,13 @@ in the build stage, so it can never overwrite the release tag before tests run.
 `audit:dependencies` comes from a shared template, included only when the
 `CI_TEMPLATES` variable names the templates project. On the public mirror that
 variable does not exist and the job is simply absent. Where it runs, it audits
-every lockfile it finds — `backend/requirements.txt`,
+every lockfile it finds — `server/Cargo.lock`,
 `frontend/package-lock.json` and `desktop/src-tauri/Cargo.lock` — fails on a
 high or critical CVE, and blocks promotion to `:latest`.
 
 It needs a `MINIREG_TOKEN` project variable (masked, read scope). The registry
-URL is derived from the group-level `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY`, or
-set explicitly with `MINIREG_URL`. None of these are committed, so this
+URL is derived from the group-level `NPM_CONFIG_REGISTRY`, or set explicitly
+with `MINIREG_URL`. None of these are committed, so this
 repository discloses no internal hostnames or addresses.
 
 To run the same scan locally:
@@ -279,7 +286,7 @@ To run the same scan locally:
 ```bash
 curl -fsSL "$MINIREG_URL/api/cli/install.sh" | sh
 minireg login --url "$MINIREG_URL"
-minireg audit backend
+minireg audit server
 minireg audit frontend
 ```
 
@@ -287,17 +294,27 @@ minireg audit frontend
 
 ```
 mecloud/
-├── backend/
-│   ├── app/
-│   │   ├── main.py       # FastAPI app, security middleware, routes, static serving
-│   │   ├── blobs.py      # Authenticated blob upload/download proxy
-│   │   ├── auth.py       # OAuth2 authorization code flow (PKCE)
-│   │   ├── jmap.py       # JMAP session cache, request proxy, SSE stream
-│   │   ├── http.py       # Pooled upstream httpx clients + error mapping
-│   │   ├── session.py    # Encrypted session cookie middleware
-│   │   ├── models.py     # Request envelope validation
-│   │   └── config.py     # Settings (pydantic-settings)
-│   └── tests/            # pytest: api, blobs, jmap, session
+├── server/                    # the web server (Rust)
+│   ├── src/
+│   │   ├── main.rs            # serve, and `healthcheck` for the image
+│   │   ├── lib.rs             # state, router and layer order
+│   │   ├── routes.rs          # every route, auth + token refresh, validation
+│   │   ├── web.rs             # Host check, security headers, body limit, SPA
+│   │   ├── session.rs         # Encrypted session cookie
+│   │   ├── crypto.rs          # Fernet, HKDF, HMAC (formats shared with old tokens)
+│   │   ├── auth.rs            # OAuth2 authorization code flow (PKCE), refresh
+│   │   ├── jmap.rs            # JMAP session cache, proxy, app passwords, Sieve, SSE
+│   │   ├── blobs.rs           # Blob upload/download proxy, type allow-list
+│   │   ├── devices.rs         # Desktop device tokens and the pairing handshake
+│   │   ├── downloads.rs       # Signed desktop download links
+│   │   ├── pages.rs           # Server-rendered pairing pages
+│   │   ├── permissions.rs     # App password permissions for Stalwart 1.0.3
+│   │   ├── ratelimit.rs       # Per-IP limits, trusted proxies
+│   │   ├── upstream.rs        # Pooled upstream clients
+│   │   ├── error.rs           # Error -> response mapping
+│   │   └── config.rs          # Settings from the environment / .env
+│   └── tests/                 # end to end against a fake Stalwart, and the
+│                              # tokens the previous (Python) server issued
 ├── frontend/
 │   ├── scripts/gen-icons.mjs       # PWA + Apple touch icons, generated at build
 │   └── src/
@@ -383,7 +400,7 @@ mecloud/
 
 **Tokens and sessions**
 
-- OAuth access and refresh tokens never reach the browser as usable credentials. They live in an **encrypted** session cookie — Fernet (AES-128-CBC + HMAC-SHA256), keyed by HKDF from `SESSION_SECRET`. Starlette's stock session middleware only *signs* the cookie, which leaves the payload readable as plain base64; that is why this app ships its own middleware in [`backend/app/session.py`](backend/app/session.py).
+- OAuth access and refresh tokens never reach the browser as usable credentials. They live in an **encrypted** session cookie — Fernet (AES-128-CBC + HMAC-SHA256), keyed by HKDF from `SESSION_SECRET` — not a merely *signed* one, whose payload anyone holding the cookie can read as plain base64 ([`server/src/session.rs`](server/src/session.rs)).
 - The cookie is `HttpOnly`, `SameSite=Lax`, and in production `Secure` with the `__Host-` prefix, which pins it to the exact origin.
 - `SESSION_SECRET` must be at least 32 characters in production — the app refuses to start otherwise. Rotating it invalidates every outstanding session.
 - The session is rotated on login, so a pre-login cookie cannot be upgraded into an authenticated one.
@@ -434,7 +451,7 @@ and 100 columns, so a hostile or enormous file cannot hang the page.
 
 **Serving stored files**
 
-Blob bytes are proxied by the backend rather than fetched directly, because the
+Blob bytes are proxied by the server rather than fetched directly, because the
 bearer token lives in the encrypted session and never reaches the browser. That
 makes this app the origin serving user-supplied content, which is the sharp edge:
 a stored HTML or SVG file rendered inline would execute as **first-party** script
@@ -468,12 +485,12 @@ allow-list and would otherwise keep blocking the frame regardless of the CSP.
 
 - CSP, HSTS, `frame-ancestors 'none'`, `X-Content-Type-Options`, COOP/CORP on every response; `no-store` on everything under `/api` and `/auth`.
 - Host header allow-list derived from `APP_URL`, per-IP rate limits on every route, and a 1 MiB request body cap enforced against both the declared `Content-Length` and the bytes actually received.
-- All upstream calls run through a pooled `httpx` client with explicit connect/read timeouts, and concurrent SSE streams are capped.
+- All upstream calls run through pooled clients with explicit connect/read timeouts, and concurrent SSE streams are capped.
 - An upstream `401` maps to a `401` (log back in) rather than a `502`, so a revoked token no longer traps the client in a retry loop.
 
 **Script policy**
 
-- `script-src` has no `'unsafe-inline'`. The backend hashes the inline
+- `script-src` has no `'unsafe-inline'`. The server hashes the inline
   hydration script of the `index.html` it serves, at startup, and names it in
   the header; SvelteKit's hash mode (`svelte.config.js`) adds the same hash as a
   page-level policy. An injected inline script or event handler matches neither
@@ -487,8 +504,9 @@ allow-list and would otherwise keep blocking the frame regardless of the CSP.
 cd desktop && docker run --rm -e CARGO_HOME=/cargo -v "$PWD":/src \
   -v "$PWD/.cargo-cache":/cargo -w /src/src-tauri mecloud-rust:trixie cargo test
 
-# Backend
-cd backend && pip install -r requirements-dev.txt && pytest  # 250 tests
+# Server (no toolchain needed beyond Docker)
+docker run --rm -v "$PWD/server":/src -w /src rust:1.99-alpine \
+  sh -c 'apk add -q musl-dev && cargo test --locked'   # 126 tests
 
 # Frontend
 cd frontend && npm ci && npm test             # 376 unit tests
@@ -518,19 +536,11 @@ A lockfile resolved through a private mirror records the mirror's URLs, and
 `npm ci` then fails anywhere that mirror is unreachable. CI refuses such a
 lockfile.
 
-**Backend.** Direct dependencies live in `backend/requirements.in`. The
-`requirements.txt` and `requirements-dev.txt` beside it are compiled lockfiles
-— every package in the tree, pinned, with hashes — and the image installs in
-hash-checking mode. After editing `requirements.in` (or `requirements-dev.in`),
-regenerate both on the Python version the image uses:
-
-```bash
-cd backend && docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/w -w /w \
-  python:3.14-slim sh -c 'pip install -q --user pip-tools && export PATH=$HOME/.local/bin:$PATH &&
-  for f in requirements requirements-dev; do
-    pip-compile -q --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url -o $f.txt $f.in
-  done'
-```
+**Server.** Dependencies live in `server/Cargo.toml`, the tree in
+`server/Cargo.lock`. The image and CI build with `--locked`, so commit the
+lockfile with any dependency change (`cargo update -p <crate>` for one crate).
+The toolchain tag (`rust:1.99-alpine`) appears in the root `Dockerfile` and
+`.gitlab-ci.yml`.
 
 **Desktop.** The version lives only in `desktop/src-tauri/Cargo.toml`, and the
 Rust toolchain tag (`rust:1.99-trixie`) appears in the root `Dockerfile` and

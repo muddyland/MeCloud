@@ -1,5 +1,5 @@
 # The build context is everything Docker uploads before the first instruction.
-# Without this file that included the Rust target directory (tens of GB), the
+# Without this file that included the Rust target directories (tens of GB), the
 # host's node_modules (built for the host's libc, then layered over the image's
 # own `npm ci`), and every cache below.
 
@@ -10,15 +10,6 @@
 *.env.local
 docs/
 
-# Python
-**/__pycache__/
-**/*.py[cod]
-**/.pytest_cache/
-**/.mypy_cache/
-**/.ruff_cache/
-**/.venv/
-**/venv/
-
 # Node / SvelteKit
 frontend/node_modules/
 frontend/.svelte-kit/
@@ -27,6 +18,7 @@ frontend/static/icons/
 
 # Rust
 desktop/**/target/
+server/target/
 desktop/.cargo-cache/
 desktop/src-tauri/gen/
 

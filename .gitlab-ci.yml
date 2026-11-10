@@ -1,13 +1,15 @@
-# GitLab CI/CD pipeline for the JMAP-Mail FastAPI application.
-# Builds a single multi-stage Docker image (Node build → Python deps → final Python),
-# runs unit tests, smoke-tests the built image, and promotes it to `latest` on main.
+# GitLab CI/CD pipeline for MeCloud.
+# Runs the unit tests first, then builds a single multi-stage Docker image
+# (frontend, desktop client and Rust server, shipped on `scratch`) only if they
+# pass, smoke-tests the built image, and promotes it to `latest` on main.
 
 # This file runs unchanged on both the internal GitLab and the public mirror.
 #
 # Nothing here names an internal host or service. Where packages come from is
-# decided by PIP_INDEX_URL and NPM_CONFIG_REGISTRY, which pip and npm read
-# themselves, so internally they resolve through the caching registry and on
-# the mirror from PyPI and npmjs, with no difference in this file.
+# decided by variables: NPM_CONFIG_REGISTRY, which npm reads itself, and
+# MINIREG_URL, from which the cargo jobs derive a crates.io mirror. Internally
+# they resolve through the caching registry and on the mirror from npmjs and
+# crates.io, with no difference in this file.
 #
 # The one extra job internally is a dependency audit, pulled in only when
 # CI_TEMPLATES is set. On the mirror that variable does not exist, the
@@ -19,14 +21,19 @@ include:
     rules:
       - if: $CI_TEMPLATES
 
+# Tests before the build: the image takes many minutes (most of it the desktop
+# client), and a failing unit test should say so in two, not after it. `test`
+# is also where the shared dependency audit runs.
 stages:
-  - build
   - test
+  - build
+  - smoke
   - release
 
 variables:
-  # Plain images by default; override per project to use a mirror.
-  PYTHON_IMAGE: "python:3.14-slim"
+  # Plain images by default; override per project to use a mirror. The Rust
+  # image matches the Dockerfile's server stage.
+  RUST_IMAGE: "rust:1.99-alpine"
   # Matches the Dockerfile's build stage; @sveltejs/vite-plugin-svelte 7 and
   # vitest 4 both require Node >= 20.19, and the image here should not drift
   # from the one that produces the release artifact.
@@ -42,16 +49,16 @@ variables:
   DOCKER_IMAGE: "docker:29.8.2"
   # Prefix for the Dockerfile's FROM lines. Empty means Docker Hub.
   BASE_REGISTRY: ""
-  # Set USE_DHI to "true" to build the final image on a Docker Hardened Image
-  # (no shell, no package manager, non-root) instead of python:3.14-slim. Off
-  # by default, so the public mirror builds on slim. DHI_PYTHON_IMAGE is the
-  # repository without a tag: the build installs into its "-dev" variant and
-  # ships the plain one. The default is Docker's own DHI registry, which needs
-  # a login; internally, set DHI_PYTHON_IMAGE as a CI/CD variable to the
-  # registry mirror instead (kept out of this file, which is mirrored public).
+  # Set USE_DHI to "true" to ship the server on Docker's hardened static
+  # image (CA roots, tzdata and a non-root user, nothing else) instead of
+  # `scratch`. Off by default, so the public mirror builds on scratch.
+  # DHI_STATIC_IMAGE is the repository without a tag. The default is Docker's
+  # own DHI registry, which needs a login; internally, set DHI_STATIC_IMAGE as
+  # a CI/CD variable to the registry mirror instead (kept out of this file,
+  # which is mirrored public).
   USE_DHI: "false"
-  DHI_PYTHON_IMAGE: "dhi.io/python"
-  DHI_PYTHON_TAG: "3.14-alpine"
+  DHI_STATIC_IMAGE: "dhi.io/static"
+  DHI_STATIC_TAG: "20261020-alpine3.24"
 
 .docker_base:
   tags:
@@ -64,7 +71,7 @@ variables:
     - name: $DOCKER_IMAGE-dind
       alias: docker
   variables:
-    # Scoped to the dind jobs rather than set globally — the plain python and
+    # Scoped to the dind jobs rather than set globally — the plain rust and
     # node jobs have no daemon and no business carrying TLS settings for one.
     DOCKER_TLS_CERTDIR: "/certs"
 
@@ -95,94 +102,38 @@ variables:
     fi
 
 # ---------------------------------------------------------------------------
-# build stage — compile the image and push two tags to the registry:
-#   • :$CI_COMMIT_SHORT_SHA  — immutable, identifies this exact commit
-#   • :$CI_COMMIT_REF_SLUG   — mutable branch/tag pointer
-# plus a layer cache for the Rust stage, :desktop-cache-$CI_COMMIT_REF_SLUG.
-#
-# Why a separate cache image: an image only carries cache for its own layers,
-# and the final image contains none of the desktop-builder stage — so
-# --cache-from on the final tag alone never saved the Rust build, which is the
-# slow part. The stage is built and pushed on its own with inline cache
-# metadata, and the final build reads both. A branch with no cache of its own
-# yet falls back to main's.
-# ---------------------------------------------------------------------------
-build-image:
-  extends: .docker_base
-  stage: build
-  before_script:
-    - *wait-for-docker
-    # $CI_REGISTRY for pulling the cache tags and pushing the result.
-    # --password-stdin keeps the token out of the process list.
-    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
-  script:
-    # `latest` is the release tag, promoted only by tag-latest after every test
-    # has passed. A branch or tag whose slug is also `latest` would overwrite
-    # it here, in the build stage, before any test ran.
-    - |
-      case "$CI_COMMIT_REF_SLUG" in
-        latest|desktop-cache-*)
-          echo "ERROR: the ref '$CI_COMMIT_REF_NAME' maps to the reserved tag '$CI_COMMIT_REF_SLUG'. Rename it."
-          exit 1 ;;
-      esac
-    - |
-      DESKTOP_CACHE="$CI_REGISTRY_IMAGE:desktop-cache-$CI_COMMIT_REF_SLUG"
-      for ref in "$DESKTOP_CACHE" "$CI_REGISTRY_IMAGE:desktop-cache-main" \
-                 "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" "$CI_REGISTRY_IMAGE:main"; do
-        docker pull -q "$ref" || true
-      done
-    # BASE_REGISTRY defaults to empty, so base images come from Docker Hub.
-    # Set it (trailing slash included) to build from a mirror instead.
-    # Push a single image manifest. Docker 29 builds into the containerd image
-    # store and attaches a provenance attestation by default, which turns the
-    # push into an OCI index; the GitLab registry rejects that with "blob
-    # unknown to registry". Without attestations the push is one manifest.
-    #
-    # USE_DHI swaps only the two Python stages. They have to be a matching
-    # pair (the -dev builder and its runtime) because the dependency stage
-    # compiles against the builder's libc, so both are set together or not at
-    # all.
-    - |
-      PY_ARGS=""
-      if [ "$USE_DHI" = "true" ]; then
-        echo "USE_DHI=true: final image on ${DHI_PYTHON_IMAGE}:${DHI_PYTHON_TAG}"
-        PY_ARGS="--build-arg PYTHON_BUILDER_IMAGE=${DHI_PYTHON_IMAGE}:${DHI_PYTHON_TAG}-dev"
-        PY_ARGS="$PY_ARGS --build-arg PYTHON_RUNTIME_IMAGE=${DHI_PYTHON_IMAGE}:${DHI_PYTHON_TAG}"
-      fi
-      COMMON="--provenance=false --sbom=false --build-arg BUILDKIT_INLINE_CACHE=1"
-      COMMON="$COMMON --build-arg BASE_REGISTRY=$BASE_REGISTRY"
-      CACHE="--cache-from $DESKTOP_CACHE --cache-from $CI_REGISTRY_IMAGE:desktop-cache-main"
-
-      docker build $COMMON $CACHE --target desktop-builder --tag "$DESKTOP_CACHE" .
-      docker build $COMMON $PY_ARGS $CACHE \
-        --cache-from "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
-        --cache-from "$CI_REGISTRY_IMAGE:main" \
-        --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" \
-        --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
-        .
-    - docker push "$DESKTOP_CACHE"
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
-    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-    - if: '$CI_COMMIT_TAG'
-
-# ---------------------------------------------------------------------------
-# test stage — three jobs run in parallel:
-#   1. backend-tests  — pytest unit tests, no Docker required
+# test stage — unit tests, in parallel and before anything is built:
+#   1. server-tests   — cargo test for the server, no Docker required
 #   2. frontend-tests — svelte-check type check + vitest unit tests
-#   3. smoke-test     — start the built container, assert /health returns ok
+# (plus audit:dependencies, from the shared template, where it is included)
 # ---------------------------------------------------------------------------
 
-backend-tests:
+server-tests:
   stage: test
   tags:
     - saas-linux-small-amd64
-  image: $PYTHON_IMAGE
+  image: $RUST_IMAGE
+  variables:
+    # Inside the project, so the cache below can keep the registry between runs.
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo-home
+  cache:
+    key: server-cargo
+    paths:
+      - .cargo-home/registry/
+      - server/target/
+  before_script:
+    - apk add --no-cache musl-dev > /dev/null
+    - |
+      if [ -n "${MINIREG_URL:-}" ]; then
+        mkdir -p "$CARGO_HOME"
+        printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+          "sparse+${MINIREG_URL%/}/cargo/index/" > "$CARGO_HOME/config.toml"
+      fi
   script:
-    - cd backend
-    - pip install --quiet -r requirements-dev.txt
-    - pytest --tb=short -q
+    - cd server
+    # --locked, as in the image: fail on a stale Cargo.lock rather than
+    # quietly testing a different dependency tree from the one that ships.
+    - cargo test --locked
   rules:
     - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
@@ -213,9 +164,101 @@ frontend-tests:
     - if: '$CI_COMMIT_BRANCH'
     - if: '$CI_COMMIT_TAG'
 
+# ---------------------------------------------------------------------------
+# build stage — compile the image and push two tags to the registry:
+#   • :$CI_COMMIT_SHORT_SHA  — immutable, identifies this exact commit
+#   • :$CI_COMMIT_REF_SLUG   — mutable branch/tag pointer
+# plus a layer cache for each Rust stage, :desktop-cache-$CI_COMMIT_REF_SLUG
+# and :server-cache-$CI_COMMIT_REF_SLUG.
+#
+# Why separate cache images: an image only carries cache for its own layers,
+# and the final image contains none of the builder stages — so --cache-from on
+# the final tag alone never saved the Rust builds, which are the slow part.
+# Each stage is built and pushed on its own with inline cache metadata, and the
+# final build reads them all. A branch with no cache of its own yet falls back
+# to main's.
+# ---------------------------------------------------------------------------
+build-image:
+  extends: .docker_base
+  stage: build
+  # The unit tests only, not the whole stage: the audit gates promotion to
+  # :latest (tag-latest), and needn't hold up a build that tests can use.
+  needs:
+    - server-tests
+    - frontend-tests
+  before_script:
+    - *wait-for-docker
+    # $CI_REGISTRY for pulling the cache tags and pushing the result.
+    # --password-stdin keeps the token out of the process list.
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+  script:
+    # `latest` is the release tag, promoted only by tag-latest after every test
+    # has passed. A branch or tag whose slug is also `latest` would overwrite
+    # it here, in the build stage, before any test ran.
+    - |
+      case "$CI_COMMIT_REF_SLUG" in
+        latest|desktop-cache-*|server-cache-*)
+          echo "ERROR: the ref '$CI_COMMIT_REF_NAME' maps to the reserved tag '$CI_COMMIT_REF_SLUG'. Rename it."
+          exit 1 ;;
+      esac
+    - |
+      DESKTOP_CACHE="$CI_REGISTRY_IMAGE:desktop-cache-$CI_COMMIT_REF_SLUG"
+      SERVER_CACHE="$CI_REGISTRY_IMAGE:server-cache-$CI_COMMIT_REF_SLUG"
+      for ref in "$DESKTOP_CACHE" "$CI_REGISTRY_IMAGE:desktop-cache-main" \
+                 "$SERVER_CACHE" "$CI_REGISTRY_IMAGE:server-cache-main" \
+                 "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" "$CI_REGISTRY_IMAGE:main"; do
+        docker pull -q "$ref" || true
+      done
+    # BASE_REGISTRY defaults to empty, so base images come from Docker Hub.
+    # Set it (trailing slash included) to build from a mirror instead.
+    # Push a single image manifest. Docker 29 builds into the containerd image
+    # store and attaches a provenance attestation by default, which turns the
+    # push into an OCI index; the GitLab registry rejects that with "blob
+    # unknown to registry". Without attestations the push is one manifest.
+    #
+    # USE_DHI swaps only the image the server ships on. The server is a
+    # static binary, so any base will do and nothing else changes.
+    #
+    # The server's crates come through the caching registry when MINIREG_URL
+    # names one, and from crates.io otherwise.
+    - |
+      RUNTIME_ARGS=""
+      if [ "$USE_DHI" = "true" ]; then
+        echo "USE_DHI=true: final image on ${DHI_STATIC_IMAGE}:${DHI_STATIC_TAG}"
+        RUNTIME_ARGS="--build-arg RUNTIME_IMAGE=${DHI_STATIC_IMAGE}:${DHI_STATIC_TAG}"
+      fi
+      COMMON="--provenance=false --sbom=false --build-arg BUILDKIT_INLINE_CACHE=1"
+      COMMON="$COMMON --build-arg BASE_REGISTRY=$BASE_REGISTRY"
+      if [ -n "${MINIREG_URL:-}" ]; then
+        COMMON="$COMMON --build-arg CARGO_REGISTRY_MIRROR=sparse+${MINIREG_URL%/}/cargo/index/"
+      fi
+      CACHE="--cache-from $DESKTOP_CACHE --cache-from $CI_REGISTRY_IMAGE:desktop-cache-main"
+      CACHE="$CACHE --cache-from $SERVER_CACHE --cache-from $CI_REGISTRY_IMAGE:server-cache-main"
+
+      docker build $COMMON $CACHE --target desktop-builder --tag "$DESKTOP_CACHE" .
+      docker build $COMMON $CACHE --target server-builder --tag "$SERVER_CACHE" .
+      docker build $COMMON $RUNTIME_ARGS $CACHE \
+        --cache-from "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
+        --cache-from "$CI_REGISTRY_IMAGE:main" \
+        --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA" \
+        --tag "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG" \
+        .
+    - docker push "$DESKTOP_CACHE"
+    - docker push "$SERVER_CACHE"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_REF_SLUG"
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+# ---------------------------------------------------------------------------
+# smoke stage — start the built container, assert /health returns ok and the
+# production headers are in place.
+# ---------------------------------------------------------------------------
+
 smoke-test:
   extends: .docker_base
-  stage: test
+  stage: smoke
   needs:
     - build-image
   before_script:
@@ -280,7 +323,7 @@ tag-latest:
   stage: release
   needs:
     - smoke-test
-    - backend-tests
+    - server-tests
     - frontend-tests
     # Optional because the audit only exists on the instance that has the
     # shared templates. Where it does run, a failing audit blocks promotion
