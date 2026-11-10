@@ -250,15 +250,16 @@ the port: whoever can set that header chooses their own rate-limit bucket.
 
 ## CI/CD (GitLab)
 
-The included `.gitlab-ci.yml` pipeline:
+The included `.gitlab-ci.yml` pipeline runs the unit tests first, so a failure
+shows in minutes rather than after the image build:
 
 | Stage | Job | What it does |
 |---|---|---|
-| `build` | `build-image` | Builds and pushes `:sha` + `:branch` tags, plus `:desktop-cache-<branch>` and `:server-cache-<branch>` layer caches for the two Rust stages |
 | `test` | `server-tests` | `cargo test --locked` for the server |
 | `test` | `frontend-tests` | lockfile host check, `npm ci`, `svelte-check`, `vitest` |
 | `test` | `audit:dependencies` | CVE scan of every lockfile via the internal registry (internal instance only) |
-| `test` | `smoke-test` | Starts the image in **production** mode, read-only, and checks `/health`, the SPA shell, the CSP script hash, HSTS and the host allow-list |
+| `build` | `build-image` | Once the unit tests pass, builds and pushes `:sha` + `:branch` tags, plus `:desktop-cache-<branch>` and `:server-cache-<branch>` layer caches for the two Rust stages |
+| `smoke` | `smoke-test` | Starts the image in **production** mode, read-only, and checks `/health`, the SPA shell, the CSP script hash, HSTS and the host allow-list |
 | `release` | `tag-latest` | Promotes `:sha` to `:latest` — only on `main`, only after every test job |
 
 Uses GitLab's built-in container registry (`$CI_REGISTRY_IMAGE`), and pulls

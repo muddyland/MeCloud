@@ -1,7 +1,7 @@
 # GitLab CI/CD pipeline for MeCloud.
-# Builds a single multi-stage Docker image (frontend, desktop client and Rust
-# server, shipped on `scratch`), runs the unit tests, smoke-tests the built
-# image, and promotes it to `latest` on main.
+# Runs the unit tests first, then builds a single multi-stage Docker image
+# (frontend, desktop client and Rust server, shipped on `scratch`) only if they
+# pass, smoke-tests the built image, and promotes it to `latest` on main.
 
 # This file runs unchanged on both the internal GitLab and the public mirror.
 #
@@ -21,9 +21,13 @@ include:
     rules:
       - if: $CI_TEMPLATES
 
+# Tests before the build: the image takes many minutes (most of it the desktop
+# client), and a failing unit test should say so in two, not after it. `test`
+# is also where the shared dependency audit runs.
 stages:
-  - build
   - test
+  - build
+  - smoke
   - release
 
 variables:
@@ -98,6 +102,69 @@ variables:
     fi
 
 # ---------------------------------------------------------------------------
+# test stage — unit tests, in parallel and before anything is built:
+#   1. server-tests   — cargo test for the server, no Docker required
+#   2. frontend-tests — svelte-check type check + vitest unit tests
+# (plus audit:dependencies, from the shared template, where it is included)
+# ---------------------------------------------------------------------------
+
+server-tests:
+  stage: test
+  tags:
+    - saas-linux-small-amd64
+  image: $RUST_IMAGE
+  variables:
+    # Inside the project, so the cache below can keep the registry between runs.
+    CARGO_HOME: $CI_PROJECT_DIR/.cargo-home
+  cache:
+    key: server-cargo
+    paths:
+      - .cargo-home/registry/
+      - server/target/
+  before_script:
+    - apk add --no-cache musl-dev > /dev/null
+    - |
+      if [ -n "${MINIREG_URL:-}" ]; then
+        mkdir -p "$CARGO_HOME"
+        printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
+          "sparse+${MINIREG_URL%/}/cargo/index/" > "$CARGO_HOME/config.toml"
+      fi
+  script:
+    - cd server
+    # --locked, as in the image: fail on a stale Cargo.lock rather than
+    # quietly testing a different dependency tree from the one that ships.
+    - cargo test --locked
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+frontend-tests:
+  stage: test
+  tags:
+    - saas-linux-small-amd64
+  image: $NODE_IMAGE
+  script:
+    - cd frontend
+    # Every tarball must come from the public registry. Installing through a
+    # private mirror records *its* URLs in the lockfile, and `npm ci` then
+    # fails anywhere that mirror is unreachable (the public mirror of this
+    # repo, a fresh laptop). Fix with:
+    #   npm install --registry=https://registry.npmjs.org
+    - |
+      if grep -n '"resolved": "' package-lock.json | grep -v '"resolved": "https://registry.npmjs.org/'; then
+        echo "ERROR: package-lock.json resolves the packages above outside registry.npmjs.org."
+        exit 1
+      fi
+    # `npm ci`, not `npm install`: CI should fail on lockfile drift rather than
+    # quietly resolving a tree that differs from the one we ship.
+    - npm ci
+    - npm run check
+    - npm test
+  rules:
+    - if: '$CI_COMMIT_BRANCH'
+    - if: '$CI_COMMIT_TAG'
+
+# ---------------------------------------------------------------------------
 # build stage — compile the image and push two tags to the registry:
 #   • :$CI_COMMIT_SHORT_SHA  — immutable, identifies this exact commit
 #   • :$CI_COMMIT_REF_SLUG   — mutable branch/tag pointer
@@ -114,6 +181,11 @@ variables:
 build-image:
   extends: .docker_base
   stage: build
+  # The unit tests only, not the whole stage: the audit gates promotion to
+  # :latest (tag-latest), and needn't hold up a build that tests can use.
+  needs:
+    - server-tests
+    - frontend-tests
   before_script:
     - *wait-for-docker
     # $CI_REGISTRY for pulling the cache tags and pushing the result.
@@ -180,71 +252,13 @@ build-image:
     - if: '$CI_COMMIT_TAG'
 
 # ---------------------------------------------------------------------------
-# test stage — three jobs run in parallel:
-#   1. server-tests   — cargo test for the server, no Docker required
-#   2. frontend-tests — svelte-check type check + vitest unit tests
-#   3. smoke-test     — start the built container, assert /health returns ok
+# smoke stage — start the built container, assert /health returns ok and the
+# production headers are in place.
 # ---------------------------------------------------------------------------
-
-server-tests:
-  stage: test
-  tags:
-    - saas-linux-small-amd64
-  image: $RUST_IMAGE
-  variables:
-    # Inside the project, so the cache below can keep the registry between runs.
-    CARGO_HOME: $CI_PROJECT_DIR/.cargo-home
-  cache:
-    key: server-cargo
-    paths:
-      - .cargo-home/registry/
-      - server/target/
-  before_script:
-    - apk add --no-cache musl-dev > /dev/null
-    - |
-      if [ -n "${MINIREG_URL:-}" ]; then
-        mkdir -p "$CARGO_HOME"
-        printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "%s"\n' \
-          "sparse+${MINIREG_URL%/}/cargo/index/" > "$CARGO_HOME/config.toml"
-      fi
-  script:
-    - cd server
-    # --locked, as in the image: fail on a stale Cargo.lock rather than
-    # quietly testing a different dependency tree from the one that ships.
-    - cargo test --locked
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-    - if: '$CI_COMMIT_TAG'
-
-frontend-tests:
-  stage: test
-  tags:
-    - saas-linux-small-amd64
-  image: $NODE_IMAGE
-  script:
-    - cd frontend
-    # Every tarball must come from the public registry. Installing through a
-    # private mirror records *its* URLs in the lockfile, and `npm ci` then
-    # fails anywhere that mirror is unreachable (the public mirror of this
-    # repo, a fresh laptop). Fix with:
-    #   npm install --registry=https://registry.npmjs.org
-    - |
-      if grep -n '"resolved": "' package-lock.json | grep -v '"resolved": "https://registry.npmjs.org/'; then
-        echo "ERROR: package-lock.json resolves the packages above outside registry.npmjs.org."
-        exit 1
-      fi
-    # `npm ci`, not `npm install`: CI should fail on lockfile drift rather than
-    # quietly resolving a tree that differs from the one we ship.
-    - npm ci
-    - npm run check
-    - npm test
-  rules:
-    - if: '$CI_COMMIT_BRANCH'
-    - if: '$CI_COMMIT_TAG'
 
 smoke-test:
   extends: .docker_base
-  stage: test
+  stage: smoke
   needs:
     - build-image
   before_script:
