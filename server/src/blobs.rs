@@ -50,15 +50,68 @@ pub fn validate_blob_id(blob_id: &str) -> Result<()> {
     }
 }
 
+/// Inline-safe types by file extension, for blobs stored without a useful
+/// type. Every value is on INLINE_SAFE_TYPES; nothing here can carry script.
+const INLINE_SAFE_BY_EXTENSION: &[(&str, &str)] = &[
+    ("png", "image/png"),
+    ("jpg", "image/jpeg"),
+    ("jpeg", "image/jpeg"),
+    ("gif", "image/gif"),
+    ("webp", "image/webp"),
+    ("avif", "image/avif"),
+    ("bmp", "image/bmp"),
+    ("pdf", "application/pdf"),
+    ("txt", "text/plain"),
+    ("log", "text/plain"),
+    ("md", "text/plain"),
+    ("mp3", "audio/mpeg"),
+    ("ogg", "audio/ogg"),
+    ("oga", "audio/ogg"),
+    ("opus", "audio/ogg"),
+    ("wav", "audio/wav"),
+    ("flac", "audio/flac"),
+    ("m4a", "audio/mp4"),
+    ("mp4", "video/mp4"),
+    ("m4v", "video/mp4"),
+    ("webm", "video/webm"),
+    ("ogv", "video/ogg"),
+];
+
+/// The inline-safe type a file name implies, if any.
+pub fn inline_type_for_name(name: &str) -> Option<&'static str> {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    let (stem, ext) = base.rsplit_once('.')?;
+    if stem.is_empty() {
+        return None;
+    }
+    let ext = ext.to_ascii_lowercase();
+    INLINE_SAFE_BY_EXTENSION
+        .iter()
+        .find(|(e, _)| *e == ext)
+        .map(|(_, t)| *t)
+}
+
 /// The Content-Type we are prepared to put our own origin behind.
-pub fn safe_content_type(declared: Option<&str>, inline: bool) -> String {
-    let base = declared
+///
+/// `name` only matters when the declared type says nothing: the desktop sync
+/// cannot know a file's type and stores every file as
+/// application/octet-stream, so a synced PDF would otherwise never preview.
+/// A name can only pick a type from the inline allow-list, and only in place
+/// of a type that would have been a download anyway, so it never turns a
+/// declared type into a more permissive one.
+pub fn safe_content_type(declared: Option<&str>, inline: bool, name: &str) -> String {
+    let mut base = declared
         .unwrap_or("")
         .split(';')
         .next()
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
+    if inline && (base.is_empty() || base == OCTET_STREAM) {
+        if let Some(implied) = inline_type_for_name(name) {
+            base = implied.to_string();
+        }
+    }
     if inline && INLINE_SAFE_TYPES.contains(&base.as_str()) {
         base
     } else {
@@ -237,21 +290,52 @@ mod tests {
             Some("nonsense"),
         ] {
             assert_eq!(
-                safe_content_type(declared, true),
+                safe_content_type(declared, true, "x.html"),
                 OCTET_STREAM,
+                "{declared:?}"
+            );
+            // A script-capable type stays a download whatever the name says.
+            assert_eq!(
+                safe_content_type(declared, true, "x.pdf") == "application/pdf",
+                matches!(declared, None | Some("")),
                 "{declared:?}"
             );
         }
     }
 
     #[test]
+    fn an_untyped_blob_previews_by_its_name() {
+        for declared in [None, Some(""), Some(OCTET_STREAM), Some("Application/Octet-Stream; x=1")] {
+            assert_eq!(safe_content_type(declared, true, "Scan.PDF"), "application/pdf");
+            assert_eq!(safe_content_type(declared, true, "dir/photo.jpg"), "image/jpeg");
+            assert_eq!(safe_content_type(declared, true, "notes.md"), "text/plain");
+            // A download stays opaque bytes.
+            assert_eq!(safe_content_type(declared, false, "Scan.pdf"), OCTET_STREAM);
+            // Names that imply nothing safe stay downloads.
+            for name in ["page.html", "logo.svg", "x.xhtml", "pdf", ".pdf", "a.pdf.exe", "", "a."] {
+                assert_eq!(safe_content_type(declared, true, name), OCTET_STREAM, "{name}");
+            }
+        }
+        // Every implied type is one the allow-list already permits.
+        for (_, t) in INLINE_SAFE_BY_EXTENSION {
+            assert!(INLINE_SAFE_TYPES.contains(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn a_declared_type_is_never_overridden_by_the_name() {
+        assert_eq!(safe_content_type(Some("text/plain"), true, "a.pdf"), "text/plain");
+        assert_eq!(safe_content_type(Some("application/zip"), true, "a.pdf"), OCTET_STREAM);
+    }
+
+    #[test]
     fn allow_listed_types_render_inline_only_when_asked() {
         for t in INLINE_SAFE_TYPES {
-            assert_eq!(safe_content_type(Some(t), true), *t);
-            assert_eq!(safe_content_type(Some(t), false), OCTET_STREAM);
+            assert_eq!(safe_content_type(Some(t), true, ""), *t);
+            assert_eq!(safe_content_type(Some(t), false, ""), OCTET_STREAM);
         }
         assert_eq!(
-            safe_content_type(Some("IMAGE/PNG; charset=binary"), true),
+            safe_content_type(Some("IMAGE/PNG; charset=binary"), true, ""),
             "image/png"
         );
     }

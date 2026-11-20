@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatBytes, extensionOf, fileKind, isPreviewable, validateName,
   breadcrumbTrail, compareNodes, uniqueName, canThumbnail, MAX_THUMBNAIL_BYTES,
+  effectiveType,
 } from '#lib/fileTypes.js';
 
 const folder = (over = {}) => ({ id: 'f1', name: 'Docs', blobId: null, ...over });
@@ -63,8 +64,30 @@ describe('fileKind', () => {
     expect(fileKind(file({ ...generic, name: 'deck.pptx' }))).toBe('slides');
   });
 
+  it('previews synced media, which the desktop stores as octet-stream', () => {
+    const synced = (name) => file({ type: 'application/octet-stream', name });
+    expect(fileKind(synced('Scan 2026-11-20.PDF'))).toBe('pdf');
+    expect(fileKind(synced('holiday.jpg'))).toBe('image');
+    expect(fileKind(synced('talk.webm'))).toBe('video');
+    expect(fileKind(synced('song.flac'))).toBe('audio');
+    expect(isPreviewable(synced('Scan.pdf'))).toBe(true);
+    expect(canThumbnail(synced('holiday.jpg'))).toBe(true);
+    // Never a type the backend would refuse to render.
+    expect(canThumbnail(synced('logo.svg'))).toBe(false);
+  });
+
   it('falls back to "file" for the genuinely unknown', () => {
     expect(fileKind(file({ type: 'application/octet-stream', name: 'blob.qqq' }))).toBe('file');
+  });
+});
+
+describe('effectiveType', () => {
+  it('keeps a real type and names an untyped file by its extension', () => {
+    expect(effectiveType(file({ type: 'Image/PNG; x=y', name: 'a.pdf' }))).toBe('image/png');
+    expect(effectiveType(file({ type: 'application/octet-stream', name: 'a.pdf' }))).toBe('application/pdf');
+    expect(effectiveType(file({ type: undefined, name: 'a.MP3' }))).toBe('audio/mpeg');
+    expect(effectiveType(file({ type: 'application/octet-stream', name: 'a.html' }))).toBe('');
+    expect(effectiveType(file({ type: 'application/octet-stream', name: '.pdf' }))).toBe('');
   });
 });
 

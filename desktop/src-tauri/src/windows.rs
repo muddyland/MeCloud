@@ -4,10 +4,12 @@ use std::collections::HashSet;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use tauri::webview::DownloadEvent;
 use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 use url::Url;
 
 use crate::deeplink::Target;
+use crate::downloads;
 use crate::AppState;
 
 pub const MAIN: &str = "main";
@@ -128,7 +130,7 @@ pub fn open_main(app: &AppHandle, target: Option<Target>) {
         return;
     }
 
-    let policy = NavigationPolicy::new(server_url);
+    let policy = NavigationPolicy::new(server_url.clone());
     let built = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::External(parsed))
         .title("MeCloud")
         .inner_size(1280.0, 860.0)
@@ -150,6 +152,9 @@ pub fn open_main(app: &AppHandle, target: Option<Target>) {
             }
             tauri::webview::NewWindowResponse::Deny
         })
+        // Without this, WebKitGTK saved downloads silently, or not at all, and
+        // Download in Files seemed to do nothing. See downloads.rs.
+        .on_download(move |webview, event| on_download(&webview, &server_url, event))
         .build();
 
     if let Ok(window) = built {
@@ -171,6 +176,36 @@ pub fn open_main(app: &AppHandle, target: Option<Target>) {
                 }
             }
         });
+    }
+}
+
+/// A download from the main window: open the synced copy if this computer
+/// has it, otherwise save to Downloads and show the file once it is there.
+fn on_download<R: tauri::Runtime>(webview: &tauri::Webview<R>, server: &Url, event: DownloadEvent<'_>) -> bool {
+    match event {
+        DownloadEvent::Requested { url, destination } => {
+            let config = webview.app_handle().state::<AppState>().config_now();
+            let db = crate::config::sync_db_path();
+            if let Some(local) = downloads::synced_copy(server, &url, config.sync_path().as_deref(), db.as_deref()) {
+                downloads::open_or_reveal(&local);
+                return false;
+            }
+            if dirs::download_dir().is_none() {
+                if let Some(home) = dirs::home_dir() {
+                    if let Some(dest) = downloads::fallback_destination(&home, destination) {
+                        *destination = dest;
+                    }
+                }
+            }
+            true
+        }
+        DownloadEvent::Finished { path, success, .. } => {
+            if let (true, Some(path)) = (success, path) {
+                downloads::reveal(&path);
+            }
+            true
+        }
+        _ => true,
     }
 }
 

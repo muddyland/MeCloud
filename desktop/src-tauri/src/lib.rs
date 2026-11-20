@@ -20,6 +20,7 @@
 pub mod api;
 pub mod config;
 pub mod deeplink;
+pub mod downloads;
 pub mod encode;
 pub mod handlers;
 pub mod pairing;
