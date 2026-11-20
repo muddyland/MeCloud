@@ -119,6 +119,36 @@ async fn images_and_pdfs_preview_inline_unsandboxed() {
 }
 
 #[tokio::test]
+async fn a_synced_pdf_stored_as_octet_stream_previews_inline() {
+    // The desktop sync stores every file as application/octet-stream. The
+    // web UI knows a .pdf by its name and frames it; it used to arrive as an
+    // attachment, so the browser downloaded it instead of showing it.
+    let app = TestApp::new().await;
+    app.sign_in_with_token("tok");
+    put_blob(&app, "S1", "application/octet-stream", b"%PDF-1.7");
+    for query in [
+        "name=Scan.pdf&type=application/octet-stream&inline=true",
+        "name=Scan.pdf&inline=true",
+    ] {
+        let r = app.get(&format!("/api/files/blob/S1?{query}")).await;
+        assert_eq!(r.status, 200, "{query}");
+        assert!(r.header("content-type").starts_with("application/pdf"), "{query}");
+        assert!(r.header("content-disposition").starts_with("inline;"), "{query}");
+        assert!(!r.header("content-security-policy").contains("sandbox"), "{query}");
+        assert_eq!(r.header("x-frame-options"), "SAMEORIGIN");
+    }
+    // Asked for as a download, it still is one.
+    let r = app.get("/api/files/blob/S1?name=Scan.pdf&type=application/octet-stream").await;
+    assert!(r.header("content-type").starts_with("application/octet-stream"));
+    assert!(r.header("content-disposition").starts_with("attachment;"));
+    // A name cannot make an untyped blob render as markup.
+    put_blob(&app, "H1", "application/octet-stream", b"<script>alert(1)</script>");
+    let r = app.get("/api/files/blob/H1?name=evil.html&inline=true").await;
+    assert!(r.header("content-type").starts_with("application/octet-stream"));
+    assert!(r.header("content-security-policy").contains("sandbox"));
+}
+
+#[tokio::test]
 async fn downloads_keep_the_global_frame_policy() {
     let app = TestApp::new().await;
     app.sign_in_with_token("tok");

@@ -77,6 +77,35 @@ window that looks like MeCloud. So:
 - `about:`, `data:` and `blob:` stay in the page (mail bodies are `about:srcdoc`
   frames, previews are blobs).
 
+### Downloads
+
+A webview has no download bar, and until the client handled downloads
+itself, clicking Download in Files seemed to do nothing. WebKitGTK saved the
+file silently, or not at all, and nothing told you either way. Now
+(`src-tauri/src/downloads.rs`):
+
+- **A file the sync already has opens from disk.** A download from the
+  server's blob route names a blob id; if the sync database's last record of a
+  path names that same blob, and the file is still there inside the sync
+  folder, the download is cancelled and the local copy opens in the app the
+  system uses for it, just as a double-click in the file manager would. If the
+  server has a newer version, the record names the older blob, nothing
+  matches, and the server's copy is downloaded instead. A path that resolves
+  outside the sync folder (through a symlink, say) never counts.
+- **Anything else is saved to Downloads** under a name that does not
+  overwrite anything (`report (1).pdf`). If the system has no Downloads
+  folder, the client uses `~/Downloads`. Once the file is complete, it is shown
+  in the file manager.
+- **Nothing that could run gets launched.** The web page decides what to
+  download, so a local copy that is executable, or whose extension launches
+  something (`.desktop`, `.sh`, `.AppImage`, `.exe`, `.js`, …), is shown in its
+  folder instead of opened, and you decide whether to double-click it.
+
+Previews are not downloads. A PDF, image, text, audio or video file previews
+inside the window, including synced ones: the sync stores every file as
+`application/octet-stream`, so the server picks the preview type from the
+file's name, and only ever a type from its inline allow-list.
+
 ## Building
 
 Nothing needs installing on the host: the toolchain is a container.

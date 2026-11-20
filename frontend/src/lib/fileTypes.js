@@ -46,6 +46,32 @@ const BY_EXTENSION = {
 };
 
 /**
+ * Inline-previewable types by extension, mirroring the backend's
+ * INLINE_SAFE_BY_EXTENSION (server/src/blobs.rs). Used only when a file has no
+ * useful type: the desktop sync stores every file as application/octet-stream,
+ * and the backend then picks the type from the name the same way.
+ */
+const INLINE_TYPE_BY_EXTENSION = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+  webp: 'image/webp', avif: 'image/avif', bmp: 'image/bmp',
+  pdf: 'application/pdf',
+  txt: 'text/plain', log: 'text/plain', md: 'text/plain',
+  mp3: 'audio/mpeg', ogg: 'audio/ogg', oga: 'audio/ogg', opus: 'audio/ogg',
+  wav: 'audio/wav', flac: 'audio/flac', m4a: 'audio/mp4',
+  mp4: 'video/mp4', m4v: 'video/mp4', webm: 'video/webm', ogv: 'video/ogg',
+};
+
+/**
+ * The node's media type, or for an untyped one (empty or
+ * application/octet-stream) the previewable type its name implies, else ''.
+ */
+export function effectiveType(node) {
+  const type = String(node?.type ?? '').toLowerCase().split(';')[0].trim();
+  if (type && type !== 'application/octet-stream') return type;
+  return INLINE_TYPE_BY_EXTENSION[extensionOf(node?.name)] ?? '';
+}
+
+/**
  * A coarse kind: 'folder' | 'image' | 'video' | 'audio' | 'pdf' | 'doc' |
  * 'sheet' | 'slides' | 'text' | 'code' | 'archive' | 'file'.
  *
@@ -57,7 +83,7 @@ export function fileKind(node) {
   // Per the FileNode spec a folder is exactly "blobId is null".
   if (node.blobId === null || node.blobId === undefined) return 'folder';
 
-  const type = String(node.type ?? '').toLowerCase();
+  const type = effectiveType(node);
   if (type.startsWith('image/')) return 'image';
   if (type.startsWith('video/')) return 'video';
   if (type.startsWith('audio/')) return 'audio';
@@ -121,7 +147,7 @@ export const MAX_THUMBNAIL_BYTES = 8 * 1024 * 1024;
 export function canThumbnail(node, { maxBytes = MAX_THUMBNAIL_BYTES } = {}) {
   if (!node?.blobId) return false;
   if (fileKind(node) !== 'image') return false;
-  if (!INLINE_IMAGE_TYPES.has(String(node.type ?? '').toLowerCase())) return false;
+  if (!INLINE_IMAGE_TYPES.has(effectiveType(node))) return false;
   const size = Number(node.size);
   // An unknown size is not a reason to refuse: the server does not always
   // report one, and every such file would otherwise lose its thumbnail.

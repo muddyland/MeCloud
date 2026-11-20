@@ -803,7 +803,7 @@ pub async fn download_blob(
     } else {
         Some(type_.as_str())
     };
-    let resolved = blobs::safe_content_type(declared, inline);
+    let resolved = blobs::safe_content_type(declared, inline, &name);
     let render_inline = inline && resolved != blobs::OCTET_STREAM;
     let length = upstream.headers().get(CONTENT_LENGTH).cloned();
 

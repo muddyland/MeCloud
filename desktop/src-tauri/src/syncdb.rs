@@ -250,6 +250,20 @@ impl SyncDb {
         Ok(out)
     }
 
+    /// The tracked paths whose last synced content is this blob, so a download
+    /// of it from the web UI can open the copy already on disk. Usually one;
+    /// identical copies may share a blob. A blob the server has replaced since
+    /// matches nothing, which is the point: then the local copy is not what
+    /// was asked for.
+    pub fn paths_for_blob(&self, blob_id: &str) -> Result<Vec<String>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT path FROM baseline WHERE remote_blob = ?1 ORDER BY path")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map(params![blob_id], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+    }
+
     #[cfg(test)]
     pub fn node_id(&self, path: &str) -> Result<Option<String>, String> {
         self.conn
@@ -504,6 +518,18 @@ impl SyncDb {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_blob_finds_the_paths_last_synced_with_it() {
+        let db = SyncDb::in_memory().unwrap();
+        db.record("Docs/scan.pdf", "L1", "B1", 5, Some("n1")).unwrap();
+        db.record("Copy of scan.pdf", "L1", "B1", 5, Some("n2")).unwrap();
+        db.record("other.txt", "L2", "B2", 3, Some("n3")).unwrap();
+        assert_eq!(db.paths_for_blob("B1").unwrap(), vec!["Copy of scan.pdf", "Docs/scan.pdf"]);
+        // Replaced on the server since: the local copy is not that blob.
+        db.record("other.txt", "L2", "B3", 3, Some("n3")).unwrap();
+        assert!(db.paths_for_blob("B2").unwrap().is_empty());
+    }
 
     #[test]
     fn a_database_from_an_older_version_gains_the_new_column() {
